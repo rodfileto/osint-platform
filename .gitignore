@@ -1,0 +1,76 @@
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+.installed.cfg
+*.egg
+*.egg-info/
+.env
+.venv
+venv/
+ENV/
+env/
+venv.bak/
+venv.old/
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+
+# --- Node.js / Frontend ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/coverage/
+frontend/.nyc_output/
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+
+# --- IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Docker ---
+.docker/
+
+# --- Project Specific Data (CRITICAL) ---
+# Ignore all data in the data folder
+data/*
+# Keep the folder structure (optional, if using .gitkeep)
+!data/.gitkeep
+
+# --- Airflow ---
+pipelines/logs/
+pipelines/*.pid
+pipelines/*.err
+pipelines/*.log
+airflow.db
+pipelines/__pycache__/

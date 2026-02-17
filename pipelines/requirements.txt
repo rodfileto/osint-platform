@@ -1,0 +1,30 @@
+# Pipeline-specific dependencies for Airflow tasks
+# These are installed in addition to Airflow's base dependencies
+
+# Data processing (CNPJ ETL)
+pandas>=2.1.2,<2.2
+duckdb>=1.0.0
+pyarrow>=14.0.0
+numpy>=1.26.0
+
+# Database connectivity
+psycopg2-binary>=2.9.0
+sqlalchemy>=1.4.36,<2.0
+
+# Neo4j graph database
+neo4j>=5.0.0
+
+# HTTP requests and scraping (for CNPJ download)
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Utilities
+python-dateutil>=2.8.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+tqdm>=4.66.0

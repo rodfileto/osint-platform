@@ -1,0 +1,13 @@
+Django>=4.2,<5.0
+djangorestframework
+psycopg2-binary
+neo4j
+celery
+redis
+python-dotenv
+
+# Data processing
+pandas>=2.0.0
+duckdb>=0.10.0
+requests>=2.31.0
+sqlalchemy>=2.0.0
