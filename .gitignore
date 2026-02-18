@@ -67,6 +67,11 @@ data/*
 # Keep the folder structure (optional, if using .gitkeep)
 !data/.gitkeep
 
+# --- Infrastructure Data (Docker volumes) ---
+infrastructure/postgres/data/
+infrastructure/redis/data/
+infrastructure/neo4j/data/
+
 # --- Airflow ---
 pipelines/logs/
 pipelines/*.pid

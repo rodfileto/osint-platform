@@ -45,7 +45,7 @@ services:
       TZ: America/Sao_Paulo
       PGTZ: America/Sao_Paulo
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/data:/var/lib/postgresql/data
       - ./infrastructure/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     ports:
       - "5432:5432"
@@ -62,7 +62,7 @@ services:
       - "7474:7474" # HTTP
       - "7687:7687" # Bolt
     volumes:
-      - neo4j_data:/data
+      - ./infrastructure/neo4j/data:/data
       - ./infrastructure/neo4j/plugins:/plugins
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
@@ -79,6 +79,8 @@ services:
     container_name: osint_redis
     ports:
       - "6379:6379"
+    volumes:
+      - ./infrastructure/redis/data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

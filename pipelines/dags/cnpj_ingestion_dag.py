@@ -42,6 +42,7 @@ BASE_PATH = Path("/opt/airflow/data/cnpj")
 RAW_PATH = BASE_PATH / "raw"
 STAGING_PATH = BASE_PATH / "staging"
 PROCESSED_PATH = BASE_PATH / "processed"
+TEMP_PATH = BASE_PATH / "temp"
 
 # Default month to process (can be overridden via DAG params)
 DEFAULT_REFERENCE_MONTH = "2024-02"
@@ -119,33 +120,58 @@ def transform_empresas_duckdb(csv_path: str, output_parquet: str) -> dict:
     output_parquet = Path(output_parquet)
     output_parquet.parent.mkdir(parents=True, exist_ok=True)
     
+    # Check if output already exists and is valid
+    if output_parquet.exists() and output_parquet.stat().st_size > 0:
+        logger.info(f"Output file {output_parquet.name} already exists, reading row count")
+        try:
+            con = duckdb.connect()
+            row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
+            con.close()
+            logger.info(f"  Found existing file with {row_count:,} rows")
+            return {
+                "input_csv": str(csv_path),
+                "output_parquet": str(output_parquet),
+                "row_count": row_count,
+                "duration_seconds": 0,
+                "throughput_rows_per_sec": 0
+            }
+        except Exception as e:
+            logger.warning(f"Existing file corrupted, will recreate: {e}")
+            output_parquet.unlink()
+    
+    # Ensure temp directory exists
+    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
     logger.info(f"Transforming {csv_path.name} with DuckDB SQL")
     start_time = time.time()
     
-    # Connect to DuckDB
-    con = duckdb.connect()
+    # Connect to DuckDB with temp directory configuration
+    con = duckdb.connect(config={'temp_directory': str(temp_dir)})
     
-    # Build and execute transformation query
-    query = build_empresas_query(str(csv_path), str(output_parquet))
-    con.execute(query)
-    
-    # Get row count
-    row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
-    
-    duration = time.time() - start_time
-    throughput = row_count / duration if duration > 0 else 0
-    
-    con.close()
-    
-    logger.info(f"  Transformed {row_count:,} rows in {duration:.2f}s ({throughput:,.0f} rows/sec)")
-    
-    return {
-        "input_csv": str(csv_path),
-        "output_parquet": str(output_parquet),
-        "row_count": row_count,
-        "duration_seconds": duration,
-        "throughput_rows_per_sec": throughput
-    }
+    try:
+        # Build and execute transformation query
+        query = build_empresas_query(str(csv_path), str(output_parquet))
+        con.execute(query)
+        
+        # Get row count
+        row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
+        
+        duration = time.time() - start_time
+        throughput = row_count / duration if duration > 0 else 0
+        
+        logger.info(f"  Transformed {row_count:,} rows in {duration:.2f}s ({throughput:,.0f} rows/sec)")
+        
+        return {
+            "input_csv": str(csv_path),
+            "output_parquet": str(output_parquet),
+            "row_count": row_count,
+            "duration_seconds": duration,
+            "throughput_rows_per_sec": throughput
+        }
+    finally:
+        # Always close connection to release locks
+        con.close()
 
 
 @task
@@ -172,28 +198,54 @@ def transform_estabelecimentos_duckdb(csv_path: str, output_parquet: str) -> dic
     output_parquet = Path(output_parquet)
     output_parquet.parent.mkdir(parents=True, exist_ok=True)
     
+    # Check if output already exists and is valid
+    if output_parquet.exists() and output_parquet.stat().st_size > 0:
+        logger.info(f"Output file {output_parquet.name} already exists, reading row count")
+        try:
+            con = duckdb.connect()
+            row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
+            con.close()
+            logger.info(f"  Found existing file with {row_count:,} rows")
+            return {
+                "input_csv": str(csv_path),
+                "output_parquet": str(output_parquet),
+                "row_count": row_count,
+                "duration_seconds": 0,
+                "throughput_rows_per_sec": 0
+            }
+        except Exception as e:
+            logger.warning(f"Existing file corrupted, will recreate: {e}")
+            output_parquet.unlink()
+    
+    # Ensure temp directory exists
+    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
     logger.info(f"Transforming {csv_path.name} with DuckDB SQL")
     start_time = time.time()
     
-    con = duckdb.connect()
-    query = build_estabelecimentos_query(str(csv_path), str(output_parquet))
-    con.execute(query)
+    con = duckdb.connect(config={'temp_directory': str(temp_dir)})
     
-    row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
-    duration = time.time() - start_time
-    throughput = row_count / duration if duration > 0 else 0
-    
-    con.close()
-    
-    logger.info(f"  Transformed {row_count:,} rows in {duration:.2f}s ({throughput:,.0f} rows/sec)")
-    
-    return {
-        "input_csv": str(csv_path),
-        "output_parquet": str(output_parquet),
-        "row_count": row_count,
-        "duration_seconds": duration,
-        "throughput_rows_per_sec": throughput
-    }
+    try:
+        query = build_estabelecimentos_query(str(csv_path), str(output_parquet))
+        con.execute(query)
+        
+        row_count = con.execute(f"SELECT COUNT(*) FROM '{output_parquet}'").fetchone()[0]
+        duration = time.time() - start_time
+        throughput = row_count / duration if duration > 0 else 0
+        
+        logger.info(f"  Transformed {row_count:,} rows in {duration:.2f}s ({throughput:,.0f} rows/sec)")
+        
+        return {
+            "input_csv": str(csv_path),
+            "output_parquet": str(output_parquet),
+            "row_count": row_count,
+            "duration_seconds": duration,
+            "throughput_rows_per_sec": throughput
+        }
+    finally:
+        # Always close connection to release locks
+        con.close()
 
 
 @task
@@ -280,7 +332,12 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     # Now use DuckDB postgres extension for fast bulk loading
     total_rows = 0
     
-    duck_conn = duckdb.connect()
+    # Ensure temp directory exists
+    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create DuckDB connection (in-memory for better isolation)
+    duck_conn = duckdb.connect(':memory:')
     duck_conn.execute("INSTALL postgres; LOAD postgres;")
     
     # Attach PostgreSQL as a DuckDB database
@@ -293,10 +350,25 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
             logger.info(f"  Loading {file_name}")
             file_start = time.time()
             
-            # Get row count first
-            row_count = duck_conn.execute(
-                f"SELECT COUNT(*) FROM '{parquet_file}'"
-            ).fetchone()[0]
+            # Verify file exists and is readable
+            if not Path(parquet_file).exists():
+                logger.warning(f"  File not found: {parquet_file}")
+                continue
+            
+            # Get row count first (with retry for transient errors)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    row_count = duck_conn.execute(
+                        f"SELECT COUNT(*) FROM '{parquet_file}'"
+                    ).fetchone()[0]
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1 and 'TProtocolException' in str(e):
+                        logger.warning(f"  Retry {attempt + 1}/{max_retries} after error: {e}")
+                        time.sleep(1)
+                        continue
+                    raise
             
             if row_count == 0:
                 logger.warning(f"  Empty file: {parquet_file}")
@@ -372,10 +444,26 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str) -> dict:
             for parquet_file in parquet_files:
                 logger.info(f"  Loading {Path(parquet_file).name}")
                 
-                # Read Parquet with DuckDB
-                duck_conn = duckdb.connect()
-                df = duck_conn.execute(f"SELECT * FROM '{parquet_file}'").fetchdf()
-                duck_conn.close()
+                # Verify file exists
+                if not Path(parquet_file).exists():
+                    logger.warning(f"  File not found: {parquet_file}")
+                    continue
+                
+                # Read Parquet with DuckDB (in-memory for better isolation)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        duck_conn = duckdb.connect(':memory:')
+                        df = duck_conn.execute(f"SELECT * FROM '{parquet_file}'").fetchdf()
+                        duck_conn.close()
+                        break
+                    except Exception as e:
+                        duck_conn.close()
+                        if attempt < max_retries - 1 and 'TProtocolException' in str(e):
+                            logger.warning(f"  Retry {attempt + 1}/{max_retries} after error: {e}")
+                            time.sleep(1)
+                            continue
+                        raise
                 
                 if len(df) == 0:
                     continue
@@ -727,7 +815,7 @@ with DAG(
     dag_id='cnpj_ingestion',
     default_args=default_args,
     description='Ingest and process CNPJ data from Receita Federal',
-    schedule_interval='@monthly',  # Run monthly when new data is released
+    schedule_interval=None,  # Manual trigger only
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -744,14 +832,14 @@ with DAG(
     start = EmptyOperator(task_id='start')
     
     # Process entity types in parallel
-    empresas_results = process_empresas_group()
-    estabelecimentos_results = process_estabelecimentos_group()
+    empresas = process_empresas_group()
+    estabelecimentos = process_estabelecimentos_group()
     
     # End marker
     end = EmptyOperator(task_id='end')
     
-    # Define dependencies
-    start >> [empresas_results, estabelecimentos_results] >> end
+    # Define dependencies - task groups will execute after start, end will wait for all groups
+    start >> [empresas, estabelecimentos] >> end
 
 
 if __name__ == "__main__":

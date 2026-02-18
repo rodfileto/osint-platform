@@ -103,6 +103,7 @@ def check_status(reference_month="2024-02"):
     print()
     print("  AIRFLOW TASKS (latest run):")
     try:
+        # First try to get a running DAG run, otherwise get the most recent one
         cur.execute("""
             SELECT task_id, state, 
                    EXTRACT(EPOCH FROM (COALESCE(end_date, NOW()) - start_date))::int as elapsed_s
@@ -111,9 +112,10 @@ def check_status(reference_month="2024-02"):
             AND run_id = (
                 SELECT run_id FROM dag_run 
                 WHERE dag_id = 'cnpj_ingestion' 
-                ORDER BY start_date DESC LIMIT 1
+                AND state IN ('running', 'success', 'failed')
+                ORDER BY COALESCE(start_date, execution_date) DESC LIMIT 1
             )
-            ORDER BY start_date
+            ORDER BY start_date NULLS LAST
         """)
         for r in cur.fetchall():
             state_icon = {"success": "✅", "running": "🔄", "failed": "❌", "up_for_retry": "🔁"}.get(r["state"], "⏳")
