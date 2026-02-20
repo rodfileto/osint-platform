@@ -15,4 +15,4 @@ TEMP_PATH = BASE_PATH / "temp"
 TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD
 
 # Default month to process (can be overridden via DAG params)
-DEFAULT_REFERENCE_MONTH = "2024-02"
+DEFAULT_REFERENCE_MONTH = "2025-07"

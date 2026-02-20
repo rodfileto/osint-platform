@@ -35,6 +35,43 @@ services:
   postgres:
     image: postgres:16
     container_name: osint_postgres
+    command:
+      - "postgres"
+      # === Memory (64 GB RAM, 106 GB DB on HDD) ===
+      - "-c" 
+      - "shared_buffers=16GB"              # 25% of RAM (was 128MB)
+      - "-c"
+      - "effective_cache_size=48GB"         # 75% of RAM - query planner hint
+      - "-c"
+      - "work_mem=64MB"                    # per-sort/hash operation (was 4MB)
+      - "-c"
+      - "maintenance_work_mem=2GB"          # VACUUM, CREATE INDEX (was 64MB)
+      # === Disk I/O (HDD - spinning disk) ===
+      - "-c"
+      - "random_page_cost=3.0"             # HDD penalty (was 4.0, SSD=1.1)
+      - "-c"
+      - "effective_io_concurrency=2"        # HDD (was 1, SSD=200)
+      # === Parallelism (8-core i7-9700K) ===
+      - "-c"
+      - "max_worker_processes=8"
+      - "-c"
+      - "max_parallel_workers=8"
+      - "-c"
+      - "max_parallel_workers_per_gather=4" # was 2
+      # === WAL & Checkpoints ===
+      - "-c"
+      - "wal_buffers=64MB"                 # was 4MB
+      - "-c"
+      - "min_wal_size=1GB"
+      - "-c"
+      - "max_wal_size=4GB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      # === Query Planning ===
+      - "-c"
+      - "default_statistics_target=200"     # better plans for large tables
+      - "-c"
+      - "huge_pages=try"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -59,7 +96,7 @@ services:
       - "7474:7474" # HTTP
       - "7687:7687" # Bolt
     volumes:
-      - ./infrastructure/neo4j/data:/data
+      - /home/rfileto/osint_neo4j/data:/data       # SSD for performance
       - ./infrastructure/neo4j/plugins:/plugins
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
@@ -68,6 +105,11 @@ services:
       NEO4J_apoc_import_file_use__neo4j__config: "true"
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      # === Memory Tuning (5.2 GB dataset) ===
+      NEO4J_server_memory_pagecache_size: "6g"     # fit entire DB in cache (was 512MB)
+      NEO4J_server_memory_heap_initial__size: "4g"  # JVM heap
+      NEO4J_server_memory_heap_max__size: "4g"      # JVM heap max
+      NEO4J_dbms_memory_transaction_total_max: "2g" # total transaction memory
       TZ: America/Sao_Paulo
     restart: always
 

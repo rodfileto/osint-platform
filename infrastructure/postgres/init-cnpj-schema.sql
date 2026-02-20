@@ -57,8 +57,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     COMMENT ON COLUMN cnpj.download_manifest.loaded_postgres_at IS 'Timestamp when data was loaded to PostgreSQL';
     COMMENT ON COLUMN cnpj.download_manifest.loaded_neo4j_at IS 'Timestamp when data was loaded to Neo4j';
     
-    -- Empresas table (company base data)
-    CREATE TABLE IF NOT EXISTS cnpj.empresas (
+    -- Empresa table (company base data) - singular form used by current pipeline
+    CREATE TABLE IF NOT EXISTS cnpj.empresa (
         cnpj_basico VARCHAR(8) PRIMARY KEY,
         razao_social TEXT NOT NULL,
         natureza_juridica INTEGER,
@@ -71,8 +71,8 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         reference_month VARCHAR(7) NOT NULL
     );
     
-    -- Estabelecimentos table (establishment locations)
-    CREATE TABLE IF NOT EXISTS cnpj.estabelecimentos (
+    -- Estabelecimento table (establishment locations) - singular form used by current pipeline
+    CREATE TABLE IF NOT EXISTS cnpj.estabelecimento (
         cnpj_basico VARCHAR(8) NOT NULL,
         cnpj_ordem VARCHAR(4) NOT NULL,
         cnpj_dv VARCHAR(2) NOT NULL,
@@ -105,7 +105,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         reference_month VARCHAR(7) NOT NULL,
         PRIMARY KEY (cnpj_basico, cnpj_ordem, cnpj_dv),
-        FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresas(cnpj_basico) ON DELETE CASCADE
+        FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE
     );
     
     -- Indexes for performance
@@ -118,30 +118,30 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE INDEX IF NOT EXISTS idx_download_manifest_transformed ON cnpj.download_manifest(reference_month, file_type) WHERE transformed_at IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_download_manifest_loaded ON cnpj.download_manifest(reference_month, file_type) WHERE loaded_postgres_at IS NOT NULL;
     
-    -- Empresas indexes
-    CREATE INDEX IF NOT EXISTS idx_empresas_razao_social ON cnpj.empresas USING GIN (to_tsvector('portuguese', razao_social));
-    CREATE INDEX IF NOT EXISTS idx_empresas_porte ON cnpj.empresas(porte_empresa);
-    CREATE INDEX IF NOT EXISTS idx_empresas_natureza ON cnpj.empresas(natureza_juridica);
-    CREATE INDEX IF NOT EXISTS idx_empresas_ref_month ON cnpj.empresas(reference_month);
+    -- Empresa indexes
+    CREATE INDEX IF NOT EXISTS idx_empresa_razao_social ON cnpj.empresa USING GIN (to_tsvector('portuguese', razao_social));
+    CREATE INDEX IF NOT EXISTS idx_empresa_porte ON cnpj.empresa(porte_empresa);
+    CREATE INDEX IF NOT EXISTS idx_empresa_natureza ON cnpj.empresa(natureza_juridica);
+    CREATE INDEX IF NOT EXISTS idx_empresa_ref_month ON cnpj.empresa(reference_month);
     
-    -- Estabelecimentos indexes
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_situacao ON cnpj.estabelecimentos(situacao_cadastral);
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_municipio ON cnpj.estabelecimentos(municipio);
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_uf ON cnpj.estabelecimentos(uf);
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_cnae ON cnpj.estabelecimentos(cnae_fiscal_principal);
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_ref_month ON cnpj.estabelecimentos(reference_month);
-    CREATE INDEX IF NOT EXISTS idx_estabelecimentos_nome_fantasia ON cnpj.estabelecimentos USING GIN (to_tsvector('portuguese', nome_fantasia));
+    -- Estabelecimento indexes
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_situacao ON cnpj.estabelecimento(situacao_cadastral);
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_municipio ON cnpj.estabelecimento(municipio);
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_uf ON cnpj.estabelecimento(uf);
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_cnae ON cnpj.estabelecimento(cnae_fiscal_principal);
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_ref_month ON cnpj.estabelecimento(reference_month);
+    CREATE INDEX IF NOT EXISTS idx_estabelecimento_nome_fantasia ON cnpj.estabelecimento USING GIN (to_tsvector('portuguese', nome_fantasia));
     
     -- View for complete CNPJ (14 digits) with empresa data
-    CREATE OR REPLACE VIEW cnpj.estabelecimentos_completo AS
+    CREATE OR REPLACE VIEW cnpj.estabelecimento_completo AS
     SELECT 
         e.*,
         (e.cnpj_basico || e.cnpj_ordem || e.cnpj_dv) AS cnpj_completo,
         emp.razao_social,
         emp.capital_social,
         emp.porte_empresa
-    FROM cnpj.estabelecimentos e
-    LEFT JOIN cnpj.empresas emp ON e.cnpj_basico = emp.cnpj_basico;
+    FROM cnpj.estabelecimento e
+    LEFT JOIN cnpj.empresa emp ON e.cnpj_basico = emp.cnpj_basico;
     
     -- View for download progress by month
     CREATE OR REPLACE VIEW cnpj.download_progress AS

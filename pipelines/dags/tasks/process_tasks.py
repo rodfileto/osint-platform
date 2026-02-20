@@ -192,17 +192,24 @@ def process_empresas_group():
     ref_month = get_ref_month()
     files_to_process = get_empresas_files(ref_month)
     
-    @task
-    def process_files_dynamic(reference_month: str, file_names: list) -> list:
-        """Process all files and return parquet paths (including already-transformed)."""
-        results = []
-        for file_name in file_names:
-            result = process_empresas_file.function(reference_month, file_name)
-            if result and result.get('parquet_path'):
-                results.append(result['parquet_path'])
-        return results
+    # Process files in parallel using dynamic task mapping
+    # Use .partial() for scalar args, .expand() for list args
+    parallel_results = process_empresas_file.partial(
+        reference_month=ref_month
+    ).expand(
+        file_name=files_to_process
+    )
     
-    parquet_files = process_files_dynamic(ref_month, files_to_process)
+    @task
+    def collect_parallel_results(results: list) -> list:
+        """Collect parquet paths from parallel processing results."""
+        parquet_paths = []
+        for result in results:
+            if result and result.get('parquet_path'):
+                parquet_paths.append(result['parquet_path'])
+        return parquet_paths
+    
+    parquet_files = collect_parallel_results(parallel_results)
     
     @task
     def collect_all_parquets(new_parquets: list, reference_month: str) -> list:
@@ -219,9 +226,12 @@ def process_empresas_group():
     
     valid_parquets = collect_all_parquets(parquet_files, ref_month)
     
-    # Load all transformed files to PostgreSQL and Neo4j
+    # Load all transformed files to PostgreSQL first, then Neo4j
     pg_load = load_to_postgresql(valid_parquets, table_name="empresa", schema="cnpj", reference_month=ref_month)
     neo4j_load = load_to_neo4j(valid_parquets, entity_type="Empresa")
+    
+    # Define load dependencies: PostgreSQL → Neo4j
+    pg_load >> neo4j_load
 
 
 @task_group
@@ -250,17 +260,24 @@ def process_estabelecimentos_group():
     ref_month = get_ref_month()
     files_to_process = get_estabelecimentos_files(ref_month)
     
-    @task
-    def process_files_dynamic(reference_month: str, file_names: list) -> list:
-        """Process all files and return parquet paths (including already-transformed)."""
-        results = []
-        for file_name in file_names:
-            result = process_estabelecimentos_file.function(reference_month, file_name)
-            if result and result.get('parquet_path'):
-                results.append(result['parquet_path'])
-        return results
+    # Process files in parallel using dynamic task mapping
+    # Use .partial() for scalar args, .expand() for list args
+    parallel_results = process_estabelecimentos_file.partial(
+        reference_month=ref_month
+    ).expand(
+        file_name=files_to_process
+    )
     
-    parquet_files = process_files_dynamic(ref_month, files_to_process)
+    @task
+    def collect_parallel_results(results: list) -> list:
+        """Collect parquet paths from parallel processing results."""
+        parquet_paths = []
+        for result in results:
+            if result and result.get('parquet_path'):
+                parquet_paths.append(result['parquet_path'])
+        return parquet_paths
+    
+    parquet_files = collect_parallel_results(parallel_results)
     
     @task
     def collect_all_parquets(new_parquets: list, reference_month: str) -> list:
@@ -277,5 +294,9 @@ def process_estabelecimentos_group():
     
     valid_parquets = collect_all_parquets(parquet_files, ref_month)
     
+    # Load all transformed files to PostgreSQL first, then Neo4j
     pg_load = load_to_postgresql(valid_parquets, table_name="estabelecimento", schema="cnpj", reference_month=ref_month)
     neo4j_load = load_to_neo4j(valid_parquets, entity_type="Estabelecimento")
+    
+    # Define load dependencies: PostgreSQL → Neo4j
+    pg_load >> neo4j_load

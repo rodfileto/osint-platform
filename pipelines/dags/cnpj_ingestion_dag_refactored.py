@@ -57,15 +57,16 @@ with DAG(
     # Start marker
     start = EmptyOperator(task_id='start')
     
-    # Process entity types in parallel
+    # Process entity types sequentially to ensure referential integrity
+    # Empresas must complete before Estabelecimentos (foreign key dependency)
     empresas = process_empresas_group()
     estabelecimentos = process_estabelecimentos_group()
     
     # End marker
     end = EmptyOperator(task_id='end')
     
-    # Define dependencies - task groups will execute after start, end will wait for all groups
-    start >> [empresas, estabelecimentos] >> end
+    # Define dependencies - sequential execution to avoid FK conflicts and parallel load issues
+    start >> empresas >> estabelecimentos >> end
 
 
 if __name__ == "__main__":
