@@ -43,6 +43,7 @@ RAW_PATH = BASE_PATH / "raw"
 STAGING_PATH = BASE_PATH / "staging"
 PROCESSED_PATH = BASE_PATH / "processed"
 TEMP_PATH = BASE_PATH / "temp"
+TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD
 
 # Default month to process (can be overridden via DAG params)
 DEFAULT_REFERENCE_MONTH = "2024-02"
@@ -139,15 +140,19 @@ def transform_empresas_duckdb(csv_path: str, output_parquet: str) -> dict:
             logger.warning(f"Existing file corrupted, will recreate: {e}")
             output_parquet.unlink()
     
-    # Ensure temp directory exists
-    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    # Optimize: Use SSD for temp storage if available
+    temp_dir = Path("/opt/airflow/temp_ssd")
+    if not temp_dir.exists():
+        logger.warning(f"SSD temp dir {temp_dir} not found, falling back to data dir")
+        temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    
     temp_dir.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Transforming {csv_path.name} with DuckDB SQL")
+    logger.info(f"Transforming {csv_path.name} with DuckDB SQL using {temp_dir}")
     start_time = time.time()
     
-    # Connect to DuckDB with temp directory configuration
-    con = duckdb.connect(config={'temp_directory': str(temp_dir)})
+    # Connect to DuckDB with optimized configuration (10GB RAM limit + SSD spilling)
+    con = duckdb.connect(config={'temp_directory': str(temp_dir), 'memory_limit': '10GB'})
     
     try:
         # Build and execute transformation query
@@ -217,14 +222,19 @@ def transform_estabelecimentos_duckdb(csv_path: str, output_parquet: str) -> dic
             logger.warning(f"Existing file corrupted, will recreate: {e}")
             output_parquet.unlink()
     
-    # Ensure temp directory exists
-    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    # Optimize: Use SSD for temp storage if available
+    temp_dir = Path("/opt/airflow/temp_ssd")
+    if not temp_dir.exists():
+        logger.warning(f"SSD temp dir {temp_dir} not found, falling back to data dir")
+        temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    
     temp_dir.mkdir(parents=True, exist_ok=True)
     
-    logger.info(f"Transforming {csv_path.name} with DuckDB SQL")
+    logger.info(f"Transforming {csv_path.name} with DuckDB SQL using {temp_dir}")
     start_time = time.time()
     
-    con = duckdb.connect(config={'temp_directory': str(temp_dir)})
+    # Connect to DuckDB with optimized configuration (10GB RAM limit + SSD spilling)
+    con = duckdb.connect(config={'temp_directory': str(temp_dir), 'memory_limit': '10GB'})
     
     try:
         query = build_estabelecimentos_query(str(csv_path), str(output_parquet))
@@ -249,7 +259,7 @@ def transform_estabelecimentos_duckdb(csv_path: str, output_parquet: str) -> dic
 
 
 @task
-def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = "cnpj") -> dict:
+def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = "cnpj", reference_month: str = "2024-02") -> dict:
     """
     Load Parquet files into PostgreSQL using DuckDB's postgres extension.
     
@@ -260,6 +270,7 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
         parquet_files: List of Parquet file paths to load
         table_name: Target table name (empresas, estabelecimentos)
         schema: PostgreSQL schema name
+        reference_month: Reference month for the data (YYYY-MM format)
         
     Returns:
         Dict with load stats
@@ -278,11 +289,20 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     logger.info(f"Loading {len(parquet_files)} Parquet files to PostgreSQL {schema}.{table_name}")
     start_time = time.time()
     
+    # Identify heavy indexes to drop/recreate for bulk load performance
+    heavy_indexes = []
+    if table_name == "empresas":
+        heavy_indexes = [("idx_empresas_razao_social", "USING GIN (to_tsvector('portuguese', razao_social))")]
+    elif table_name == "estabelecimentos":
+        heavy_indexes = [("idx_estabelecimentos_nome_fantasia", "USING GIN (to_tsvector('portuguese', nome_fantasia))")]
+    
     # First, ensure schema and table exist via psycopg2
     conn = psycopg2.connect(
         host=pg_host, port=pg_port, dbname=pg_db,
         user=pg_user, password=pg_pass
     )
+    conn.autocommit = True  # Enable autocommit for index operations
+    
     try:
         with conn.cursor() as cur:
             cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
@@ -325,24 +345,77 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                 )
                 """
                 cur.execute(create_sql)
-            conn.commit()
+                
+            # Drop heavy indexes before loading
+            for idx_name, _ in heavy_indexes:
+                logger.info(f"Dropping index {schema}.{idx_name} to optimize bulk load")
+                cur.execute(f"DROP INDEX IF EXISTS {schema}.{idx_name}")
+                
+            # conn.commit() is handled by autocommit=True or manually below if needed, 
+            # but since I set autocommit=True in previous step, no need for conn.commit()
     finally:
         conn.close()
     
     # Now use DuckDB postgres extension for fast bulk loading
     total_rows = 0
     
-    # Ensure temp directory exists
-    temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    # Optimize: Use SSD for temp storage if available
+    temp_dir = Path("/opt/airflow/temp_ssd")
+    if not temp_dir.exists():
+        logger.warning(f"SSD temp dir {temp_dir} not found, falling back to data dir")
+        temp_dir = Path("/opt/airflow/data/cnpj/temp")
+    
     temp_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create DuckDB connection (in-memory for better isolation)
-    duck_conn = duckdb.connect(':memory:')
+    # Create DuckDB connection with optimized memory/spilling
+    duck_conn = duckdb.connect(config={'temp_directory': str(temp_dir), 'memory_limit': '5GB'})
+    
+    # Set NULL byte replacement to strip them (PostgreSQL doesn't support NULL bytes in VARCHAR)
+    duck_conn.execute("SET pg_null_byte_replacement=''")
+    
     duck_conn.execute("INSTALL postgres; LOAD postgres;")
     
     # Attach PostgreSQL as a DuckDB database
     dsn = f"host={pg_host} port={pg_port} dbname={pg_db} user={pg_user} password={pg_pass}"
     duck_conn.execute(f"ATTACH '{dsn}' AS pg_db (TYPE POSTGRES)")
+    
+    # Special handling for estabelecimentos: create stub empresas for missing CNPJs
+    if table_name == "estabelecimentos":
+        logger.info("Ensuring all referenced empresas exist (creating stubs if needed)")
+        
+        # Collect all unique cnpj_basico from all parquet files using a temp table
+        # This is more efficient than processing each file separately
+        duck_conn.execute("CREATE TEMP TABLE missing_empresas (cnpj_basico VARCHAR)")
+        
+        for parquet_file in parquet_files:
+            if not Path(parquet_file).exists():
+                continue
+                
+            # Insert unique cnpj_basico values into temp table
+            duck_conn.execute(f"""
+                INSERT INTO missing_empresas
+                SELECT DISTINCT cnpj_basico 
+                FROM '{parquet_file}'
+                WHERE cnpj_basico IS NOT NULL
+            """)
+        
+        # Get count and create stubs in a single operation
+        missing_count = duck_conn.execute("SELECT COUNT(DISTINCT cnpj_basico) FROM missing_empresas").fetchone()[0]
+        
+        if missing_count > 0:
+            # Create stub empresas for CNPJs that don't exist in a single batch
+            # This is much faster than individual INSERTs
+            duck_conn.execute(f"""
+                INSERT INTO pg_db.{schema}.empresas (cnpj_basico, razao_social, reference_month)
+                SELECT DISTINCT cnpj_basico, 'EMPRESA NAO CARREGADA', '{reference_month}'
+                FROM missing_empresas
+                ON CONFLICT (cnpj_basico) DO NOTHING
+            """)
+            
+            logger.info(f"  Ensured {missing_count:,} empresas exist (stubs created if missing)")
+        
+        # Clean up temp table
+        duck_conn.execute("DROP TABLE missing_empresas")
     
     try:
         for parquet_file in parquet_files:
@@ -380,11 +453,33 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
             ).fetchall()
             col_names = ', '.join(f'"{c[0]}"' for c in cols)
             
-            # Direct INSERT from parquet into PostgreSQL via DuckDB
-            duck_conn.execute(f"""
-                INSERT INTO pg_db.{schema}.{table_name} ({col_names})
-                SELECT {col_names} FROM '{parquet_file}'
-            """)
+            # For large files, show progress by processing in batches
+            if row_count > 1_000_000:
+                batch_size = 500_000
+                total_batches = (row_count + batch_size - 1) // batch_size
+                logger.info(f"    Processing {row_count:,} rows in {total_batches} batches of {batch_size:,}")
+                
+                for batch_num in range(total_batches):
+                    offset = batch_num * batch_size
+                    batch_start = time.time()
+                    
+                    duck_conn.execute(f"""
+                        INSERT INTO pg_db.{schema}.{table_name} ({col_names}, reference_month)
+                        SELECT {col_names}, '{reference_month}' as reference_month 
+                        FROM '{parquet_file}'
+                        LIMIT {batch_size} OFFSET {offset}
+                    """)
+                    
+                    batch_duration = time.time() - batch_start
+                    actual_batch_size = min(batch_size, row_count - offset)
+                    throughput = actual_batch_size / batch_duration if batch_duration > 0 else 0
+                    logger.info(f"      Batch {batch_num + 1}/{total_batches}: {actual_batch_size:,} rows in {batch_duration:.1f}s ({throughput:,.0f} rows/sec)")
+            else:
+                # Small files: single insert
+                duck_conn.execute(f"""
+                    INSERT INTO pg_db.{schema}.{table_name} ({col_names}, reference_month)
+                    SELECT {col_names}, '{reference_month}' as reference_month FROM '{parquet_file}'
+                """)
             
             file_duration = time.time() - file_start
             total_rows += row_count
@@ -396,6 +491,28 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     finally:
         duck_conn.execute("DETACH pg_db")
         duck_conn.close()
+        
+    # Recreate heavy indexes after bulk load
+    if heavy_indexes:
+        logger.info(f"Recreating {len(heavy_indexes)} heavy indexes after bulk load")
+        try:
+            conn = psycopg2.connect(
+                host=pg_host, port=pg_port, dbname=pg_db,
+                user=pg_user, password=pg_pass
+            )
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                for idx_name, idx_def in heavy_indexes:
+                    idx_full_name = f"{idx_name}"
+                    # Note: index definition might need specific syntax for ON clause
+                    # Usually: CREATE INDEX name ON table USING method (cols)
+                    create_idx_sql = f"CREATE INDEX IF NOT EXISTS {idx_full_name} ON {schema}.{table_name} {idx_def}"
+                    logger.info(f"Executing: {create_idx_sql}")
+                    cur.execute(create_idx_sql)
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to recreate indexes: {e}")
+            # Don't fail the task, just log error
     
     duration = time.time() - start_time
     throughput = total_rows / duration if duration > 0 else 0
@@ -449,66 +566,118 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str) -> dict:
                     logger.warning(f"  File not found: {parquet_file}")
                     continue
                 
-                # Read Parquet with DuckDB (in-memory for better isolation)
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        duck_conn = duckdb.connect(':memory:')
-                        df = duck_conn.execute(f"SELECT * FROM '{parquet_file}'").fetchdf()
-                        duck_conn.close()
-                        break
-                    except Exception as e:
-                        duck_conn.close()
-                        if attempt < max_retries - 1 and 'TProtocolException' in str(e):
-                            logger.warning(f"  Retry {attempt + 1}/{max_retries} after error: {e}")
-                            time.sleep(1)
-                            continue
-                        raise
+                # Read Parquet with DuckDB - bypass pandas to avoid timestamp issues
+                duck_conn = duckdb.connect(':memory:')
                 
-                if len(df) == 0:
-                    continue
-                
-                # Create nodes in batches
-                batch_size = 1000
-                for i in range(0, len(df), batch_size):
-                    batch = df.iloc[i:i+batch_size]
+                try:
+                    # Get row count
+                    row_count = duck_conn.execute(f"SELECT COUNT(*) FROM '{parquet_file}'").fetchone()[0]
                     
-                    # Convert DataFrame rows to dicts
-                    records = batch.to_dict('records')
+                    if row_count == 0:
+                        duck_conn.close()
+                        continue
                     
-                    # Cypher query to create/merge nodes
-                    if entity_type == "Empresa":
-                        cypher = """
-                        UNWIND $records AS record
-                        MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
-                        SET e.razao_social = record.razao_social,
-                            e.natureza_juridica = record.natureza_juridica,
-                            e.capital_social = record.capital_social,
-                            e.porte_empresa = record.porte_empresa,
-                            e.updated_at = datetime()
-                        """
-                    elif entity_type == "Estabelecimento":
-                        cypher = """
-                        UNWIND $records AS record
-                        MERGE (est:Estabelecimento {
-                            cnpj: record.cnpj_basico + record.cnpj_ordem + record.cnpj_dv
-                        })
-                        SET est.cnpj_basico = record.cnpj_basico,
-                            est.nome_fantasia = record.nome_fantasia,
-                            est.situacao_cadastral = record.situacao_cadastral,
-                            est.municipio = record.municipio,
-                            est.uf = record.uf,
-                            est.updated_at = datetime()
+                    # Get column names
+                    columns = [col[0] for col in duck_conn.execute(f"DESCRIBE SELECT * FROM '{parquet_file}'").fetchall()]
+                    
+                    # Process in batches directly from DuckDB
+                    batch_size = 50000
+                    total_batches = (row_count + batch_size - 1) // batch_size
+                    
+                    logger.info(f"    Processing {row_count:,} rows in {total_batches} batches of {batch_size:,}")
+                    
+                    for batch_num in range(total_batches):
+                        batch_start_time = time.time()
+                        offset = batch_num * batch_size
                         
-                        // Link to Empresa
-                        MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
-                        MERGE (est)-[:PERTENCE_A]->(e)
-                        """
-                    
-                    session.run(cypher, records=records)
-                    total_nodes += len(records)
+                        # Fetch batch directly as list of tuples, convert dates to strings
+                        if entity_type == "Estabelecimento":
+                            query = f"""
+                                SELECT 
+                                    cnpj_basico,
+                                    cnpj_ordem,
+                                    cnpj_dv,
+                                    identificador_matriz_filial,
+                                    nome_fantasia,
+                                    situacao_cadastral,
+                                    CAST(data_situacao_cadastral AS VARCHAR) as data_situacao_cadastral,
+                                    motivo_situacao_cadastral,
+                                    nome_cidade_exterior,
+                                    codigo_pais,
+                                    CAST(data_inicio_atividade AS VARCHAR) as data_inicio_atividade,
+                                    cnae_fiscal_principal,
+                                    cnae_fiscal_secundaria,
+                                    tipo_logradouro,
+                                    logradouro,
+                                    numero,
+                                    complemento,
+                                    bairro,
+                                    cep,
+                                    uf,
+                                    codigo_municipio,
+                                    municipio,
+                                    ddd_telefone_1,
+                                    ddd_telefone_2,
+                                    ddd_fax,
+                                    correio_eletronico,
+                                    situacao_especial,
+                                    CAST(data_situacao_especial AS VARCHAR) as data_situacao_especial
+                                FROM '{parquet_file}'
+                                LIMIT {batch_size} OFFSET {offset}
+                            """
+                        else:
+                            query = f"""
+                                SELECT *
+                                FROM '{parquet_file}'
+                                LIMIT {batch_size} OFFSET {offset}
+                            """
+                        
+                        rows = duck_conn.execute(query).fetchall()
+                        
+                        # Convert to list of dicts
+                        records = [dict(zip(columns, row)) for row in rows]
+                        
+                        # Cypher query to create/merge nodes
+                        if entity_type == "Empresa":
+                            cypher = """
+                            UNWIND $records AS record
+                            MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+                            SET e.razao_social = record.razao_social,
+                                e.natureza_juridica = record.natureza_juridica,
+                                e.capital_social = record.capital_social,
+                                e.porte_empresa = record.porte_empresa,
+                                e.updated_at = datetime()
+                            """
+                        elif entity_type == "Estabelecimento":
+                            cypher = """
+                            UNWIND $records AS record
+                            MERGE (est:Estabelecimento {
+                                cnpj: record.cnpj_basico + record.cnpj_ordem + record.cnpj_dv
+                            })
+                            SET est.cnpj_basico = record.cnpj_basico,
+                                est.nome_fantasia = record.nome_fantasia,
+                                est.situacao_cadastral = record.situacao_cadastral,
+                                est.municipio = record.municipio,
+                                est.uf = record.uf,
+                                est.updated_at = datetime()
+                            
+                            // Link to Empresa
+                            MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+                            MERGE (est)-[:PERTENCE_A]->(e)
+                            """
+                        
+                        session.run(cypher, records=records)
+                        total_nodes += len(records)
+                        
+                        batch_duration = time.time() - batch_start_time
+                        batch_throughput = len(records) / batch_duration if batch_duration > 0 else 0
+                        
+                        # Progress logging every batch
+                        logger.info(f"      Batch {batch_num + 1}/{total_batches}: {len(records):,} nodes in {batch_duration:.1f}s ({batch_throughput:,.0f} nodes/sec)")
                 
-                logger.info(f"    Created/updated {len(df):,} nodes")
+                finally:
+                    duck_conn.close()
+
     
     except Exception as e:
         logger.error(f"Neo4j load failed: {e}")

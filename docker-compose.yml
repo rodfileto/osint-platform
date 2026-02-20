@@ -8,10 +8,8 @@ x-airflow-common:
     - .env
   environment:
     &airflow-common-env
-    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
-    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/1
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
@@ -24,14 +22,13 @@ x-airflow-common:
     - ./pipelines/plugins:/opt/airflow/plugins
     - ./pipelines/scripts:/opt/airflow/scripts
     - ./data:/opt/airflow/data
+    - /home/rfileto/osint_temp:/opt/airflow/temp_ssd
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
-    redis:
-      condition: service_healthy
     postgres:
       condition: service_healthy
-
+    
 services:
   # --- Data Layer ---
 
@@ -78,14 +75,17 @@ services:
     image: redis:7-alpine
     container_name: osint_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"  # Host:Container (avoiding conflict with system Redis on 6379)
     volumes:
       - ./infrastructure/redis/data:/data
+    command: redis-server --appendonly yes
+    environment:
+      TZ: America/Sao_Paulo
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 30s
-      retries: 50
+      timeout: 5s
+      retries: 5
     restart: always
 
   # --- Application Layer ---
@@ -107,8 +107,6 @@ services:
         condition: service_healthy
       neo4j:
         condition: service_started
-      redis:
-        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -159,19 +157,6 @@ services:
       interval: 30s
       timeout: 30s
       retries: 5
-    restart: always
-
-  airflow-worker:
-    <<: *airflow-common
-    command: celery worker
-    healthcheck:
-      test: ["CMD-SHELL", 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"']
-      interval: 30s
-      timeout: 30s
-      retries: 5
-    environment:
-      <<: *airflow-common-env
-      DUMB_INIT_SETSID: "0"
     restart: always
 
   airflow-init:

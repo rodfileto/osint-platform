@@ -503,25 +503,25 @@ def empresas_cleaning_template() -> str:
             CREATE TABLE empresas_clean AS
             {empresas_cleaning_template()}
             FROM read_csv('empresas.csv', ...)
-            WHERE LENGTH(TRIM(column00)) = 8
+            WHERE LENGTH(TRIM(column0)) = 8
         '''
     """
     return """SELECT 
         -- CNPJ básico (8 digits, left-padded)
-        LPAD(TRIM(REPLACE(CAST(column00 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
         
         -- Razão social (uppercase, trimmed)
-        UPPER(TRIM(REPLACE(CAST(column01 AS VARCHAR), '"', ''))) as razao_social,
+        UPPER(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', ''))) as razao_social,
         
         -- Natureza jurídica (integer)
         COALESCE(
-            TRY_CAST(TRIM(REPLACE(CAST(column02 AS VARCHAR), '"', '')) AS INTEGER),
+            TRY_CAST(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')) AS INTEGER),
             0
         ) as natureza_juridica,
         
         -- Qualificação do responsável (integer)
         COALESCE(
-            TRY_CAST(TRIM(REPLACE(CAST(column03 AS VARCHAR), '"', '')) AS INTEGER),
+            TRY_CAST(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')) AS INTEGER),
             0
         ) as qualificacao_responsavel,
         
@@ -529,7 +529,7 @@ def empresas_cleaning_template() -> str:
         COALESCE(
             TRY_CAST(
                 REPLACE(
-                    REPLACE(TRIM(REPLACE(CAST(column04 AS VARCHAR), '"', '')), '.', ''),
+                    REPLACE(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), '.', ''),
                     ',', '.'
                 ) AS DECIMAL(15,2)
             ),
@@ -538,15 +538,15 @@ def empresas_cleaning_template() -> str:
         
         -- Porte empresa (validated enum)
         CASE 
-            WHEN LPAD(TRIM(REPLACE(CAST(column05 AS VARCHAR), '"', '')), 2, '0') IN ('00', '01', '03', '05')
-            THEN LPAD(TRIM(REPLACE(CAST(column05 AS VARCHAR), '"', '')), 2, '0')
+            WHEN LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0') IN ('00', '01', '03', '05')
+            THEN LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0')
             ELSE '00' 
         END as porte_empresa,
         
         -- Ente federativo (string or NULL)
         CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column06 AS VARCHAR), '"', ''))) > 0 
-            THEN TRIM(REPLACE(CAST(column06 AS VARCHAR), '"', ''))
+            WHEN LENGTH(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', ''))) > 0 
+            THEN TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', ''))
             ELSE NULL 
         END as ente_federativo_responsavel"""
 
@@ -567,43 +567,43 @@ def estabelecimentos_cleaning_template() -> str:
     """
     return """SELECT 
         -- CNPJ components
-        LPAD(TRIM(REPLACE(CAST(column00 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
-        LPAD(TRIM(REPLACE(CAST(column01 AS VARCHAR), '"', '')), 4, '0') as cnpj_ordem,
-        LPAD(TRIM(REPLACE(CAST(column02 AS VARCHAR), '"', '')), 2, '0') as cnpj_dv,
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
+        LPAD(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')), 4, '0') as cnpj_ordem,
+        LPAD(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')), 2, '0') as cnpj_dv,
         
         -- Identification matrix flag
-        TRY_CAST(TRIM(REPLACE(CAST(column03 AS VARCHAR), '"', '')) AS INTEGER) as identificador_matriz_filial,
+        TRY_CAST(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')) AS INTEGER) as identificador_matriz_filial,
         
         -- Nome fantasia
         CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column04 AS VARCHAR), '"', ''))) > 0 
-            THEN UPPER(TRIM(REPLACE(CAST(column04 AS VARCHAR), '"', '')))
+            WHEN LENGTH(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')))
             ELSE NULL 
         END as nome_fantasia,
         
         -- Situação cadastral
-        TRY_CAST(TRIM(REPLACE(CAST(column05 AS VARCHAR), '"', '')) AS INTEGER) as situacao_cadastral,
+        TRY_CAST(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')) AS INTEGER) as situacao_cadastral,
         
         -- Data situação cadastral (YYYYMMDD -> DATE)
         CASE 
-            WHEN CAST(column06 AS VARCHAR) = '0' OR TRIM(CAST(column06 AS VARCHAR)) = '' THEN NULL
-            WHEN LENGTH(TRIM(CAST(column06 AS VARCHAR))) = 8 THEN
-                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column06 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            WHEN CAST(column6 AS VARCHAR) = '0' OR TRIM(CAST(column6 AS VARCHAR)) = '' THEN NULL
+            WHEN LENGTH(TRIM(CAST(column6 AS VARCHAR))) = 8 THEN
+                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column6 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
             ELSE NULL 
         END as data_situacao_cadastral,
         
         -- Motivo situação cadastral
-        TRY_CAST(TRIM(REPLACE(CAST(column07 AS VARCHAR), '"', '')) AS INTEGER) as motivo_situacao_cadastral,
+        TRY_CAST(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', '')) AS INTEGER) as motivo_situacao_cadastral,
         
         -- Cidade exterior
         CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column08 AS VARCHAR), '"', ''))) > 0 
-            THEN UPPER(TRIM(REPLACE(CAST(column08 AS VARCHAR), '"', '')))
+            WHEN LENGTH(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', '')))
             ELSE NULL 
         END as nome_cidade_exterior,
         
         -- País code
-        TRY_CAST(TRIM(REPLACE(CAST(column09 AS VARCHAR), '"', '')) AS INTEGER) as codigo_pais,
+        TRY_CAST(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')) AS INTEGER) as codigo_pais,
         
         -- Data início atividade
         CASE 
@@ -715,16 +715,20 @@ def build_empresas_query(csv_path: str, output_path: str) -> str:
     Returns:
         Complete SQL query string
     """
+    # Generate column names explicitly to avoid DuckDB's two-digit naming for 10+ columns
+    column_names = ','.join([f'column{i}' for i in range(7)])  # Empresas has 7 columns (0-6)
+    
     return f"""
     COPY (
         {empresas_cleaning_template()}
         FROM read_csv('{csv_path}', 
             delim=';',
             header=false,
+            names=[{column_names}],
             all_varchar=true,
             ignore_errors=true
         )
-        WHERE LENGTH(TRIM(REPLACE(CAST(column00 AS VARCHAR), '"', ''))) = 8
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
     ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
     """
 
@@ -740,16 +744,20 @@ def build_estabelecimentos_query(csv_path: str, output_path: str) -> str:
     Returns:
         Complete SQL query string
     """
+    # Generate column names explicitly to avoid DuckDB's two-digit naming for 10+ columns
+    column_names = ','.join([f'column{i}' for i in range(30)])  # Estabelecimentos has 30 columns (0-29)
+    
     return f"""
     COPY (
         {estabelecimentos_cleaning_template()}
         FROM read_csv('{csv_path}', 
             delim=';',
             header=false,
+            names=[{column_names}],
             all_varchar=true,
             ignore_errors=true
         )
-        WHERE LENGTH(TRIM(REPLACE(CAST(column00 AS VARCHAR), '"', ''))) = 8
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
     ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
     """
 
