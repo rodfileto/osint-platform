@@ -16,3 +16,9 @@ TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD
 
 # Default month to process (can be overridden via DAG params)
 DEFAULT_REFERENCE_MONTH = "2025-07"
+
+# Neo4j connection settings (from environment variables)
+import os
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "osint_graph_password")

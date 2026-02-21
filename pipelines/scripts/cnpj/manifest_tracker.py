@@ -281,6 +281,60 @@ def get_files_to_process(
         conn.close()
 
 
+def get_files_for_reprocessing(
+    reference_month: str,
+    file_type: Optional[str] = None,
+    require_parquet: bool = True
+) -> List[Dict]:
+    """
+    Get list of files for reprocessing (ignores stage timestamps).
+    Used when force_reprocess=True to UPSERT existing data.
+    
+    Args:
+        reference_month: Month in YYYY-MM format
+        file_type: Filter by file type ('empresas', 'estabelecimentos', 'socios', 'reference')
+        require_parquet: Only return files that have valid parquet files
+        
+    Returns:
+        List of file dictionaries for reprocessing
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=DictCursor) as cur:
+            query = """
+                SELECT 
+                    id,
+                    reference_month,
+                    file_name,
+                    file_type,
+                    file_size_bytes,
+                    csv_path,
+                    parquet_path,
+                    transformed_at,
+                    loaded_postgres_at,
+                    loaded_neo4j_at
+                FROM cnpj.download_manifest
+                WHERE reference_month = %s
+                    AND download_date IS NOT NULL
+            """
+            
+            params = [reference_month]
+            
+            if require_parquet:
+                query += " AND parquet_path IS NOT NULL AND transformed_at IS NOT NULL"
+            
+            if file_type:
+                query += " AND file_type = %s"
+                params.append(file_type)
+            
+            query += " ORDER BY file_type, file_name"
+            
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_processing_summary(reference_month: str) -> Dict:
     """
     Get processing summary for a specific month.

@@ -16,29 +16,34 @@ logger = logging.getLogger(__name__)
 
 
 @task
-def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = "cnpj", reference_month: str = "2024-02") -> dict:
+def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = "cnpj", reference_month: str = "2024-02", **context) -> dict:
     """
     Load Parquet files into PostgreSQL using DuckDB's postgres extension.
     
     Uses DuckDB to read parquet and INSERT directly into PostgreSQL
     via the native postgres scanner — no Python row iteration needed.
     
+    Supports UPSERT mode when force_reprocess=True in DAG params.
+    
     Args:
         parquet_files: List of Parquet file paths to load
         table_name: Target table name (empresas, estabelecimentos)
         schema: PostgreSQL schema name
         reference_month: Reference month for the data (YYYY-MM format)
+        context: Airflow context (includes DAG params)
         
     Returns:
         Dict with load stats
     """
+    force_upsert = context.get('params', {}).get('force_reprocess', False)
+    
     pg_host = os.getenv("POSTGRES_HOST", "postgres")
     pg_port = os.getenv("POSTGRES_PORT", "5432")
     pg_db = os.getenv("POSTGRES_DB", "osint_metadata")
     pg_user = os.getenv("POSTGRES_USER", "osint_admin")
     pg_pass = os.getenv("POSTGRES_PASSWORD", "osint_secure_password")
     
-    logger.info(f"Loading {len(parquet_files)} Parquet files to PostgreSQL {schema}.{table_name}")
+    logger.info(f"Loading {len(parquet_files)} Parquet files to PostgreSQL {schema}.{table_name} (UPSERT={force_upsert})")
     start_time = time.time()
     
     # Identify heavy indexes to drop/recreate for bulk load performance
@@ -97,6 +102,15 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                 )
                 """
                 cur.execute(create_sql)
+                
+            # If UPSERT mode, create staging table with same structure
+            if force_upsert:
+                logger.info(f"Creating staging table {schema}.{table_name}_staging")
+                cur.execute(f"DROP TABLE IF EXISTS {schema}.{table_name}_staging CASCADE")
+                cur.execute(f"""
+                    CREATE TABLE {schema}.{table_name}_staging 
+                    (LIKE {schema}.{table_name} INCLUDING DEFAULTS)
+                """)
                 
             # Drop heavy indexes before loading
             for idx_name, _ in heavy_indexes:
@@ -198,13 +212,17 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
             ).fetchall()
             col_names = ', '.join(f'"{c[0]}"' for c in cols)
             
+            # Determine target table (staging if UPSERT, final if INSERT)
+            target_table = f"{schema}.{table_name}_staging" if force_upsert else f"{schema}.{table_name}"
+            target_db_ref = f"pg_db.{target_table}"
+            
             # For large files, show progress by processing in batches
             if row_count > 1_000_000:
                 batch_size = 500_000
                 for offset in range(0, row_count, batch_size):
                     batch_start = time.time()
                     duck_conn.execute(f"""
-                        INSERT INTO pg_db.{schema}.{table_name} ({col_names}, reference_month)
+                        INSERT INTO {target_db_ref} ({col_names}, reference_month)
                         SELECT {col_names}, '{reference_month}'
                         FROM '{parquet_file}'
                         LIMIT {batch_size} OFFSET {offset}
@@ -214,7 +232,7 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     logger.info(f"    Progress: {rows_done:,}/{row_count:,} rows ({rows_done*100//row_count}%) - {batch_duration:.1f}s")
             else:
                 duck_conn.execute(f"""
-                    INSERT INTO pg_db.{schema}.{table_name} ({col_names}, reference_month)
+                    INSERT INTO {target_db_ref} ({col_names}, reference_month)
                     SELECT {col_names}, '{reference_month}'
                     FROM '{parquet_file}'
                 """)
@@ -229,6 +247,70 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     finally:
         duck_conn.execute("DETACH pg_db")
         duck_conn.close()
+    
+    # If UPSERT mode, execute INSERT ... ON CONFLICT from staging to final table
+    if force_upsert and total_rows > 0:
+        logger.info(f"Executing UPSERT from staging table to {schema}.{table_name}")
+        upsert_start = time.time()
+        
+        try:
+            conn = psycopg2.connect(
+                host=pg_host, port=pg_port, dbname=pg_db,
+                user=pg_user, password=pg_pass
+            )
+            conn.autocommit = False
+            
+            with conn.cursor() as cur:
+                # Get all column names except created_at (preserve original)
+                cur.execute(f"""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_schema = '{schema}' 
+                        AND table_name = '{table_name}'
+                        AND column_name NOT IN ('created_at')
+                    ORDER BY ordinal_position
+                """)
+                all_cols = [row[0] for row in cur.fetchall()]
+                col_list = ', '.join(all_cols)
+                
+                # Build UPDATE SET clause (update all columns including updated_at)
+                update_set = ', '.join([f"{col} = EXCLUDED.{col}" for col in all_cols])
+                
+                # Determine primary key constraint for ON CONFLICT clause
+                if table_name == "empresa":
+                    conflict_clause = "cnpj_basico"
+                elif table_name == "estabelecimento":
+                    conflict_clause = "cnpj_basico, cnpj_ordem, cnpj_dv"
+                else:
+                    raise ValueError(f"Unknown table for UPSERT: {table_name}")
+                
+                # Execute UPSERT
+                upsert_sql = f"""
+                    INSERT INTO {schema}.{table_name} ({col_list})
+                    SELECT {col_list}
+                    FROM {schema}.{table_name}_staging
+                    ON CONFLICT ({conflict_clause}) DO UPDATE SET
+                        {update_set}, updated_at = CURRENT_TIMESTAMP
+                """
+                
+                logger.info(f"  Executing UPSERT with ON CONFLICT ({conflict_clause})")
+                cur.execute(upsert_sql)
+                upserted_count = cur.rowcount
+                conn.commit()
+                
+                upsert_duration = time.time() - upsert_start
+                logger.info(f"  UPSERT completed: {upserted_count:,} rows in {upsert_duration:.1f}s")
+                
+                # Drop staging table
+                cur.execute(f"DROP TABLE IF EXISTS {schema}.{table_name}_staging")
+                conn.commit()
+                
+        except Exception as e:
+            logger.error(f"UPSERT failed: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         
     # Recreate heavy indexes after bulk load
     if heavy_indexes:
@@ -266,53 +348,167 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
 
 
 @task
-def load_to_neo4j(parquet_files: list[str], entity_type: str) -> dict:
+def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict:
     """
     Load Parquet files into Neo4j as nodes and relationships.
+    
+    Uses DuckDB to efficiently read parquet files in batches.
+    Uses MERGE operations to handle both INSERT and UPDATE (idempotent).
     
     Args:
         parquet_files: List of Parquet file paths to load
         entity_type: Entity type (Empresa, Estabelecimento)
+        context: Airflow context (includes DAG params)
         
     Returns:
         Dict with load stats
     """
     from neo4j import GraphDatabase
+    from .config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
     
     logger.info(f"Loading {len(parquet_files)} Parquet files to Neo4j as {entity_type}")
     start_time = time.time()
     
     # Neo4j connection
-    driver = GraphDatabase.driver(
-        os.getenv("NEO4J_URI", "bolt://neo4j:7687"),
-        auth=(os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD", "osint_graph_password"))
-    )
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    
+    # DuckDB connection for reading parquet
+    duck_conn = duckdb.connect(':memory:')
     
     total_nodes = 0
+    total_relationships = 0
+    batch_size = 5000  # Process 5000 records per transaction
     
     try:
         with driver.session() as session:
             for parquet_file in parquet_files:
-                # TODO: Implement Neo4j loading logic
-                # This is a placeholder for future implementation
-                logger.info(f"  Neo4j loading for {Path(parquet_file).name} - Not yet implemented")
-                pass
-    
+                file_path = Path(parquet_file)
+                if not file_path.exists():
+                    logger.warning(f"  File not found: {parquet_file}")
+                    continue
+                
+                logger.info(f"  Processing {file_path.name}")
+                file_start = time.time()
+                
+                # Get row count from parquet using DuckDB
+                total_file_rows = duck_conn.execute(
+                    f"SELECT COUNT(*) FROM '{parquet_file}'"
+                ).fetchone()[0]
+                
+                if total_file_rows == 0:
+                    logger.warning(f"    Empty file: {file_path.name}")
+                    continue
+                
+                # Process in batches using DuckDB's LIMIT/OFFSET
+                for batch_start in range(0, total_file_rows, batch_size):
+                    # Read batch directly from parquet using DuckDB
+                    batch_records = duck_conn.execute(f"""
+                        SELECT * FROM '{parquet_file}'
+                        LIMIT {batch_size} OFFSET {batch_start}
+                    """).fetchall()
+                    
+                    # Get column names
+                    if batch_start == 0:
+                        columns = [desc[0] for desc in duck_conn.description]
+                    
+                    # Convert to list of dicts
+                    batch_dicts = [dict(zip(columns, row)) for row in batch_records]
+                    
+                    if entity_type == "Empresa":
+                        # Create/update Empresa nodes
+                        result = session.execute_write(
+                            _create_empresa_nodes, batch_dicts
+                        )
+                        total_nodes += result
+                        
+                    elif entity_type == "Estabelecimento":
+                        # Create/update Estabelecimento nodes and relationships
+                        nodes_created, rels_created = session.execute_write(
+                            _create_estabelecimento_nodes, batch_dicts
+                        )
+                        total_nodes += nodes_created
+                        total_relationships += rels_created
+                    
+                    batch_end = min(batch_start + batch_size, total_file_rows)
+                    if batch_end < total_file_rows:
+                        logger.info(f"    Progress: {batch_end:,}/{total_file_rows:,} rows ({batch_end*100//total_file_rows}%)")
+                
+                file_duration = time.time() - file_start
+                logger.info(f"    Loaded {total_file_rows:,} records in {file_duration:.1f}s")
+        
     except Exception as e:
         logger.error(f"Neo4j load failed: {e}")
         raise
     finally:
+        duck_conn.close()
         driver.close()
     
     duration = time.time() - start_time
     throughput = total_nodes / duration if duration > 0 and total_nodes > 0 else 0
     
-    logger.info(f"Loaded {total_nodes:,} nodes in {duration:.2f}s ({throughput:,.0f} nodes/sec)")
+    logger.info(
+        f"Loaded {total_nodes:,} nodes and {total_relationships:,} relationships "
+        f"in {duration:.2f}s ({throughput:,.0f} nodes/sec)"
+    )
     
     return {
         "entity_type": entity_type,
         "files_loaded": len(parquet_files),
         "total_nodes": total_nodes,
+        "total_relationships": total_relationships,
         "duration_seconds": duration,
         "throughput_nodes_per_sec": throughput
     }
+
+
+def _create_empresa_nodes(tx, records):
+    """
+    Transaction function to create/update Empresa nodes.
+    Uses MERGE to handle both insert and update.
+    """
+    query = """
+    UNWIND $records AS record
+    MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+    SET e += record,
+        e.updated_at = datetime()
+    ON CREATE SET e.created_at = datetime()
+    RETURN COUNT(e) as nodes_created
+    """
+    result = tx.run(query, records=records)
+    return result.single()["nodes_created"]
+
+
+def _create_estabelecimento_nodes(tx, records):
+    """
+    Transaction function to create/update Estabelecimento nodes and relationships.
+    Uses MERGE to handle both insert and update.
+    """
+    # Create complete CNPJ (14 digits) by concatenating parts
+    for record in records:
+        record['cnpj'] = f"{record['cnpj_basico']}{record['cnpj_ordem']}{record['cnpj_dv']}"
+    
+    # Create Estabelecimento nodes
+    node_query = """
+    UNWIND $records AS record
+    MERGE (est:Estabelecimento {cnpj: record.cnpj})
+    SET est += record,
+        est.updated_at = datetime()
+    ON CREATE SET est.created_at = datetime()
+    RETURN COUNT(est) as nodes_created
+    """
+    node_result = tx.run(node_query, records=records)
+    nodes_created = node_result.single()["nodes_created"]
+    
+    # Create relationships to Empresa nodes
+    rel_query = """
+    UNWIND $records AS record
+    MATCH (est:Estabelecimento {cnpj: record.cnpj})
+    MATCH (e:Empresa {cnpj_basico: record.cnpj_basico})
+    MERGE (est)-[r:PERTENCE_A]->(e)
+    ON CREATE SET r.created_at = datetime()
+    RETURN COUNT(r) as relationships_created
+    """
+    rel_result = tx.run(rel_query, records=records)
+    relationships_created = rel_result.single()["relationships_created"]
+    
+    return nodes_created, relationships_created
