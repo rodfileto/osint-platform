@@ -23,10 +23,14 @@ PROCESSED_PATH = BASE_PATH / "processed"
 
 
 @task
-def process_empresas_file(reference_month: str, file_name: str) -> dict:
+def process_empresas_file(reference_month: str, file_name: str, **context) -> dict:
     """
     Process a single Empresas file: extract, transform, and return result.
     Updates manifest at each stage to track progress.
+    
+    Args:
+        reference_month: YYYY-MM format
+        file_name: Name of the ZIP file
     """
     import sys
     sys.path.insert(0, '/opt/airflow/scripts/cnpj')
@@ -34,8 +38,11 @@ def process_empresas_file(reference_month: str, file_name: str) -> dict:
         is_file_processed, mark_extracted, mark_transformed, mark_failed
     )
     
-    # Check if already processed
-    if is_file_processed(reference_month, file_name, 'transformed'):
+    # Get force_reprocess from DAG params
+    force_reprocess = context.get('params', {}).get('force_reprocess', False)
+    
+    # Check if already processed (skip only if not forcing reprocess)
+    if not force_reprocess and is_file_processed(reference_month, file_name, 'transformed'):
         logger.info(f"{file_name} already transformed, skipping")
         # Return existing parquet path
         file_num = file_name.replace('Empresas', '').replace('.zip', '')
@@ -97,10 +104,14 @@ def process_empresas_file(reference_month: str, file_name: str) -> dict:
 
 
 @task
-def process_estabelecimentos_file(reference_month: str, file_name: str) -> dict:
+def process_estabelecimentos_file(reference_month: str, file_name: str, **context) -> dict:
     """
     Process a single Estabelecimentos file: extract, transform, and return result.
     Updates manifest at each stage to track progress.
+    
+    Args:
+        reference_month: YYYY-MM format
+        file_name: Name of the ZIP file
     """
     import sys
     sys.path.insert(0, '/opt/airflow/scripts/cnpj')
@@ -108,8 +119,11 @@ def process_estabelecimentos_file(reference_month: str, file_name: str) -> dict:
         is_file_processed, mark_extracted, mark_transformed, mark_failed
     )
     
-    # Check if already processed
-    if is_file_processed(reference_month, file_name, 'transformed'):
+    # Get force_reprocess from DAG params
+    force_reprocess = context.get('params', {}).get('force_reprocess', False)
+    
+    # Check if already processed (skip only if not forcing reprocess)
+    if not force_reprocess and is_file_processed(reference_month, file_name, 'transformed'):
         logger.info(f"{file_name} already transformed, skipping")
         file_num = file_name.replace('Estabelecimentos', '').replace('.zip', '')
         parquet_file = PROCESSED_PATH / reference_month / f"estabelecimentos_{file_num}.parquet"
@@ -200,6 +214,7 @@ def transform_empresas_group():
     files_to_process = get_empresas_files(ref_month)
     
     # Process files in parallel using dynamic task mapping
+    # Note: force_reprocess is read from context inside each task
     process_empresas_file.partial(
         reference_month=ref_month
     ).expand(
@@ -241,6 +256,7 @@ def transform_estabelecimentos_group():
     files_to_process = get_estabelecimentos_files(ref_month)
     
     # Process files in parallel using dynamic task mapping
+    # Note: force_reprocess is read from context inside each task
     process_estabelecimentos_file.partial(
         reference_month=ref_month
     ).expand(
