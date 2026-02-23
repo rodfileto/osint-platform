@@ -10,8 +10,10 @@ from .load_tasks import load_to_postgresql, load_to_neo4j
 from .process_tasks import (
     process_empresas_file,
     process_estabelecimentos_file,
-    process_empresas_group,
-    process_estabelecimentos_group,
+    transform_empresas_group,
+    transform_estabelecimentos_group,
+    load_postgres_group,
+    load_neo4j_group,
 )
 
 __all__ = [
@@ -22,6 +24,8 @@ __all__ = [
     'load_to_neo4j',
     'process_empresas_file',
     'process_estabelecimentos_file',
-    'process_empresas_group',
-    'process_estabelecimentos_group',
+    'transform_empresas_group',
+    'transform_estabelecimentos_group',
+    'load_postgres_group',
+    'load_neo4j_group',
 ]

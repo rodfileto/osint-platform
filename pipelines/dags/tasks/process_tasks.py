@@ -167,9 +167,9 @@ def process_estabelecimentos_file(reference_month: str, file_name: str) -> dict:
 
 
 @task_group
-def process_empresas_group():
+def transform_empresas_group():
     """
-    Process all Empresas files for a given reference month.
+    Extract and transform all Empresas files for a given reference month.
     Dynamically discovers files from manifest.
     """
     @task
@@ -200,51 +200,17 @@ def process_empresas_group():
     files_to_process = get_empresas_files(ref_month)
     
     # Process files in parallel using dynamic task mapping
-    # Use .partial() for scalar args, .expand() for list args
-    parallel_results = process_empresas_file.partial(
+    process_empresas_file.partial(
         reference_month=ref_month
     ).expand(
         file_name=files_to_process
     )
-    
-    @task
-    def collect_parallel_results(results: list) -> list:
-        """Collect parquet paths from parallel processing results."""
-        parquet_paths = []
-        for result in results:
-            if result and result.get('parquet_path'):
-                parquet_paths.append(result['parquet_path'])
-        return parquet_paths
-    
-    parquet_files = collect_parallel_results(parallel_results)
-    
-    @task
-    def collect_all_parquets(new_parquets: list, reference_month: str) -> list:
-        """Combine new parquets with any already-transformed files not in manifest query."""
-        existing = set(new_parquets)
-        processed_dir = PROCESSED_PATH / reference_month
-        if processed_dir.exists():
-            for pq in processed_dir.glob("empresas_*.parquet"):
-                if pq.exists() and pq.stat().st_size > 0:
-                    existing.add(str(pq))
-        valid = sorted([p for p in existing if p and Path(p).exists()])
-        logger.info(f"Total valid empresas parquet files: {len(valid)}")
-        return valid
-    
-    valid_parquets = collect_all_parquets(parquet_files, ref_month)
-    
-    # Load all transformed files to PostgreSQL first, then Neo4j
-    pg_load = load_to_postgresql(valid_parquets, table_name="empresa", schema="cnpj", reference_month=ref_month)
-    neo4j_load = load_to_neo4j(valid_parquets, entity_type="Empresa")
-    
-    # Define load dependencies: PostgreSQL → Neo4j
-    pg_load >> neo4j_load
 
 
 @task_group
-def process_estabelecimentos_group():
+def transform_estabelecimentos_group():
     """
-    Process all Estabelecimentos files for a given reference month.
+    Extract and transform all Estabelecimentos files for a given reference month.
     Dynamically discovers files from manifest.
     """
     @task
@@ -275,56 +241,21 @@ def process_estabelecimentos_group():
     files_to_process = get_estabelecimentos_files(ref_month)
     
     # Process files in parallel using dynamic task mapping
-    # Use .partial() for scalar args, .expand() for list args
-    parallel_results = process_estabelecimentos_file.partial(
+    process_estabelecimentos_file.partial(
         reference_month=ref_month
     ).expand(
         file_name=files_to_process
     )
-    
-    @task
-    def collect_parallel_results(results: list) -> list:
-        """Collect parquet paths from parallel processing results."""
-        parquet_paths = []
-        for result in results:
-            if result and result.get('parquet_path'):
-                parquet_paths.append(result['parquet_path'])
-        return parquet_paths
-    
-    parquet_files = collect_parallel_results(parallel_results)
-    
-    @task
-    def collect_all_parquets(new_parquets: list, reference_month: str) -> list:
-        """Combine new parquets with any already-transformed files not in manifest query."""
-        existing = set(new_parquets)
-        processed_dir = PROCESSED_PATH / reference_month
-        if processed_dir.exists():
-            for pq in processed_dir.glob("estabelecimentos_*.parquet"):
-                if pq.exists() and pq.stat().st_size > 0:
-                    existing.add(str(pq))
-        valid = sorted([p for p in existing if p and Path(p).exists()])
-        logger.info(f"Total valid estabelecimentos parquet files: {len(valid)}")
-        return valid
-    
-    valid_parquets = collect_all_parquets(parquet_files, ref_month)
-    
-    # Load all transformed files to PostgreSQL first, then Neo4j
-    pg_load = load_to_postgresql(valid_parquets, table_name="estabelecimento", schema="cnpj", reference_month=ref_month)
-    neo4j_load = load_to_neo4j(valid_parquets, entity_type="Estabelecimento")
-    
-    # Define load dependencies: PostgreSQL → Neo4j
-    pg_load >> neo4j_load
 
 
 # ============================================================================
-# HELPER FUNCTIONS FOR NEO4J-ONLY MODE
+# HELPER FUNCTIONS FOR LOAD TASKS
 # ============================================================================
 
 @task
 def get_all_processed_months() -> list[str]:
     """
     Scan processed directory for all available months.
-    Used when neo4j_all_months=True to process all available data.
     """
     processed_dir = PROCESSED_PATH
     if not processed_dir.exists():
@@ -350,7 +281,6 @@ def get_all_processed_months() -> list[str]:
 def get_parquets_for_month_and_type(reference_month: str, entity_type: str) -> list[str]:
     """
     Get all parquet files for a specific month and entity type.
-    Used in neo4j-only mode to load existing processed files.
     
     Args:
         reference_month: Month in YYYY-MM format
@@ -383,78 +313,126 @@ def get_parquets_for_month_and_type(reference_month: str, entity_type: str) -> l
 
 
 # ============================================================================
-# NEO4J-ONLY TASK GROUPS
+# LOAD TASK GROUPS
 # ============================================================================
 
 @task_group
-def neo4j_only_single_month_group():
+def load_postgres_group():
     """
-    Load existing parquet files to Neo4j for a single reference month.
-    Skips extract/transform/PostgreSQL steps.
+    Load existing parquet files to PostgreSQL.
+    Supports specific month or 'all', and specific entity or 'all'.
     """
     @task
-    def get_ref_month(**context) -> str:
+    def get_params(**context) -> dict:
         from .config import DEFAULT_REFERENCE_MONTH
-        return context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH)
+        return {
+            'reference_month': context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH),
+            'entity_type': context['params'].get('entity_type', 'all')
+        }
     
-    ref_month = get_ref_month()
-    
-    # Get parquets for empresas and estabelecimentos
-    empresas_parquets = get_parquets_for_month_and_type(ref_month, 'empresas')
-    estabelecimentos_parquets = get_parquets_for_month_and_type(ref_month, 'estabelecimentos')
-    
-    # Load to Neo4j
-    empresas_neo4j = load_to_neo4j(empresas_parquets, entity_type="Empresa")
-    estabelecimentos_neo4j = load_to_neo4j(estabelecimentos_parquets, entity_type="Estabelecimento")
-    
-    # Sequential execution to ensure empresas exist before estabelecimentos
-    empresas_neo4j >> estabelecimentos_neo4j
+    @task
+    def load_to_pg(task_params: dict, **context) -> dict:
+        ref_month = task_params['reference_month']
+        entity_type = task_params['entity_type']
+        
+        months_to_process = [ref_month]
+        if ref_month.lower() == 'all':
+            months_to_process = get_all_processed_months.function()
+            
+        entities_to_process = ['empresas', 'estabelecimentos']
+        if entity_type.lower() in ['empresas', 'estabelecimentos']:
+            entities_to_process = [entity_type.lower()]
+            
+        total_loaded = 0
+        
+        for month in months_to_process:
+            logger.info(f"Loading to Postgres for month: {month}")
+            
+            if 'empresas' in entities_to_process:
+                empresas_files = get_parquets_for_month_and_type.function(month, 'empresas')
+                if empresas_files:
+                    result = load_to_postgresql.function(
+                        parquet_files=empresas_files, 
+                        table_name="empresa", 
+                        schema="cnpj", 
+                        reference_month=month,
+                        **context
+                    )
+                    total_loaded += result.get('row_count', 0)
+                    
+            if 'estabelecimentos' in entities_to_process:
+                estabelecimentos_files = get_parquets_for_month_and_type.function(month, 'estabelecimentos')
+                if estabelecimentos_files:
+                    result = load_to_postgresql.function(
+                        parquet_files=estabelecimentos_files, 
+                        table_name="estabelecimento", 
+                        schema="cnpj", 
+                        reference_month=month,
+                        **context
+                    )
+                    total_loaded += result.get('row_count', 0)
+                    
+        return {"total_loaded": total_loaded}
+        
+    params = get_params()
+    load_to_pg(params)
 
 
 @task_group
-def neo4j_only_all_months_group():
+def load_neo4j_group():
     """
-    Load existing parquet files to Neo4j for ALL available months.
-    Scans data/cnpj/processed/ directory for all month folders.
+    Load existing parquet files to Neo4j.
+    Supports specific month or 'all', and specific entity or 'all'.
     """
-    months = get_all_processed_months()
+    @task
+    def get_params(**context) -> dict:
+        from .config import DEFAULT_REFERENCE_MONTH
+        return {
+            'reference_month': context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH),
+            'entity_type': context['params'].get('entity_type', 'all')
+        }
     
     @task
-    def load_all_months_to_neo4j(months: list[str]) -> dict:
-        """Load all months sequentially to Neo4j."""
-        if not months:
-            logger.warning("No processed months found")
-            return {"total_months": 0, "total_nodes": 0}
+    def load_to_neo(task_params: dict, **context) -> dict:
+        ref_month = task_params['reference_month']
+        entity_type = task_params['entity_type']
         
+        months_to_process = [ref_month]
+        if ref_month.lower() == 'all':
+            months_to_process = get_all_processed_months.function()
+            
+        entities_to_process = ['empresas', 'estabelecimentos']
+        if entity_type.lower() in ['empresas', 'estabelecimentos']:
+            entities_to_process = [entity_type.lower()]
+            
         total_nodes = 0
         total_rels = 0
         
-        for month in months:
-            logger.info(f"Processing month: {month}")
+        for month in months_to_process:
+            logger.info(f"Loading to Neo4j for month: {month}")
             
-            # Get parquets for this month
-            empresas_files = get_parquets_for_month_and_type.function(month, 'empresas')
-            estabelecimentos_files = get_parquets_for_month_and_type.function(month, 'estabelecimentos')
-            
-            # Load empresas first
-            if empresas_files:
-                result = load_to_neo4j.function(empresas_files, 'Empresa')
-                total_nodes += result['total_nodes']
-                logger.info(f"  {month}: Loaded {result['total_nodes']:,} Empresa nodes")
-            
-            # Then estabelecimentos
-            if estabelecimentos_files:
-                result = load_to_neo4j.function(estabelecimentos_files, 'Estabelecimento')
-                total_nodes += result['total_nodes']
-                total_rels += result.get('total_relationships', 0)
-                logger.info(f"  {month}: Loaded {result['total_nodes']:,} Estabelecimento nodes")
+            if 'empresas' in entities_to_process:
+                empresas_files = get_parquets_for_month_and_type.function(month, 'empresas')
+                if empresas_files:
+                    result = load_to_neo4j.function(
+                        parquet_files=empresas_files, 
+                        entity_type="Empresa",
+                        **context
+                    )
+                    total_nodes += result.get('total_nodes', 0)
+                    
+            if 'estabelecimentos' in entities_to_process:
+                estabelecimentos_files = get_parquets_for_month_and_type.function(month, 'estabelecimentos')
+                if estabelecimentos_files:
+                    result = load_to_neo4j.function(
+                        parquet_files=estabelecimentos_files, 
+                        entity_type="Estabelecimento",
+                        **context
+                    )
+                    total_nodes += result.get('total_nodes', 0)
+                    total_rels += result.get('total_relationships', 0)
+                    
+        return {"total_nodes": total_nodes, "total_relationships": total_rels}
         
-        logger.info(f"Completed loading {len(months)} months: {total_nodes:,} total nodes, {total_rels:,} relationships")
-        return {
-            "total_months": len(months),
-            "total_nodes": total_nodes,
-            "total_relationships": total_rels
-        }
-    
-    result = load_all_months_to_neo4j(months)
-    return result
+    params = get_params()
+    load_to_neo(params)

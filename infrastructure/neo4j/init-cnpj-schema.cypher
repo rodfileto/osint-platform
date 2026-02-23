@@ -23,6 +23,13 @@ FOR (e:Empresa) ON (e.natureza_juridica);
 CREATE FULLTEXT INDEX empresa_names IF NOT EXISTS
 FOR (e:Empresa) ON EACH [e.razao_social];
 
+// Indexes for timestamp-based queries
+CREATE INDEX empresa_created_at IF NOT EXISTS
+FOR (e:Empresa) ON (e.created_at);
+
+CREATE INDEX empresa_updated_at IF NOT EXISTS
+FOR (e:Empresa) ON (e.updated_at);
+
 
 // =====================================================
 // Estabelecimento Node (Establishment/Location)
@@ -48,6 +55,13 @@ FOR (est:Estabelecimento) ON (est.cnae_fiscal_principal);
 // Full-text search on trade names
 CREATE FULLTEXT INDEX estabelecimento_names IF NOT EXISTS
 FOR (est:Estabelecimento) ON EACH [est.nome_fantasia];
+
+// Indexes for timestamp-based queries
+CREATE INDEX estabelecimento_created_at IF NOT EXISTS
+FOR (est:Estabelecimento) ON (est.created_at);
+
+CREATE INDEX estabelecimento_updated_at IF NOT EXISTS
+FOR (est:Estabelecimento) ON (est.updated_at);
 
 
 // =====================================================

@@ -273,8 +273,18 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                 all_cols = [row[0] for row in cur.fetchall()]
                 col_list = ', '.join(all_cols)
                 
-                # Build UPDATE SET clause (update all columns including updated_at)
+                # Check if updated_at column exists
+                has_updated_at = 'updated_at' in all_cols
+                
+                # Build UPDATE SET clause (update all columns)
                 update_set = ', '.join([f"{col} = EXCLUDED.{col}" for col in all_cols])
+                
+                # Add updated_at if it exists and wasn't already in the list
+                if has_updated_at and 'updated_at' not in update_set:
+                    update_set += ", updated_at = CURRENT_TIMESTAMP"
+                elif has_updated_at:
+                    # Replace the EXCLUDED.updated_at with CURRENT_TIMESTAMP
+                    update_set = update_set.replace("updated_at = EXCLUDED.updated_at", "updated_at = CURRENT_TIMESTAMP")
                 
                 # Determine primary key constraint for ON CONFLICT clause
                 if table_name == "empresa":
@@ -290,7 +300,7 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     SELECT {col_list}
                     FROM {schema}.{table_name}_staging
                     ON CONFLICT ({conflict_clause}) DO UPDATE SET
-                        {update_set}, updated_at = CURRENT_TIMESTAMP
+                        {update_set}
                 """
                 
                 logger.info(f"  Executing UPSERT with ON CONFLICT ({conflict_clause})")
