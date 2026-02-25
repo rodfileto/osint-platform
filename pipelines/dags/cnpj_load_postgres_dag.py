@@ -7,6 +7,7 @@ This DAG orchestrates the loading of transformed CNPJ Parquet files into Postgre
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Import task groups from refactored modules
 from tasks.process_tasks import load_postgres_group
@@ -23,7 +24,7 @@ default_args = {
     'email_on_retry': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=4),
+    'execution_timeout': None,  # load_to_pg (UPSERT 135M rows) pode levar várias horas
 }
 
 with DAG(
@@ -47,11 +48,24 @@ with DAG(
     
     load_pg = load_postgres_group()
     
+    # Dispara refresh da MatView de busca após carga concluída
+    trigger_matview = TriggerDagRunOperator(
+        task_id='trigger_matview_refresh',
+        trigger_dag_id='cnpj_matview_refresh',
+        conf={
+            'reference_month': '{{ params.reference_month }}',
+        },
+        wait_for_completion=True,  # aguarda matview antes de marcar success
+        poke_interval=30,
+        reset_dag_run=True,
+        execution_timeout=None,  # sem limite — matview + neo4j podem levar horas
+    )
+    
     # End marker
     end = EmptyOperator(task_id='end')
     
     # Define dependencies
-    start >> load_pg >> end
+    start >> load_pg >> trigger_matview >> end
 
 if __name__ == "__main__":
     dag.test()

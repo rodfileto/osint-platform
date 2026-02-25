@@ -1,193 +1,242 @@
-# OSINT Platform Implementation Guide
+# OSINT Platform — Passos de Implementação
 
-This guide outlines the concrete steps to continue building the platform from the current state.
+> Documento **operacional**: ambiente, configuração de hardware, histórico de execução e próximos passos.
+> Para decisões arquiteturais e stack, veja [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
 
-## Current Status (Completed)
-*   [x] Directory structure created (`backend`, `frontend`, `pipelines`, `infrastructure`).
-*   [x] `docker-compose.yml` created with Postgres, Neo4j, Redis, and Airflow.
-*   [x] `.env` file created with secure defaults.
-*   [x] Postgres initialization script (`init-db.sh`) created for schemas.
-*   [x] **Phase 1 Complete**: Backend (Django) initialized and running.
-    *   [x] Dockerfile created inside `/backend`.
-    *   [x] Django project initialized with `config/` structure.
-    *   [x] `requirements.txt` created with dependencies.
-    *   [x] Database configured to use PostgreSQL (upgraded to v16).
-    *   [x] `apps/` directory created with sys.path configured for direct imports.
-    *   [x] Backend service uncommented and tested - running on http://localhost:8000.
-    *   [x] Initial migrations applied successfully.
-*   [x] **Phase 2 Complete**: Frontend (Next.js) initialized and running.
-    *   [x] TailAdmin template cloned into `/frontend`.
-    *   [x] Dockerfile created for Next.js with Node 20.
-    *   [x] Frontend service uncommented and configured in docker-compose.
-    *   [x] Next.js 16 running with Turbopack on http://localhost:3000.
-    *   [x] Environment variable `NEXT_PUBLIC_API_URL` configured for backend communication.
-*   [x] **Phase 3 Complete**: Airflow & Pipeline Setup initialized.
-    *   [x] Airflow webserver, scheduler, and triggerer services started.
-    *   [x] Airflow UI accessible at http://localhost:8080 (user: airflow / pass: airflow).
-    *   [x] Test connection DAG created in `pipelines/dags/test_connection.py`.
-    *   [x] Pipeline structure created with `scripts/` and `plugins/` directories.
-    *   [x] Ready for CNPJ pipeline implementation.
-*   [x] **CNPJ Data Models**: Django models created and migrated.
-    *   [x] Empresa and Estabelecimento models created.
-    *   [x] Migrations applied to `cnpj` schema in PostgreSQL.
-    *   [x] Models ready for data ingestion.
-*   [x] **Step 2B Complete**: Data Cleaning Logic Extracted.
-    *   [x] Created `/pipelines/scripts/cnpj/cleaners.py` (650+ lines).
-    *   [x] 15+ reusable cleaning functions (CNPJ, currency, dates, strings, etc.).
-    *   [x] Pure functions, framework-agnostic, Pandas-compatible.
-    *   [x] Comprehensive documentation in `/pipelines/scripts/cnpj/README.md`.
-    *   [x] Test suite created in `test_cleaners.py`.
-    *   [x] Ready for Airflow DAG integration.
-*   [x] **Performance Benchmarking Complete**: DuckDB Transformation Approach Validated.
-    *   [x] Created `/pipelines/scripts/cnpj/benchmark_duckdb.py`.
-    *   [x] Tested Pure SQL vs Hybrid (SQL + Python UDFs) approaches.
-    *   [x] Pure SQL achieved ~4M rows/sec (~3.1s for 12.5M rows).
-    *   [x] Confirmed Pure SQL as optimal approach (10-100x faster than Python UDFs).
-    *   [x] Validated Parquet intermediate format (70% compression vs CSV).
-*   [x] **SQL Transformation Library Complete**: High-Performance DuckDB Cleaners.
-    *   [x] Created `/pipelines/scripts/cnpj/cleaners_sql.py` (750+ lines).
-    *   [x] Pure SQL equivalents of all Python cleaners.
-    *   [x] Complete transformation templates: `empresas_cleaning_template()`, `estabelecimentos_cleaning_template()`.
-    *   [x] Query builders: `build_empresas_query()`, `build_estabelecimentos_query()`.
-    *   [x] Optimized for DuckDB analytical engine.
-*   [x] **Step 2C Complete**: Airflow DAG Implementation.
-    *   [x] Created `/pipelines/dags/cnpj_ingestion_dag.py` (580+ lines).
-    *   [x] Task groups: `process_empresas_group`, `process_estabelecimentos_group`.
-    *   [x] Tasks: Extract ZIP → Transform (DuckDB) → Load (PostgreSQL + Neo4j).
-    *   [x] Dynamic task generation for 10 files per entity type (parallel processing).
-    *   [x] Parameterized for reference_month configuration.
-    *   [x] Schedule: @monthly, max_active_runs=1, retries=2.
-    *   [x] Comprehensive documentation in `/pipelines/dags/README_CNPJ_DAG.md` (450+ lines).
-*   [x] **Database Schemas Complete**: PostgreSQL and Neo4j Initialization.
-    *   [x] Created `/infrastructure/postgres/init-cnpj-schema.sql` (129+ lines).
-    *   [x] Tables: `cnpj.empresas`, `cnpj.estabelecimentos`, `cnpj.download_manifest`.
-    *   [x] Indexes: Full-text (GIN), geographic, business, temporal.
-    *   [x] Views: `download_progress`, `incomplete_months`.
-    *   [x] Download manifest table for tracking incremental updates.
-    *   [x] Created `/infrastructure/neo4j/init-cnpj-schema.cypher`.
-    *   [x] Graph nodes: `:Empresa`, `:Estabelecimento`.
-    *   [x] Relationships: `[:PERTENCE_A]`.
-    *   [x] Constraints and indexes for performance.
-*   [x] **Infrastructure Updates Complete**: Docker and Dependencies.
-    *   [x] Updated `docker-compose.yml` with data volume mount (`./data:/opt/airflow/data`).
-    *   [x] Updated `/pipelines/requirements.txt` with: duckdb>=1.0.0, pandas>=2.3.0, psycopg2-binary, neo4j>=5.0.0, pyarrow>=14.0.0.
-    *   [x] Ready for production deployment.
-*   [x] **Documentation Complete**: Implementation Review and Guides.
-    *   [x] Created `/CNPJ_IMPLEMENTATION_REVIEW.md` - Complete review checklist.
-    *   [x] Created `/pipelines/dags/README_CNPJ_DAG.md` - Usage guide (450+ lines).
-    *   [x] Created `/pipelines/scripts/cnpj/README.md` - Cleaners module documentation.
-    *   [x] Execution commands documented (ready but not yet executed).
-*   [ ] **Historical Data Copy**: In Progress (86% Complete).
-    *   [x] Initiated background rsync copy: 174GB, 1,170 ZIP files, 36 months (2022-08 to 2025-06).
-    *   [x] Progress: 150GB/174GB copied, 1,021/1,170 files (~86%).
-    *   [x] Currently copying: 2025-04 month.
-    *   [x] Remaining: ~24GB, ~149 files (2 months: 2025-05, 2025-06).
-    *   [x] ETA: 5-10 minutes.
-    *   [x] Process running: 5+ hours (rsync background job).
+---
 
-## Next Steps (Ready to Execute)
+## Ambiente & Infraestrutura
 
-### Priority 1: Complete Data Copy (5-10 minutes)
-1.  **Monitor Copy Completion**
-    ```bash
-    # Check progress
-    du -sh /media/mynewdrive/osint-platform/data/cnpj/raw/  # Target: ~174GB
-    find /media/mynewdrive/osint-platform/data/cnpj/raw/ -name "*.zip" | wc -l  # Target: 1,170
-    tail -20 /tmp/cnpj_full_copy.log  # Watch real-time progress
-    ```
+### Hardware
 
-### Priority 2: Start Docker Services
-1.  **Launch Infrastructure**
-    ```bash
-    cd /media/mynewdrive/osint-platform
-    docker-compose up -d postgres neo4j redis airflow-webserver airflow-scheduler airflow-init
-    docker-compose ps  # Verify all services healthy
-    ```
+| Recurso | Especificação |
+|---------|--------------|
+| CPU | Intel i7-9700K — 8 cores |
+| RAM | 64 GB |
+| HDD | 9.1 TB — `/media/bigdata` — dados raw e banco PostgreSQL |
+| SSD | 384 GB — `/` — MatViews, índices de busca e Neo4j |
 
-2.  **Initialize Database Schemas**
-    ```bash
-    # PostgreSQL (may auto-initialize via init-db.sh)
-    docker-compose exec postgres psql -U osint_user -d osint_platform -f /docker-entrypoint-initdb.d/init-cnpj-schema.sql
-    
-    # Neo4j
-    cat infrastructure/neo4j/init-cnpj-schema.cypher | docker-compose exec -T neo4j cypher-shell -u neo4j -p osint_password
-    ```
+### Banco de Dados (estado atual — fev/2026)
 
-3.  **Verify Airflow DAG Loaded**
-    ```bash
-    docker-compose exec airflow-scheduler airflow dags list | grep cnpj_ingestion
-    ```
+**PostgreSQL 16 (`osint_metadata`):** 106 GB total
+- `cnpj.empresa`: 83 GB — 66.675.557 registros
+- `cnpj.estabelecimento`: 24 GB — 69.177.350 registros
+- `cnpj.mv_company_search`: 6.785 MB no SSD — 27.795.796 registros (ativos)
+- `cnpj.download_manifest`: ~1 MB
 
-### Priority 3: Test with Single Month (2024-02)
-1.  **Trigger Test Run**
-    ```bash
-    docker-compose exec airflow-scheduler airflow dags trigger cnpj_ingestion \
-      --conf '{"reference_month": "2024-02"}'
-    ```
+**Neo4j:** 5.2 GB (localizado no SSD)
 
-2.  **Monitor Execution**
-    ```bash
-    # Watch logs
-    docker-compose logs -f airflow-scheduler | grep -E "(empresas|estabelecimentos|Success|Error)"
-    
-    # Check Airflow UI
-    # http://localhost:8080
-    ```
+**Cobertura de dados:** 48+ meses de CNPJ (2021-10 a 2025-07)
 
-3.  **Verify Data Loaded**
-    ```sql
-    -- PostgreSQL (via psql or DBeaver)
-    SELECT reference_month, COUNT(*) FROM cnpj.empresas GROUP BY reference_month;
-    SELECT reference_month, COUNT(*) FROM cnpj.estabelecimentos GROUP BY reference_month;
-    SELECT * FROM cnpj.download_progress WHERE reference_month = '2024-02';
-    
-    -- Neo4j (via Browser: http://localhost:7474)
-    MATCH (e:Empresa) RETURN COUNT(e);
-    MATCH (est:Estabelecimento)-[:PERTENCE_A]->(e:Empresa) RETURN COUNT(est);
-    ```
+### Tuning Aplicado
 
-### Priority 4: Backfill All 36 Months
-1.  **Full Historical Processing**
-    ```bash
-    # Option 1: Trigger all months sequentially (Airflow will respect schedule)
-    for month in 2022-{08..12} 2023-{01..12} 2024-{01..12} 2025-{01..06}; do
-      docker-compose exec airflow-scheduler airflow dags trigger cnpj_ingestion \
-        --conf "{\"reference_month\": \"$month\"}"
-      sleep 10  # Small delay between triggers
-    done
-    
-    # Option 2: Use Airflow backfill command
-    docker-compose exec airflow-scheduler airflow dags backfill cnpj_ingestion \
-      --start-date 2022-08-01 --end-date 2025-06-30
-    ```
+**PostgreSQL** (otimizado para 64 GB RAM + HDD):
+```
+shared_buffers           = 16GB   (25% da RAM)
+effective_cache_size     = 48GB   (75% da RAM)
+work_mem                 = 64MB
+maintenance_work_mem     = 2GB
+random_page_cost         = 3.0    (HDD)
+effective_io_concurrency = 2      (HDD)
+max_parallel_workers_per_gather = 4
+```
 
-2.  **Expected Performance**
-    *   Duration: 5-8 minutes per month
-    *   Total time: ~3-4 hours for 36 months
-    *   Throughput: ~4M rows/sec transformation
-    *   Storage: ~180GB Parquet output
+**Tablespace `fast_ssd`** (para MatViews no SSD):
+```
+random_page_cost = 1.1
+seq_page_cost    = 1.0
+location         = /var/lib/postgresql/ssd_tablespace
+host path        = /home/rfileto/osint_pg_ssd/
+```
 
-### Optional: Step 2A - Pipeline Dependencies (Already Complete)
-1.  ✅ **requirements.txt Updated**
-    *   duckdb>=1.0.0
-    *   pandas>=2.3.0
-    *   psycopg2-binary
-    *   neo4j>=5.0.0
-    *   pyarrow>=14.0.0
+**Neo4j** (no SSD):
+```
+pagecache = 6GB   (comporta os 5.2 GB inteiros)
+heap      = 4GB
+dbms.memory.transaction.total.max = 2GB
+```
 
-### Phase 4: Development Workflow
-1.  **Start All Services**: `docker-compose up -d`.
-2.  **Access Points**:
-    *   Frontend: http://localhost:3000
-    *   Backend API: http://localhost:8000
-    *   Airflow UI: http://localhost:8080
-    *   Neo4j Browser: http://localhost:7474
-3.  **Data Ingestion**:
-    *   Write scripts in `pipelines/scripts/` to load sample data.
-    *   Trigger them via Airflow.
+**Constraint Docker (shm):** O `/dev/shm` do container PostgreSQL é limitado.
+Operações pesadas de MatView devem usar antes de executar:
+```sql
+SET max_parallel_workers_per_gather = 0;
+```
 
-## Entity Resolution Strategy
-When implementing the ETL pipelines, remember the "Golden Rule":
-*   Check if the Entity (CPF/CNPJ) exists in the **Global Graph** first.
-*   If yes -> Link to it.
-*   If no -> Create new Node.
+---
+
+## Serviços e Access Points
+
+| Serviço | URL | Credenciais |
+|---------|-----|-------------|
+| Frontend (Next.js) | http://localhost:3000 | — |
+| Backend API (Django) | http://localhost:8000 | — |
+| Airflow UI | http://localhost:8080 | airflow / airflow |
+| Neo4j Browser | http://localhost:7474 | neo4j / osint_password |
+| PostgreSQL | localhost:5432 | osint_admin / (ver .env) |
+
+**Containers principais:**
+- `osint_postgres` — PostgreSQL 16
+- `osint-platform-airflow-webserver-1` — Airflow 2.10.4
+- `osint-platform-airflow-scheduler-1`
+
+---
+
+## Status de Implementação
+
+### ✅ Infraestrutura Base
+- Estrutura de diretórios (`backend`, `frontend`, `pipelines`, `infrastructure`)
+- `docker-compose.yml` com PostgreSQL, Neo4j, Redis e Airflow
+- `.env` com defaults seguros
+- Script `init-db.sh` para inicialização do PostgreSQL
+
+### ✅ Backend (Django)
+- Dockerfile em `/backend`
+- Projeto Django com estrutura `config/`
+- Banco configurado para PostgreSQL 16
+- `apps/` com `sys.path` configurado para imports diretos
+- Serviço rodando em http://localhost:8000
+- Migrations iniciais aplicadas
+
+### ✅ Frontend (Next.js)
+- Template TailAdmin em `/frontend`
+- Dockerfile com Node 20
+- Next.js com Turbopack rodando em http://localhost:3000
+- Variável `NEXT_PUBLIC_API_URL` configurada
+
+### ✅ Airflow & Pipelines
+- Webserver, scheduler e triggerer rodando em http://localhost:8080
+- DAG de teste de conexão em `pipelines/dags/test_connection.py`
+
+### ✅ Pipeline CNPJ — Limpeza e Transformação
+- `/pipelines/scripts/cnpj/cleaners.py` — 650+ linhas, 15+ funções Python
+- `/pipelines/scripts/cnpj/cleaners_sql.py` — equivalentes Pure SQL para DuckDB
+- Benchmark: ~4M rows/sec; Pure SQL 10–100x mais rápido que Python UDFs
+- Formato Parquet validado como intermediário (70% compressão vs CSV)
+
+### ✅ DAGs Airflow CNPJ
+
+**`cnpj_load_postgres`**
+- Carrega Parquet → PostgreSQL via DuckDB
+- Cria stubs de empresa para CNPJs órfãos (garante integridade FK)
+- Verifica `reference_month` antes de reinserir (idempotente)
+- Dispara `cnpj_matview_refresh` via `TriggerDagRunOperator` ao terminar
+
+**`cnpj_matview_refresh`**
+- Cria `mv_company_search` se não existe, `REFRESH CONCURRENTLY` se já existe
+- 4 índices criados no tablespace `fast_ssd`
+- `is_paused_upon_creation=False`
+
+### ✅ PostgreSQL Performance Layer (MatViews no SSD)
+- Tablespace `fast_ssd` → `/var/lib/postgresql/ssd_tablespace`
+- `cnpj.mv_company_search` — 27.795.796 registros (estabelecimentos ativos), 6.785 MB
+- Índices no SSD:
+  - `idx_mv_cnpj14` — UNIQUE, lookup exato por CNPJ 14 dígitos
+  - `idx_mv_razao_social_trgm` — GIN trigram, busca por razão social
+  - `idx_mv_nome_fantasia_trgm` — GIN trigram, busca por nome fantasia
+  - `idx_mv_uf_municipio` — btree, filtro geográfico
+- Extensão `pg_trgm` habilitada
+
+### ✅ Validação de Performance
+- Busca `ILIKE '%petrobras%'` → **30ms** (`Bitmap Index Scan on idx_mv_razao_social_trgm`)
+- `GROUP BY uf` em 27.7M registros → **511ms** (sequential scan — esperado para agregação full)
+- SP lidera com 8.437.482 estabelecimentos ativos
+
+### ✅ Dados Históricos CNPJ
+- 48+ meses carregados (2021-10 a 2025-07)
+- Dados raw em `data/cnpj/raw/` (174+ GB)
+
+---
+
+## Comandos Operacionais
+
+### Iniciar Ambiente
+```bash
+cd /media/bigdata/osint-platform
+docker-compose up -d postgres neo4j redis airflow-webserver airflow-scheduler
+docker-compose ps
+```
+
+### Reset Completo
+```bash
+./reset-docker-from-scratch.sh
+```
+
+### Disparar Pipeline CNPJ (novo mês)
+```bash
+docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_postgres \
+  --conf '{"reference_month": "2025-08", "entity_type": "all"}'
+```
+
+### Forçar Reprocessamento de Mês já Carregado
+```bash
+docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_postgres \
+  --conf '{"reference_month": "2025-07", "force_reprocess": true}'
+```
+
+### Refresh Manual da MatView
+```bash
+docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_matview_refresh
+```
+
+### Verificar Counts Principais
+```bash
+docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
+SELECT 'empresa'           AS tabela, COUNT(*) FROM cnpj.empresa
+UNION ALL
+SELECT 'estabelecimento',             COUNT(*) FROM cnpj.estabelecimento
+UNION ALL
+SELECT 'mv_company_search',           COUNT(*) FROM cnpj.mv_company_search;
+"
+```
+
+### Matar Run Travado no Airflow (emergência)
+```bash
+# Conectar ao banco de metadados do Airflow
+docker exec -it osint-platform-airflow-webserver-1 bash -c \
+  "airflow db shell"
+```
+```sql
+UPDATE dag_run SET state='failed', end_date=NOW()
+  WHERE dag_id='cnpj_load_postgres' AND state IN ('running','queued');
+UPDATE task_instance SET state='failed', end_date=NOW()
+  WHERE dag_id='cnpj_load_postgres' AND state IN ('running','up_for_retry');
+```
+
+---
+
+## Próximos Passos
+
+### Backend API (Django)
+- [ ] Endpoint de busca em `cnpj.mv_company_search` (razão social, nome fantasia, CNPJ)
+- [ ] Paginação e filtros por UF / município / CNAE / situação cadastral
+- [ ] Endpoint de detalhe de empresa (JOIN empresa + estabelecimentos)
+- [ ] Autenticação JWT e rate limiting
+
+### Frontend
+- [ ] Barra de busca conectada ao endpoint da API
+- [ ] Página de resultado com dados da empresa + estabelecimentos
+- [ ] Visualizador de grafo (Neo4j)
+- [ ] Filtros geográficos e setoriais
+
+### Pipeline — Expansão
+- [ ] Carregar dados de sócios (`cnpj_socios`) → Neo4j
+- [ ] Ativar `cnpj_load_neo4j_dag.py` (carga incremental)
+- [ ] Pipeline de sanções
+- [ ] Pipeline de contratos públicos (PNCP)
+
+### Operacional
+- [ ] Refresh semanal automático da MatView (`schedule_interval='@weekly'`)
+- [ ] Alertas por e-mail em falha de pipeline
+- [ ] Backup automatizado do tablespace SSD
+
+---
+
+## Scaling (Referência)
+
+Com 64 GB RAM e dados no HDD, o PostgreSQL usa o page cache do OS para os ~90 GB que não cabem em `shared_buffers`. Performance depende do hot data do workload.
+
+Para operação full in-memory:
+- Mínimo: 128 GB RAM (106 GB PostgreSQL + 10 GB Neo4j + 12 GB sistema)
+- Recomendado: 192 GB+ em produção
+
+O dataset CNPJ cresce ~2–3 GB/mês. Considerar particionamento por `reference_month` para tabelas > 100 GB.

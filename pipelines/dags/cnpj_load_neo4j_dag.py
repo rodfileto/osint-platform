@@ -23,7 +23,7 @@ default_args = {
     'email_on_retry': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=4),
+    'execution_timeout': timedelta(hours=12),  # 66M empresas + 69M estabelecimentos estimado 6-8h
 }
 
 with DAG(
@@ -34,6 +34,7 @@ with DAG(
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
+    is_paused_upon_creation=False,
     tags=['cnpj', 'etl', 'neo4j', 'load'],
     params={
         'reference_month': DEFAULT_REFERENCE_MONTH, # Can be 'all'

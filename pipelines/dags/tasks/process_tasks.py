@@ -346,7 +346,7 @@ def load_postgres_group():
             'entity_type': context['params'].get('entity_type', 'all')
         }
     
-    @task
+    @task(execution_timeout=None)  # UPSERT de 135M rows pode levar várias horas
     def load_to_pg(task_params: dict, **context) -> dict:
         ref_month = task_params['reference_month']
         entity_type = task_params['entity_type']

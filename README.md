@@ -1,45 +1,47 @@
 # Unified OSINT Platform
 
-This repository contains the source code for a multi-engine OSINT intelligence platform.
+Plataforma de inteligência OSINT multi-engine para análise de dados públicos brasileiros (CNPJ, sanções, contratos).
 
-## Architecture
+## Estrutura do Projeto
 
-The project is divided into 4 distinct layers:
+| Diretório | Papel |
+|-----------|-------|
+| `/backend` | API Django — gateway stateless, sem lógica de ETL |
+| `/frontend` | Next.js — dashboard de busca e visualização |
+| `/pipelines` | Airflow DAGs e scripts ETL (DuckDB, Python) |
+| `/infrastructure` | Configurações de PostgreSQL, Neo4j, Airflow |
+| `/data` | Dados raw e processados (CNPJ Parquet/ZIP) |
 
-1.  **Backend (`/backend`)**: Django application acting as the API Gateway and Orchestrator. It connects to the database layer but contains NO heavy data processing logic.
-2.  **Frontend (`/frontend`)**: Next.js application for the user interface.
-3.  **Pipelines (`/pipelines`)**: Apache Airflow DAGs and ETL scripts. This is where data processing happens (CNPJ, Sanctions, Contracts, etc.).
-4.  **Infrastructure (`/infrastructure`)**: Configuration for Postgres, Neo4j, Airflow, and other core services.
+## Pré-requisitos
 
-## Prerequisites
+- Docker & Docker Compose
+- 32 GB+ RAM (64 GB recomendado para dataset completo)
+- 150 GB+ de espaço em disco
 
--   Docker & Docker Compose
--   16GB+ RAM recommended (for Airflow + Neo4j)
+## Quick Start
 
-## Getting Started
+```bash
+# 1. Configurar variáveis de ambiente
+cp .env.example .env
 
-### Quick Start
+# 2. Subir todos os serviços
+docker-compose up -d --build
+```
 
-1.  Copy `.env.example` to `.env`.
-2.  Run `docker-compose up -d --build`.
-
-### Reset Environment from Scratch
-
-Para testar o workflow global do zero ou resolver problemas de containers:
+### Reset Completo do Ambiente
 
 ```bash
 ./reset-docker-from-scratch.sh
 ```
 
-Este script automatiza todo o processo de cleanup e reinicialização dos containers Docker.
-
-📖 **Documentação detalhada**: [DOCKER_RESET_GUIDE.md](DOCKER_RESET_GUIDE.md)
-
 ---
 
-## Documentation
+## Documentação
 
-- 📦 **[Docker Reset Guide](DOCKER_RESET_GUIDE.md)** - Troubleshooting e reset completo do ambiente
-- 🗄️ **[PostgreSQL Setup](infrastructure/postgres/README.md)** - Schema CNPJ, tabelas e queries
-- 🔀 **[CNPJ DAGs](pipelines/dags/README_CNPJ_DAG.md)** - Pipeline de dados CNPJ
-- 🏗️ **[Architecture Plan](ARCHITECTURE_PLAN.md)** - Visão geral da arquitetura
+| Documento | Conteúdo |
+|-----------|---------|
+| [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) | Stack, decisões arquiteturais, estratégia de storage |
+| [IMPLEMENTATION_STEPS.md](IMPLEMENTATION_STEPS.md) | Ambiente, hardware, status de implementação, comandos operacionais |
+| [infrastructure/postgres/README.md](infrastructure/postgres/README.md) | Setup PostgreSQL, schemas CNPJ, MatViews no SSD |
+| [pipelines/dags/README_CNPJ_DAG.md](pipelines/dags/README_CNPJ_DAG.md) | DAGs de pipeline CNPJ — uso e parâmetros |
+| [DOCKER_RESET_GUIDE.md](DOCKER_RESET_GUIDE.md) | Troubleshooting e reset detalhado dos containers |

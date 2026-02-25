@@ -48,9 +48,9 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     
     # Identify heavy indexes to drop/recreate for bulk load performance
     heavy_indexes = []
-    if table_name == "empresas":
+    if table_name == "empresa":
         heavy_indexes = [("idx_empresas_razao_social", "USING GIN (to_tsvector('portuguese', razao_social))")]
-    elif table_name == "estabelecimentos":
+    elif table_name == "estabelecimento":
         heavy_indexes = [("idx_estabelecimentos_nome_fantasia", "USING GIN (to_tsvector('portuguese', nome_fantasia))")]
     
     # First, ensure schema and table exist via psycopg2
@@ -142,8 +142,9 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     dsn = f"host={pg_host} port={pg_port} dbname={pg_db} user={pg_user} password={pg_pass}"
     duck_conn.execute(f"ATTACH '{dsn}' AS pg_db (TYPE POSTGRES)")
     
-    # Special handling for estabelecimentos: create stub empresas for missing CNPJs
-    if table_name == "estabelecimentos":
+    # Special handling para estabelecimento: garante que toda empresa referenciada existe
+    # (cnpj_basico pode estar em reference_month diferente — cria stub para não violar FK)
+    if table_name == "estabelecimento":
         logger.info("Ensuring all referenced empresas exist (creating stubs if needed)")
         
         # Collect all unique cnpj_basico from all parquet files using a temp table
@@ -161,23 +162,48 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                 WHERE cnpj_basico IS NOT NULL
             """)
         
-        # Get count and create stubs in a single operation
-        missing_count = duck_conn.execute("SELECT COUNT(DISTINCT cnpj_basico) FROM missing_empresas").fetchone()[0]
+        # Conta apenas os cnpj_basico realmente ausentes na tabela empresa
+        missing_count = duck_conn.execute(f"""
+            SELECT COUNT(DISTINCT m.cnpj_basico)
+            FROM missing_empresas m
+            LEFT JOIN pg_db.{schema}.empresa e ON e.cnpj_basico = m.cnpj_basico
+            WHERE e.cnpj_basico IS NULL
+        """).fetchone()[0]
         
         if missing_count > 0:
-            # Create stub empresas for CNPJs that don't exist
+            logger.info(f"  Creating {missing_count:,} stub empresa records for orphan cnpj_basico")
+            # Cria stub apenas para os cnpj_basico ausentes
             duck_conn.execute(f"""
-                INSERT INTO pg_db.{schema}.empresas (cnpj_basico, razao_social, reference_month)
-                SELECT DISTINCT cnpj_basico, 'EMPRESA NAO CARREGADA', '{reference_month}'
-                FROM missing_empresas
+                INSERT INTO pg_db.{schema}.empresa (cnpj_basico, razao_social, reference_month)
+                SELECT DISTINCT m.cnpj_basico, 'EMPRESA NAO CARREGADA', '{reference_month}'
+                FROM missing_empresas m
+                LEFT JOIN pg_db.{schema}.empresa e ON e.cnpj_basico = m.cnpj_basico
+                WHERE e.cnpj_basico IS NULL
                 ON CONFLICT (cnpj_basico) DO NOTHING
             """)
-            
-            logger.info(f"  Ensured {missing_count:,} empresas exist (stubs created if missing)")
+            logger.info(f"  Stubs created OK")
+        else:
+            logger.info("  All referenced empresas already exist — no stubs needed")
         
         # Clean up temp table
         duck_conn.execute("DROP TABLE missing_empresas")
     
+    # Verifica uma vez se reference_month já foi carregado (evita duplicate key em re-runs)
+    if not force_upsert:
+        already_loaded = duck_conn.execute(f"""
+            SELECT COUNT(*) FROM pg_db.{schema}.{table_name}
+            WHERE reference_month = '{reference_month}'
+            LIMIT 1
+        """).fetchone()[0]
+        if already_loaded > 0:
+            logger.info(
+                f"Skipping {table_name} — reference_month {reference_month} já carregado "
+                f"({already_loaded:,} rows). Use force_reprocess=True para recarregar."
+            )
+            duck_conn.execute("DETACH pg_db")
+            duck_conn.close()
+            return {"table": table_name, "reference_month": reference_month, "row_count": 0, "skipped": True}
+
     try:
         for parquet_file in parquet_files:
             file_name = Path(parquet_file).name
@@ -387,7 +413,7 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict
     
     total_nodes = 0
     total_relationships = 0
-    batch_size = 5000  # Process 5000 records per transaction
+    batch_size = 50000  # 50k rows per transaction — balances memory and throughput for 66M+ records
     
     try:
         with driver.session() as session:
@@ -400,7 +426,12 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict
                 logger.info(f"  Processing {file_path.name}")
                 file_start = time.time()
                 
-                # Get row count from parquet using DuckDB
+                # Get row count and column names from parquet schema
+                schema_rows = duck_conn.execute(
+                    f"DESCRIBE SELECT * FROM '{parquet_file}'"
+                ).fetchall()
+                columns = [row[0] for row in schema_rows]
+
                 total_file_rows = duck_conn.execute(
                     f"SELECT COUNT(*) FROM '{parquet_file}'"
                 ).fetchone()[0]
@@ -417,12 +448,23 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict
                         LIMIT {batch_size} OFFSET {batch_start}
                     """).fetchall()
                     
-                    # Get column names
-                    if batch_start == 0:
-                        columns = [desc[0] for desc in duck_conn.description]
-                    
-                    # Convert to list of dicts
-                    batch_dicts = [dict(zip(columns, row)) for row in batch_records]
+                    # Filtra apenas os campos permitidos para o Neo4j e converte
+                    # tipos não suportados pelo driver (ex: Decimal → float).
+                    # Campos analíticos (capital_social, endereço, contatos) ficam
+                    # exclusivamente no PostgreSQL.
+                    import decimal
+                    from .config import NEO4J_EMPRESA_FIELDS, NEO4J_ESTABELECIMENTO_FIELDS
+                    allowed = NEO4J_EMPRESA_FIELDS if entity_type == "Empresa" else NEO4J_ESTABELECIMENTO_FIELDS
+
+                    def _neo4j_safe(v):
+                        if isinstance(v, decimal.Decimal):
+                            return float(v)
+                        return v
+
+                    batch_dicts = [
+                        {k: _neo4j_safe(v) for k, v in zip(columns, row) if k in allowed}
+                        for row in batch_records
+                    ]
                     
                     if entity_type == "Empresa":
                         # Create/update Empresa nodes
@@ -475,14 +517,18 @@ def _create_empresa_nodes(tx, records):
     """
     Transaction function to create/update Empresa nodes.
     Uses MERGE to handle both insert and update.
+    Remove _stub flag if present (stubs criados por estabelecimentos são enriquecidos aqui).
+
+    Ordem Cypher correta: ON CREATE SET antes do SET livre.
     """
     query = """
     UNWIND $records AS record
     MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+    ON CREATE SET e.created_at = datetime()
     SET e += record,
         e.updated_at = datetime()
-    ON CREATE SET e.created_at = datetime()
-    RETURN COUNT(e) as nodes_created
+    REMOVE e._stub
+    RETURN COUNT(e) AS nodes_created
     """
     result = tx.run(query, records=records)
     return result.single()["nodes_created"]
@@ -491,34 +537,30 @@ def _create_empresa_nodes(tx, records):
 def _create_estabelecimento_nodes(tx, records):
     """
     Transaction function to create/update Estabelecimento nodes and relationships.
-    Uses MERGE to handle both insert and update.
+    Single atomic transaction: node + MERGE Empresa stub + relationship.
+
+    Empresa MERGE só cria stub (ON CREATE SET) — nunca sobrescreve com dados
+    do estabelecimento. Stub é enriquecido quando empresas forem carregadas.
+    Ordem Cypher correta: ON CREATE SET antes do SET livre.
     """
-    # Create complete CNPJ (14 digits) by concatenating parts
+    # Pre-compute CNPJ 14 dígitos no Python (mais rápido que concatenar no Cypher)
     for record in records:
         record['cnpj'] = f"{record['cnpj_basico']}{record['cnpj_ordem']}{record['cnpj_dv']}"
-    
-    # Create Estabelecimento nodes
-    node_query = """
+
+    # Tudo em uma única transação: nó Estabelecimento + stub Empresa + relacionamento
+    query = """
     UNWIND $records AS record
     MERGE (est:Estabelecimento {cnpj: record.cnpj})
+    ON CREATE SET est.created_at = datetime()
     SET est += record,
         est.updated_at = datetime()
-    ON CREATE SET est.created_at = datetime()
-    RETURN COUNT(est) as nodes_created
-    """
-    node_result = tx.run(node_query, records=records)
-    nodes_created = node_result.single()["nodes_created"]
-    
-    # Create relationships to Empresa nodes
-    rel_query = """
-    UNWIND $records AS record
-    MATCH (est:Estabelecimento {cnpj: record.cnpj})
-    MATCH (e:Empresa {cnpj_basico: record.cnpj_basico})
+    WITH est, record
+    MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+    ON CREATE SET e.created_at = datetime(), e._stub = true
     MERGE (est)-[r:PERTENCE_A]->(e)
     ON CREATE SET r.created_at = datetime()
-    RETURN COUNT(r) as relationships_created
+    RETURN COUNT(DISTINCT est) AS nodes_created, COUNT(DISTINCT r) AS relationships_created
     """
-    rel_result = tx.run(rel_query, records=records)
-    relationships_created = rel_result.single()["relationships_created"]
-    
-    return nodes_created, relationships_created
+    result = tx.run(query, records=records)
+    row = result.single()
+    return row["nodes_created"], row["relationships_created"]

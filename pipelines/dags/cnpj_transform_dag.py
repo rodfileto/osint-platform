@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import BranchPythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Import task groups from refactored modules
 from tasks.process_tasks import (
@@ -40,6 +41,7 @@ with DAG(
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
+    is_paused_upon_creation=False,
     tags=['cnpj', 'etl', 'duckdb', 'transform'],
     params={
         'reference_month': DEFAULT_REFERENCE_MONTH,
@@ -83,12 +85,28 @@ with DAG(
     
     # End marker (with trigger_rule ALL_DONE to handle branching)
     end = EmptyOperator(task_id='end', trigger_rule='none_failed_min_one_success')
-    
+
+    # Encadeia automaticamente com o próximo passo do pipeline
+    trigger_next = TriggerDagRunOperator(
+        task_id='trigger_load_postgres',
+        trigger_dag_id='cnpj_load_postgres',
+        conf={
+            'reference_month': '{{ params.reference_month }}',
+            'entity_type': 'all',
+            'force_reprocess': '{{ params.force_reprocess }}',
+        },
+        wait_for_completion=True,
+        poke_interval=30,
+        reset_dag_run=True,
+        execution_timeout=None,  # sem limite — aguarda o pipeline inteiro
+    )
+
     # Define dependencies
     start >> branch
-    
+
     branch >> empresas >> end
     branch >> estabelecimentos >> end
+    end >> trigger_next
 
 if __name__ == "__main__":
     dag.test()
