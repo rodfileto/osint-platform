@@ -514,3 +514,46 @@ class Simples(models.Model):
 
     def __str__(self):
         return f"{self.empresa_id} - Simples: {self.opcao_simples}"
+
+
+# ============================================================================
+# MATERIALIZED VIEW — busca (não gerenciada pelo Django)
+# ============================================================================
+
+class MvCompanySearch(models.Model):
+    """
+    Modelo não-gerenciado que mapeia a materialized view cnpj.mv_company_search.
+
+    A view é criada/atualizada pelo DAG cnpj_matview_refresh no Airflow.
+    O Django nunca cria, altera ou dropa esta tabela (managed = False).
+
+    Filtra apenas empresas ativas (situacao_cadastral = 2) e reside no
+    tablespace fast_ssd para leituras rápidas via índices GIN (pg_trgm).
+    """
+
+    cnpj_14 = models.CharField(
+        max_length=14,
+        primary_key=True,
+        help_text='CNPJ completo com 14 dígitos (cnpj_basico + ordem + dv)',
+    )
+    cnpj_basico = models.CharField(max_length=8)
+    cnpj_ordem = models.CharField(max_length=4)
+    cnpj_dv = models.CharField(max_length=2)
+    razao_social = models.TextField()
+    nome_fantasia = models.TextField(null=True, blank=True)
+    situacao_cadastral = models.IntegerField(null=True)
+    municipio = models.TextField(null=True, blank=True)
+    uf = models.CharField(max_length=2, null=True, blank=True)
+    cnae_fiscal_principal = models.IntegerField(null=True)
+    porte_empresa = models.CharField(max_length=2, null=True, blank=True)
+    natureza_juridica = models.IntegerField(null=True)
+    capital_social = models.DecimalField(max_digits=15, decimal_places=2, null=True)
+
+    class Meta:
+        managed = False
+        db_table = '"cnpj"."mv_company_search"'
+        verbose_name = 'Empresa (busca)'
+        verbose_name_plural = 'Empresas (busca)'
+
+    def __str__(self):
+        return f"{self.cnpj_14} - {self.razao_social}"

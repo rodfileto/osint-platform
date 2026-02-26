@@ -26,8 +26,10 @@ Cada fonte de dados (CNPJ, Sanções, Contratos) tem seu próprio pipeline indep
 
 - Localização: `/pipelines/{fonte}/`
 - Ferramentas: **DuckDB** (transformações bulk), **Python**, **Apache Airflow** (orquestração)
-- Fluxo padrão: `Download → Extract → Transform (Parquet) → Load PostgreSQL → Load Neo4j`
-- Outputs: tabelas limpas no PostgreSQL, arestas no Neo4j, Parquet como intermediário
+- Fluxo padrão: `Download → Transform (Parquet) → Load PostgreSQL → MatView Refresh → Load Neo4j`
+- DAGs encadeadas via `TriggerDagRunOperator` — cada DAG aciona a próxima ao terminar
+- Outputs: tabelas limpas no PostgreSQL, nós/arestas no Neo4j, Parquet como intermediário
+- Dumps mensais são **full snapshots** — apenas o mês mais recente é processado
 
 ---
 
@@ -49,8 +51,9 @@ Isso permite que a camada de busca do frontend use I/O de SSD sem pagar o custo 
 
 Grafo unificado entre todas as fontes para inteligência cross-domínio:
 
-- **Nodes:** `Empresa`, `Pessoa`, `Contrato`, `SanctionedEntity`
-- **Relationships:** `SOCIO_DE`, `CONTRATOU`, `DOADOR_DE`, `LOCALIZADO_EM`
+- **Nodes (implementados):** `Empresa` (66.6M), `Estabelecimento` (69.1M)
+- **Nodes (planejados):** `Pessoa`, `Contrato`, `SanctionedEntity`
+- **Relationships (planejados):** `SOCIO_DE`, `CONTRATOU`, `DOADOR_DE`, `LOCALIZADO_EM`
 
 Permite consultas como: *"Um sócio da Empresa A aparece em lista de sanções e venceu licitações públicas?"*
 

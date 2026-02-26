@@ -28,6 +28,14 @@ cp .env.example .env
 docker-compose up -d --build
 ```
 
+### Executar Pipeline CNPJ Completo
+
+```bash
+# Detecta o mês mais recente e executa a cadeia:
+# transform → load_postgres → matview → neo4j
+./pipelines/scripts/cnpj/run_pipeline.sh
+```
+
 ### Reset Completo do Ambiente
 
 ```bash
@@ -43,5 +51,5 @@ docker-compose up -d --build
 | [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md) | Stack, decisões arquiteturais, estratégia de storage |
 | [IMPLEMENTATION_STEPS.md](IMPLEMENTATION_STEPS.md) | Ambiente, hardware, status de implementação, comandos operacionais |
 | [infrastructure/postgres/README.md](infrastructure/postgres/README.md) | Setup PostgreSQL, schemas CNPJ, MatViews no SSD |
-| [pipelines/dags/README_CNPJ_DAG.md](pipelines/dags/README_CNPJ_DAG.md) | DAGs de pipeline CNPJ — uso e parâmetros |
+| [pipelines/dags/cnpj/](pipelines/dags/cnpj/) | DAGs do pipeline CNPJ (`transform → postgres → matview → neo4j`) |
 | [DOCKER_RESET_GUIDE.md](DOCKER_RESET_GUIDE.md) | Troubleshooting e reset detalhado dos containers |

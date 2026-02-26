@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  webpack(config) {
+  webpack(config: Parameters<NonNullable<NextConfig["webpack"]>>[0]) {
     config.module.rules.push({
       test: /\.svg$/,
       use: ["@svgr/webpack"],

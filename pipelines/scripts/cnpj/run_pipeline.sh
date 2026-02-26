@@ -1,14 +1,14 @@
 #!/bin/bash
 # =============================================================================
-# run_pipeline.sh  —  Dispara o pipeline CNPJ completo
+# pipelines/scripts/cnpj/run_pipeline.sh  —  Dispara o pipeline CNPJ completo
 #
 # A partir de cnpj_transform, cada DAG aciona a próxima automaticamente:
 #   cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo4j
 #
-# Uso:
-#   ./run_pipeline.sh [reference_month] [force_reprocess]
-#   ./run_pipeline.sh 2026-02 true
-#   ./run_pipeline.sh              # detecta o mês mais recente automaticamente
+# Uso (a partir da raiz do projeto):
+#   ./pipelines/scripts/cnpj/run_pipeline.sh [reference_month] [force_reprocess]
+#   ./pipelines/scripts/cnpj/run_pipeline.sh 2026-02 true
+#   ./pipelines/scripts/cnpj/run_pipeline.sh   # detecta o mês mais recente automaticamente
 # =============================================================================
 
 set -euo pipefail

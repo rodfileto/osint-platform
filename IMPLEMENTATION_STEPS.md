@@ -19,14 +19,16 @@
 ### Banco de Dados (estado atual — fev/2026)
 
 **PostgreSQL 16 (`osint_metadata`):** 106 GB total
-- `cnpj.empresa`: 83 GB — 66.675.557 registros
-- `cnpj.estabelecimento`: 24 GB — 69.177.350 registros
+- `cnpj.empresa`: 83 GB — 66.936.364 registros
+- `cnpj.estabelecimento`: 24 GB — 69.446.909 registros
 - `cnpj.mv_company_search`: 6.785 MB no SSD — 27.795.796 registros (ativos)
 - `cnpj.download_manifest`: ~1 MB
 
 **Neo4j:** 5.2 GB (localizado no SSD)
+- `Empresa`: 66.682.246 nós
+- `Estabelecimento`: 69.177.350 nós
 
-**Cobertura de dados:** 48+ meses de CNPJ (2021-10 a 2025-07)
+**Cobertura de dados:** 49+ meses de CNPJ (2021-10 a 2026-02)
 
 ### Tuning Aplicado
 
@@ -115,16 +117,36 @@ SET max_parallel_workers_per_gather = 0;
 
 ### ✅ DAGs Airflow CNPJ
 
+Todas as DAGs ficam em `pipelines/dags/cnpj/` e se encadeiam automaticamente via `TriggerDagRunOperator(wait_for_completion=True)`:
+
+```
+cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo4j
+```
+
+**`cnpj_transform`**
+- Descompacta ZIPs e transforma CSVs raw em Parquet via DuckDB
+- Suporta `force_reprocess` para regeração de Parquets existentes
+- Ao terminar, dispara `cnpj_load_postgres` automaticamente
+
 **`cnpj_load_postgres`**
-- Carrega Parquet → PostgreSQL via DuckDB
+- Carrega Parquet → PostgreSQL via UPSERT (`ON CONFLICT`)
 - Cria stubs de empresa para CNPJs órfãos (garante integridade FK)
-- Verifica `reference_month` antes de reinserir (idempotente)
-- Dispara `cnpj_matview_refresh` via `TriggerDagRunOperator` ao terminar
+- `execution_timeout=None` — UPSERT de ~135M rows pode levar várias horas
+- Ao terminar, dispara `cnpj_matview_refresh` automaticamente
 
 **`cnpj_matview_refresh`**
 - Cria `mv_company_search` se não existe, `REFRESH CONCURRENTLY` se já existe
 - 4 índices criados no tablespace `fast_ssd`
-- `is_paused_upon_creation=False`
+- Ao terminar, dispara `cnpj_load_neo4j` automaticamente
+
+**`cnpj_load_neo4j`**
+- Carrega Parquet → Neo4j via `MERGE` (idempotente)
+- Nós: `Empresa` (66.6M) e `Estabelecimento` (69.1M)
+- Estimativa de tempo: ~4–5h para carga completa do mês mais recente
+
+**`cnpj_download`**
+- Download dos ZIPs mensais da Receita Federal
+- Acionado manualmente quando um novo dump estiver disponível
 
 ### ✅ PostgreSQL Performance Layer (MatViews no SSD)
 - Tablespace `fast_ssd` → `/var/lib/postgresql/ssd_tablespace`
@@ -142,8 +164,9 @@ SET max_parallel_workers_per_gather = 0;
 - SP lidera com 8.437.482 estabelecimentos ativos
 
 ### ✅ Dados Históricos CNPJ
-- 48+ meses carregados (2021-10 a 2025-07)
-- Dados raw em `data/cnpj/raw/` (174+ GB)
+- 49+ meses disponíveis em `data/cnpj/raw/` (2021-10 a 2026-02, 174+ GB)
+- Dumps CNPJ são **full snapshots** — apenas o mês mais recente (2026-02) é processado
+- Parquets transformados em `data/cnpj/processed/2026-02/`
 
 ---
 
@@ -161,20 +184,30 @@ docker-compose ps
 ./reset-docker-from-scratch.sh
 ```
 
-### Disparar Pipeline CNPJ (novo mês)
+### Disparar Pipeline CNPJ Completo
 ```bash
-docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_postgres \
-  --conf '{"reference_month": "2025-08", "entity_type": "all"}'
+# Detecta o mês mais recente automaticamente e executa a cadeia completa:
+# cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo4j
+./pipelines/scripts/cnpj/run_pipeline.sh
+
+# Especificar mês
+./pipelines/scripts/cnpj/run_pipeline.sh 2026-02
+
+# Forçar reprocessamento (mesmo que Parquets já existam)
+./pipelines/scripts/cnpj/run_pipeline.sh 2026-02 true
 ```
 
-### Forçar Reprocessamento de Mês já Carregado
+### Disparar DAG Individual
 ```bash
-docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_postgres \
-  --conf '{"reference_month": "2025-07", "force_reprocess": true}'
-```
+# Apenas transform
+docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_transform \
+  --conf '{"reference_month": "2026-02"}'
 
-### Refresh Manual da MatView
-```bash
+# Apenas load postgres
+docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_postgres \
+  --conf '{"reference_month": "2026-02", "entity_type": "all"}'
+
+# Refresh manual da MatView
 docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_matview_refresh
 ```
 
@@ -191,15 +224,14 @@ SELECT 'mv_company_search',           COUNT(*) FROM cnpj.mv_company_search;
 
 ### Matar Run Travado no Airflow (emergência)
 ```bash
-# Conectar ao banco de metadados do Airflow
-docker exec -it osint-platform-airflow-webserver-1 bash -c \
-  "airflow db shell"
-```
-```sql
-UPDATE dag_run SET state='failed', end_date=NOW()
-  WHERE dag_id='cnpj_load_postgres' AND state IN ('running','queued');
-UPDATE task_instance SET state='failed', end_date=NOW()
-  WHERE dag_id='cnpj_load_postgres' AND state IN ('running','up_for_retry');
+docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
+  UPDATE dag_run SET state='failed'
+    WHERE dag_id IN ('cnpj_transform','cnpj_load_postgres','cnpj_matview_refresh','cnpj_load_neo4j')
+    AND state IN ('running','queued');
+  UPDATE task_instance SET state='failed'
+    WHERE dag_id IN ('cnpj_transform','cnpj_load_postgres')
+    AND state IN ('running','queued','up_for_retry');
+"
 ```
 
 ---
@@ -219,8 +251,8 @@ UPDATE task_instance SET state='failed', end_date=NOW()
 - [ ] Filtros geográficos e setoriais
 
 ### Pipeline — Expansão
-- [ ] Carregar dados de sócios (`cnpj_socios`) → Neo4j
-- [ ] Ativar `cnpj_load_neo4j_dag.py` (carga incremental)
+- [ ] Carregar dados de sócios (`cnpj_socios`) → Neo4j (relationships `SOCIO_DE`)
+- [ ] Relacionamentos Neo4j entre Empresa e Estabelecimento
 - [ ] Pipeline de sanções
 - [ ] Pipeline de contratos públicos (PNCP)
 

@@ -84,6 +84,7 @@ services:
       - /home/rfileto/osint_pg_ssd:/var/lib/postgresql/ssd_tablespace  # SSD for MatViews & Indexes
     ports:
       - "5432:5432"
+    shm_size: '17g'                        # deve ser >= shared_buffers (16GB)
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 10s
@@ -164,7 +165,7 @@ services:
     env_file:
       - .env
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
 
