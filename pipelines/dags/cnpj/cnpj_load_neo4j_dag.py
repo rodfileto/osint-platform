@@ -23,7 +23,7 @@ default_args = {
     'email_on_retry': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=12),  # 66M empresas + 69M estabelecimentos estimado 6-8h
+    'execution_timeout': timedelta(hours=12),  # 66M empresas + ~17.5M Pessoa + ~17.5M SOCIO_DE
 }
 
 with DAG(
@@ -38,7 +38,7 @@ with DAG(
     tags=['cnpj', 'etl', 'neo4j', 'load'],
     params={
         'reference_month': DEFAULT_REFERENCE_MONTH, # Can be 'all'
-        'entity_type': 'all', # Can be 'empresas', 'estabelecimentos', or 'all'
+        'entity_type': 'all', # Valores válidos: 'empresas', 'socios', 'all'. 'estabelecimentos' ignorado (Cenário A — filiais via Postgres).
         'force_reprocess': False,  # Re-run already processed files
     },
 ) as dag:

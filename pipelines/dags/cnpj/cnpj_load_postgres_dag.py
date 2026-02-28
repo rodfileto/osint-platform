@@ -40,6 +40,7 @@ with DAG(
         'reference_month': DEFAULT_REFERENCE_MONTH, # Can be 'all'
         'entity_type': 'all', # Can be 'empresas', 'estabelecimentos', or 'all'
         'force_reprocess': False,  # Re-run already processed files (UPSERT mode)
+        'max_files': 0,  # 0 = sem limite; >0 = limita parquet files por entidade (útil para testes)
     },
 ) as dag:
     

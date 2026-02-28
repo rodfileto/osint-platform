@@ -10,7 +10,13 @@ from pathlib import Path
 from airflow.decorators import task, task_group
 
 from .extract_tasks import extract_zip_file
-from .transform_tasks import transform_empresas_duckdb, transform_estabelecimentos_duckdb
+from .transform_tasks import (
+    transform_empresas_duckdb,
+    transform_estabelecimentos_duckdb,
+    transform_socios_duckdb,
+    transform_simples_duckdb,
+    transform_reference_duckdb,
+)
 from .load_tasks import load_to_postgresql, load_to_neo4j
 
 logger = logging.getLogger(__name__)
@@ -315,6 +321,20 @@ def get_parquets_for_month_and_type(reference_month: str, entity_type: str) -> l
         pattern = "empresas_*.parquet"
     elif entity_type.lower() == 'estabelecimentos':
         pattern = "estabelecimentos_*.parquet"
+    elif entity_type.lower() == 'socios':
+        pattern = "socios_*.parquet"
+    elif entity_type.lower() == 'simples':
+        pattern = "simples.parquet"
+    elif entity_type.lower() in ('cnaes', 'motivos', 'municipios', 'naturezas', 'paises', 'qualificacoes'):
+        name_map = {
+            'cnaes': 'cnaes.parquet',
+            'motivos': 'motivos.parquet',
+            'municipios': 'municipios.parquet',
+            'naturezas': 'naturezas.parquet',
+            'paises': 'paises.parquet',
+            'qualificacoes': 'qualificacoes.parquet',
+        }
+        pattern = name_map[entity_type.lower()]
     else:
         logger.error(f"Unknown entity type: {entity_type}")
         return []
@@ -350,44 +370,55 @@ def load_postgres_group():
     def load_to_pg(task_params: dict, **context) -> dict:
         ref_month = task_params['reference_month']
         entity_type = task_params['entity_type']
+        max_files = int(context.get('params', {}).get('max_files', 0))
         
         months_to_process = [ref_month]
         if ref_month.lower() == 'all':
             months_to_process = get_all_processed_months.function()
             
-        entities_to_process = ['empresas', 'estabelecimentos']
-        if entity_type.lower() in ['empresas', 'estabelecimentos']:
+        ALL_ENTITIES = ['empresas', 'estabelecimentos', 'socios', 'simples',
+                        'cnaes', 'motivos', 'municipios', 'naturezas', 'paises', 'qualificacoes']
+        ENTITY_TABLE_MAP = {
+            'empresas': 'empresa',
+            'estabelecimentos': 'estabelecimento',
+            'socios': 'socio',
+            'simples': 'simples',
+            'cnaes': 'cnae',
+            'motivos': 'motivo_situacao_cadastral',
+            'municipios': 'municipio',
+            'naturezas': 'natureza_juridica',
+            'paises': 'pais',
+            'qualificacoes': 'qualificacao_socio',
+        }
+
+        if entity_type.lower() in ALL_ENTITIES:
             entities_to_process = [entity_type.lower()]
-            
+        else:
+            entities_to_process = ALL_ENTITIES
+
         total_loaded = 0
-        
+
         for month in months_to_process:
             logger.info(f"Loading to Postgres for month: {month}")
-            
-            if 'empresas' in entities_to_process:
-                empresas_files = get_parquets_for_month_and_type.function(month, 'empresas')
-                if empresas_files:
-                    result = load_to_postgresql.function(
-                        parquet_files=empresas_files, 
-                        table_name="empresa", 
-                        schema="cnpj", 
-                        reference_month=month,
-                        **context
-                    )
-                    total_loaded += result.get('row_count', 0)
-                    
-            if 'estabelecimentos' in entities_to_process:
-                estabelecimentos_files = get_parquets_for_month_and_type.function(month, 'estabelecimentos')
-                if estabelecimentos_files:
-                    result = load_to_postgresql.function(
-                        parquet_files=estabelecimentos_files, 
-                        table_name="estabelecimento", 
-                        schema="cnpj", 
-                        reference_month=month,
-                        **context
-                    )
-                    total_loaded += result.get('row_count', 0)
-                    
+
+            for entity in entities_to_process:
+                parquet_files = get_parquets_for_month_and_type.function(month, entity)
+                if not parquet_files:
+                    logger.info(f"  No parquet files found for {entity} / {month} — skipping")
+                    continue
+                if max_files > 0:
+                    logger.info(f"  max_files={max_files}: limiting to {max_files} of {len(parquet_files)} files")
+                    parquet_files = parquet_files[:max_files]
+                table_name = ENTITY_TABLE_MAP[entity]
+                result = load_to_postgresql.function(
+                    parquet_files=parquet_files,
+                    table_name=table_name,
+                    schema="cnpj",
+                    reference_month=month,
+                    **context
+                )
+                total_loaded += result.get('row_count', 0)
+
         return {"total_loaded": total_loaded}
         
     params = get_params()
@@ -417,10 +448,23 @@ def load_neo4j_group():
         if ref_month.lower() == 'all':
             months_to_process = get_all_processed_months.function()
             
-        entities_to_process = ['empresas', 'estabelecimentos']
-        if entity_type.lower() in ['empresas', 'estabelecimentos']:
+        # Cenário A: Estabelecimento removido do Neo4j.
+        # Filiais são consultadas via JOIN com cnpj.mv_company_search no PostgreSQL.
+        # O grafo Neo4j fica focado em estrutura societária: Empresa ← SOCIO_DE → Pessoa.
+        NEO4J_ENTITIES = ['empresas', 'socios']
+
+        if entity_type.lower() == 'estabelecimentos':
+            logger.warning(
+                "entity_type='estabelecimentos' ignorado: Estabelecimento foi removido do Neo4j "
+                "(Cenário A). Filiais consultadas via mv_company_search no PostgreSQL."
+            )
+            return {"total_nodes": 0, "total_relationships": 0, "skipped": "estabelecimentos_not_in_neo4j"}
+
+        if entity_type.lower() in NEO4J_ENTITIES:
             entities_to_process = [entity_type.lower()]
-            
+        else:
+            entities_to_process = NEO4J_ENTITIES
+
         total_nodes = 0
         total_rels = 0
         
@@ -436,13 +480,13 @@ def load_neo4j_group():
                         **context
                     )
                     total_nodes += result.get('total_nodes', 0)
-                    
-            if 'estabelecimentos' in entities_to_process:
-                estabelecimentos_files = get_parquets_for_month_and_type.function(month, 'estabelecimentos')
-                if estabelecimentos_files:
+
+            if 'socios' in entities_to_process:
+                socios_files = get_parquets_for_month_and_type.function(month, 'socios')
+                if socios_files:
                     result = load_to_neo4j.function(
-                        parquet_files=estabelecimentos_files, 
-                        entity_type="Estabelecimento",
+                        parquet_files=socios_files,
+                        entity_type="Socio",
                         **context
                     )
                     total_nodes += result.get('total_nodes', 0)
@@ -452,3 +496,302 @@ def load_neo4j_group():
         
     params = get_params()
     load_to_neo(params)
+
+
+# ============================================================================
+# SOCIOS TRANSFORM GROUP
+# ============================================================================
+
+@task
+def process_socios_file(reference_month: str, file_name: str, **context) -> dict:
+    """
+    Process a single Socios file: extract, transform, return result.
+    Pattern mirrors process_empresas_file / process_estabelecimentos_file.
+    """
+    import sys
+    sys.path.insert(0, '/opt/airflow/scripts/cnpj')
+    from manifest_tracker import (
+        is_file_processed, mark_extracted, mark_transformed, mark_failed
+    )
+
+    force_reprocess = context.get('params', {}).get('force_reprocess', False)
+
+    if not force_reprocess and is_file_processed(reference_month, file_name, 'transformed'):
+        logger.info(f"{file_name} already transformed, skipping")
+        file_num = file_name.replace('Socios', '').replace('.zip', '')
+        parquet_file = PROCESSED_PATH / reference_month / f"socios_{file_num}.parquet"
+        if parquet_file.exists():
+            return {"parquet_path": str(parquet_file), "skipped": True}
+        return None
+
+    try:
+        file_num = file_name.replace('Socios', '').replace('.zip', '')
+        zip_file = RAW_PATH / reference_month / file_name
+        staging_dir = STAGING_PATH / reference_month / f"socios_{file_num}"
+        parquet_file = PROCESSED_PATH / reference_month / f"socios_{file_num}.parquet"
+
+        if not zip_file.exists():
+            logger.warning(f"{file_name} not found for {reference_month}")
+            return None
+
+        if not is_file_processed(reference_month, file_name, 'extracted'):
+            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            csv_path = extract_info["extracted_files"][0]
+            mark_extracted(reference_month, file_name, csv_path)
+        else:
+            csv_files = (
+                list(staging_dir.glob('*.CSV'))
+                + list(staging_dir.glob('*.SOCIOCSV'))
+                + list(staging_dir.glob('*'))
+            )
+            csv_files = [f for f in csv_files if f.is_file()]
+            csv_path = str(csv_files[0]) if csv_files else None
+
+        if not csv_path:
+            raise ValueError(f"CSV file not found for {file_name}")
+
+        start_time = time.time()
+        transform_info = transform_socios_duckdb.function(csv_path, str(parquet_file))
+        duration = time.time() - start_time
+
+        mark_transformed(
+            reference_month,
+            file_name,
+            transform_info["output_parquet"],
+            transform_info["row_count"],
+            duration,
+        )
+
+        return {
+            "parquet_path": transform_info["output_parquet"],
+            "row_count": transform_info["row_count"],
+            "skipped": False,
+        }
+
+    except Exception as e:
+        mark_failed(reference_month, file_name, str(e))
+        logger.error(f"Failed to process {file_name}: {e}")
+        raise
+
+
+@task_group
+def transform_socios_group():
+    """
+    Extract and transform all Socios files (Socios0.zip … Socios9.zip)
+    for a given reference month.
+    """
+    @task
+    def get_ref_month(**context) -> str:
+        from .config import DEFAULT_REFERENCE_MONTH
+        return context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH)
+
+    @task
+    def get_socios_files(reference_month: str, **context) -> list:
+        import sys
+        sys.path.insert(0, '/opt/airflow/scripts/cnpj')
+        from manifest_tracker import get_files_to_process, get_files_for_reprocessing
+
+        force_reprocess = context['params'].get('force_reprocess', False)
+
+        if force_reprocess:
+            files = get_files_for_reprocessing(reference_month, file_type='socios', require_parquet=True)
+        else:
+            files = get_files_to_process(reference_month, file_type='socios', stage='transformed')
+
+        file_names = [f['file_name'] for f in files]
+        logger.info(f"Found {len(file_names)} Socios files to process: {file_names}")
+        return file_names
+
+    ref_month = get_ref_month()
+    files_to_process = get_socios_files(ref_month)
+
+    process_socios_file.partial(reference_month=ref_month).expand(file_name=files_to_process)
+
+
+# ============================================================================
+# SIMPLES TRANSFORM GROUP
+# ============================================================================
+
+@task
+def process_simples_file(reference_month: str, **context) -> dict:
+    """
+    Process the single Simples.zip file for a reference month.
+    """
+    import sys
+    sys.path.insert(0, '/opt/airflow/scripts/cnpj')
+    from manifest_tracker import (
+        is_file_processed, mark_extracted, mark_transformed, mark_failed
+    )
+
+    file_name = 'Simples.zip'
+    force_reprocess = context.get('params', {}).get('force_reprocess', False)
+
+    if not force_reprocess and is_file_processed(reference_month, file_name, 'transformed'):
+        parquet_file = PROCESSED_PATH / reference_month / 'simples.parquet'
+        if parquet_file.exists():
+            return {'parquet_path': str(parquet_file), 'skipped': True}
+        return None
+
+    try:
+        zip_file = RAW_PATH / reference_month / file_name
+        staging_dir = STAGING_PATH / reference_month / 'simples'
+        parquet_file = PROCESSED_PATH / reference_month / 'simples.parquet'
+
+        if not zip_file.exists():
+            logger.warning(f"{file_name} not found for {reference_month}")
+            return None
+
+        if not is_file_processed(reference_month, file_name, 'extracted'):
+            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            csv_path = extract_info['extracted_files'][0]
+            mark_extracted(reference_month, file_name, csv_path)
+        else:
+            csv_files = [f for f in staging_dir.glob('*') if f.is_file()]
+            csv_path = str(csv_files[0]) if csv_files else None
+
+        if not csv_path:
+            raise ValueError(f"CSV file not found for {file_name}")
+
+        start_time = time.time()
+        transform_info = transform_simples_duckdb.function(csv_path, str(parquet_file))
+        duration = time.time() - start_time
+
+        mark_transformed(
+            reference_month, file_name,
+            transform_info['output_parquet'], transform_info['row_count'], duration,
+        )
+
+        return {'parquet_path': transform_info['output_parquet'], 'row_count': transform_info['row_count'], 'skipped': False}
+
+    except Exception as e:
+        mark_failed(reference_month, file_name, str(e))
+        logger.error(f"Failed to process {file_name}: {e}")
+        raise
+
+
+@task_group
+def transform_simples_group():
+    """Extract and transform Simples.zip for a given reference month."""
+
+    @task
+    def get_ref_month(**context) -> str:
+        from .config import DEFAULT_REFERENCE_MONTH
+        return context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH)
+
+    ref_month = get_ref_month()
+    process_simples_file(ref_month)
+
+
+# ============================================================================
+# REFERENCE TABLES TRANSFORM GROUP
+# ============================================================================
+
+# Mapping: zip stem -> (ref_type, output parquet name)
+REFERENCE_FILES = {
+    'Cnaes': ('cnaes', 'cnaes.parquet'),
+    'Motivos': ('motivos', 'motivos.parquet'),
+    'Municipios': ('municipios', 'municipios.parquet'),
+    'Naturezas': ('naturezas', 'naturezas.parquet'),
+    'Paises': ('paises', 'paises.parquet'),
+    'Qualificacoes': ('qualificacoes', 'qualificacoes.parquet'),
+}
+
+
+@task
+def process_reference_file(reference_month: str, zip_stem: str, **context) -> dict:
+    """
+    Process a single reference table ZIP (Cnaes, Motivos, Municipios, etc.).
+
+    Args:
+        reference_month: YYYY-MM format
+        zip_stem: Stem of the ZIP file (e.g. 'Cnaes', 'Motivos')
+    """
+    import sys
+    sys.path.insert(0, '/opt/airflow/scripts/cnpj')
+    from manifest_tracker import (
+        is_file_processed, mark_extracted, mark_transformed, mark_failed
+    )
+
+    ref_type, parquet_name = REFERENCE_FILES[zip_stem]
+    file_name = f'{zip_stem}.zip'
+    force_reprocess = context.get('params', {}).get('force_reprocess', False)
+
+    if not force_reprocess and is_file_processed(reference_month, file_name, 'transformed'):
+        parquet_file = PROCESSED_PATH / reference_month / parquet_name
+        if parquet_file.exists():
+            return {'parquet_path': str(parquet_file), 'ref_type': ref_type, 'skipped': True}
+        return None
+
+    try:
+        zip_file = RAW_PATH / reference_month / file_name
+        staging_dir = STAGING_PATH / reference_month / ref_type
+        parquet_file = PROCESSED_PATH / reference_month / parquet_name
+
+        if not zip_file.exists():
+            logger.warning(f"{file_name} not found for {reference_month}")
+            return None
+
+        if not is_file_processed(reference_month, file_name, 'extracted'):
+            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            csv_path = extract_info['extracted_files'][0]
+            mark_extracted(reference_month, file_name, csv_path)
+        else:
+            csv_files = [f for f in staging_dir.glob('*') if f.is_file()]
+            csv_path = str(csv_files[0]) if csv_files else None
+
+        if not csv_path:
+            raise ValueError(f"CSV file not found for {file_name}")
+
+        start_time = time.time()
+        transform_info = transform_reference_duckdb.function(csv_path, str(parquet_file), ref_type)
+        duration = time.time() - start_time
+
+        mark_transformed(
+            reference_month, file_name,
+            transform_info['output_parquet'], transform_info['row_count'], duration,
+        )
+
+        return {
+            'parquet_path': transform_info['output_parquet'],
+            'ref_type': ref_type,
+            'row_count': transform_info['row_count'],
+            'skipped': False,
+        }
+
+    except Exception as e:
+        mark_failed(reference_month, file_name, str(e))
+        logger.error(f"Failed to process {file_name}: {e}")
+        raise
+
+
+@task_group
+def transform_references_group():
+    """
+    Extract and transform all 6 reference table ZIPs for a given reference month.
+    Files run sequentially (they are small and fast).
+    """
+
+    @task
+    def get_ref_month(**context) -> str:
+        from .config import DEFAULT_REFERENCE_MONTH
+        return context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH)
+
+    @task
+    def run_all_references(reference_month: str, **context) -> dict:
+        results = {}
+        for zip_stem in REFERENCE_FILES:
+            try:
+                result = process_reference_file.function(
+                    reference_month=reference_month,
+                    zip_stem=zip_stem,
+                    **context,
+                )
+                results[zip_stem] = result
+                logger.info(f"  {zip_stem}: {result}")
+            except Exception as e:
+                logger.error(f"  {zip_stem} failed: {e}")
+                results[zip_stem] = {'error': str(e)}
+        return results
+
+    ref_month = get_ref_month()
+    run_all_references(ref_month)

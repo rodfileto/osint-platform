@@ -38,6 +38,11 @@ NEO4J_EMPRESA_FIELDS = {
     #            ente_federativo_responsavel (raramente preenchido)
 }
 
+# ---------------------------------------------------------------------------
+# DEPRECATED (Cenário A) — Estabelecimento não é mais carregado no Neo4j.
+# Filiais são consultadas via JOIN com cnpj.mv_company_search no PostgreSQL (SSD).
+# Mantido aqui apenas como referência dos campos disponíveis no Parquet.
+# ---------------------------------------------------------------------------
 NEO4J_ESTABELECIMENTO_FIELDS = {
     "cnpj_basico",               # FK para Empresa
     "cnpj_ordem",                # parte da PK do CNPJ
@@ -51,4 +56,29 @@ NEO4J_ESTABELECIMENTO_FIELDS = {
     "municipio",                 # cidade
     # excluídos: endereço completo, contatos, datas/motivos de situação,
     #            cnae_fiscal_secundaria, codigo_municipio, codigo_pais, etc.
+}
+
+# ---------------------------------------------------------------------------
+# Modelo Híbrido — Sócios (Pessoa + relacionamento SOCIO_DE)
+#
+# Nó :Pessoa — apenas campos essenciais para traversal e identidade (5 props).
+# Campos de detalhe (pais, representante_legal, qualificacao_representante_legal,
+# created_at, updated_at) ficam exclusivamente no PostgreSQL.
+# ---------------------------------------------------------------------------
+
+NEO4J_PESSOA_NODE_FIELDS = {
+    "nome",                 # nome_socio_razao_social — busca textual e identidade
+    "cpf_cnpj_socio",       # CPF/CNPJ mascarado — join com Postgres quando necessário
+    "identificador_socio",  # 1=PJ, 2=PF, 3=Estrangeiro — filtro frequente no grafo
+    "faixa_etaria",         # alta utilidade OSINT (análise de rede por faixa etária)
+    # excluídos do nó: pais (lookup pontual), representante_legal / nome_do_representante
+    #   / qualificacao_representante_legal (dados de detalhe, não de travessia),
+    #   created_at / updated_at (controle operacional)
+}
+
+# Campos do relacionamento [:SOCIO_DE] — (Pessoa)-[:SOCIO_DE]->(Empresa)
+NEO4J_SOCIO_REL_FIELDS = {
+    "qualificacao_socio",        # tipo de vínculo (sócio, administrador, etc.)
+    "data_entrada_sociedade",    # análise temporal de vínculos
+    # reference_month e duplicate_count são adicionados em Python, não vêm do parquet
 }

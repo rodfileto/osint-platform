@@ -36,8 +36,13 @@ from .date_cleaners import (
 from .query_builders import (
     empresas_cleaning_template,
     estabelecimentos_cleaning_template,
+    socios_cleaning_template,
+    simples_cleaning_template,
     build_empresas_query,
     build_estabelecimentos_query,
+    build_socios_query,
+    build_simples_query,
+    build_reference_query,
 )
 
 __all__ = [
@@ -68,6 +73,11 @@ __all__ = [
     # Templates
     'empresas_cleaning_template',
     'estabelecimentos_cleaning_template',
+    'socios_cleaning_template',
+    'simples_cleaning_template',
     'build_empresas_query',
     'build_estabelecimentos_query',
+    'build_socios_query',
+    'build_simples_query',
+    'build_reference_query',
 ]

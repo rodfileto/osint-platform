@@ -270,3 +270,210 @@ def build_estabelecimentos_query(csv_path: str, output_path: str) -> str:
         WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
     ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
     """
+
+
+# ============================================================================
+# SOCIOS
+# ============================================================================
+
+def socios_cleaning_template() -> str:
+    """
+    SQL template for cleaning Socios CSV.
+
+    Schema (11 columns, semicolon-delimited, no header):
+        0  cnpj_basico              VARCHAR(8)
+        1  identificador_socio      INTEGER  (1=PJ, 2=PF, 3=Estrangeiro)
+        2  nome_socio_razao_social  TEXT
+        3  cpf_cnpj_socio           VARCHAR(14) — mascarado pela RF
+        4  qualificacao_socio       INTEGER
+        5  data_entrada_sociedade   DATE (YYYYMMDD)
+        6  pais                     INTEGER (código)
+        7  representante_legal      VARCHAR(14) — CPF mascarado
+        8  nome_do_representante    TEXT
+        9  qualificacao_representante_legal  INTEGER
+       10  faixa_etaria             INTEGER
+    """
+    return """SELECT
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') AS cnpj_basico,
+
+        TRY_CAST(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS INTEGER) AS identificador_socio,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END AS nome_socio_razao_social,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END AS cpf_cnpj_socio,
+
+        TRY_CAST(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')) AS INTEGER) AS qualificacao_socio,
+
+        CASE
+            WHEN TRIM(CAST(column5 AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
+            WHEN LENGTH(TRIM(CAST(column5 AS VARCHAR))) = 8
+            THEN TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column5 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
+        END AS data_entrada_sociedade,
+
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', '')) AS INTEGER), 0) AS pais,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END AS representante_legal,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END AS nome_do_representante,
+
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')) AS INTEGER), 0) AS qualificacao_representante_legal,
+
+        TRY_CAST(TRIM(REPLACE(CAST(column10 AS VARCHAR), '"', '')) AS INTEGER) AS faixa_etaria"""
+
+
+def build_socios_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Socios CSV processing.
+
+    Args:
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
+
+    Returns:
+        Complete SQL query string
+    """
+    column_names = ','.join([f'column{i}' for i in range(11)])
+
+    return f"""
+    COPY (
+        {socios_cleaning_template()}
+        FROM read_csv('{csv_path}',
+            delim=';',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
+
+
+# ============================================================================
+# SIMPLES NACIONAL
+# ============================================================================
+
+def simples_cleaning_template() -> str:
+    """
+    SQL template for cleaning Simples Nacional CSV.
+
+    Schema (7 columns, semicolon-delimited, no header):
+        0  cnpj_basico          VARCHAR(8)
+        1  opcao_simples        VARCHAR(1)  'S'/'N'
+        2  data_opcao_simples   DATE (YYYYMMDD; '00000000' = NULL)
+        3  data_exclusao_simples DATE
+        4  opcao_mei            VARCHAR(1)  'S'/'N'
+        5  data_opcao_mei       DATE
+        6  data_exclusao_mei    DATE
+    """
+    def _date_expr(col: str) -> str:
+        return f"""CASE
+            WHEN TRIM(CAST({col} AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
+            WHEN LENGTH(TRIM(CAST({col} AS VARCHAR))) = 8
+            THEN TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST({col} AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
+        END"""
+
+    return f"""SELECT
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') AS cnpj_basico,
+
+        NULLIF(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')), '') AS opcao_simples,
+        {_date_expr('column2')} AS data_opcao_simples,
+        {_date_expr('column3')} AS data_exclusao_simples,
+
+        NULLIF(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), '') AS opcao_mei,
+        {_date_expr('column5')} AS data_opcao_mei,
+        {_date_expr('column6')} AS data_exclusao_mei"""
+
+
+def build_simples_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Simples Nacional CSV processing.
+
+    Args:
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
+
+    Returns:
+        Complete SQL query string
+    """
+    column_names = ','.join([f'column{i}' for i in range(7)])
+
+    return f"""
+    COPY (
+        {simples_cleaning_template()}
+        FROM read_csv('{csv_path}',
+            delim=';',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) >= 6
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
+
+
+# ============================================================================
+# REFERENCE TABLES (Cnaes, Motivos, Municipios, Naturezas, Paises, Qualificacoes)
+# ============================================================================
+
+def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str:
+    """
+    Build DuckDB query for any 2-column reference table CSV.
+
+    All reference CSVs share the same structure: codigo;descricao
+    The primary key type varies:
+        - cnaes:          VARCHAR(7)
+        - motivos:        INTEGER
+        - municipios:     INTEGER
+        - naturezas:      INTEGER
+        - paises:         INTEGER
+        - qualificacoes:  INTEGER
+
+    Args:
+        csv_path:  Path to input CSV file
+        output_path: Path to output Parquet file
+        ref_type:  One of 'cnaes', 'motivos', 'municipios', 'naturezas', 'paises', 'qualificacoes'
+
+    Returns:
+        Complete SQL query string
+    """
+    varchar_refs = {'cnaes'}
+    if ref_type in varchar_refs:
+        codigo_expr = "TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS codigo"
+    else:
+        codigo_expr = "TRY_CAST(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS INTEGER) AS codigo"
+
+    return f"""
+    COPY (
+        SELECT
+            {codigo_expr},
+            TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS descricao
+        FROM read_csv('{csv_path}',
+            delim=';',
+            header=false,
+            names=['column0','column1'],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) > 0
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """

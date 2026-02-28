@@ -46,12 +46,41 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     logger.info(f"Loading {len(parquet_files)} Parquet files to PostgreSQL {schema}.{table_name} (UPSERT={force_upsert})")
     start_time = time.time()
     
-    # Identify heavy indexes to drop/recreate for bulk load performance
-    heavy_indexes = []
+    # Identify heavy indexes to drop/recreate for bulk load performance.
+    # Dropping ALL non-PK indexes before INSERT avoids maintaining B-tree/GIN on every batch.
+    # On HDD this reduces load time from 6+ hours to ~40-60 minutes.
+    heavy_indexes = []   # list of (name, DDL suffix) — dropped before load, recreated after
+    extra_drops   = []   # indexes to drop permanently (duplicates, renamed leftovers)
+
     if table_name == "empresa":
-        heavy_indexes = [("idx_empresas_razao_social", "USING GIN (to_tsvector('portuguese', razao_social))")]
+        heavy_indexes = [
+            ("idx_empresa_razao_social", "USING GIN (to_tsvector('portuguese', razao_social))"),
+            ("idx_empresa_porte",        "(porte_empresa)"),
+            ("idx_empresa_natureza",     "(natureza_juridica)"),
+            ("idx_empresa_ref_month",    "(reference_month)"),
+        ]
+        # idx_empresas_razao_social (with trailing 's') is a duplicate of idx_empresa_razao_social
+        # left over from a failed prior load run — remove it permanently.
+        extra_drops = ["idx_empresas_razao_social"]
+
     elif table_name == "estabelecimento":
-        heavy_indexes = [("idx_estabelecimentos_nome_fantasia", "USING GIN (to_tsvector('portuguese', nome_fantasia))")]
+        heavy_indexes = [
+            ("idx_estabelecimento_nome_fantasia", "USING GIN (to_tsvector('portuguese', nome_fantasia))"),
+            ("idx_estabelecimento_situacao",      "(situacao_cadastral)"),
+            ("idx_estabelecimento_municipio",     "(municipio)"),
+            ("idx_estabelecimento_uf",            "(uf)"),
+            ("idx_estabelecimento_cnae",          "(cnae_fiscal_principal)"),
+            ("idx_estabelecimento_ref_month",     "(reference_month)"),
+        ]
+
+    elif table_name == "socio":
+        heavy_indexes = [
+            ("idx_socio_cnpj_basico",  "(cnpj_basico)"),
+            ("idx_socio_cpf_cnpj",     "(cpf_cnpj_socio)"),
+            ("idx_socio_nome",         "USING GIN (to_tsvector('portuguese', nome_socio_razao_social)) WHERE nome_socio_razao_social IS NOT NULL"),
+            ("idx_socio_ref_month",    "(reference_month)"),
+            ("idx_socio_qualificacao", "(qualificacao_socio)"),
+        ]
     
     # First, ensure schema and table exist via psycopg2
     conn = psycopg2.connect(
@@ -112,7 +141,12 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     (LIKE {schema}.{table_name} INCLUDING DEFAULTS)
                 """)
                 
-            # Drop heavy indexes before loading
+            # Drop duplicate/leftover indexes permanently (not recreated)
+            for idx_name in extra_drops:
+                logger.info(f"Dropping duplicate index {schema}.{idx_name} permanently")
+                cur.execute(f"DROP INDEX IF EXISTS {schema}.{idx_name}")
+
+            # Drop heavy indexes before loading (will be recreated after)
             for idx_name, _ in heavy_indexes:
                 logger.info(f"Dropping index {schema}.{idx_name} to optimize bulk load")
                 cur.execute(f"DROP INDEX IF EXISTS {schema}.{idx_name}")
@@ -142,9 +176,9 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     dsn = f"host={pg_host} port={pg_port} dbname={pg_db} user={pg_user} password={pg_pass}"
     duck_conn.execute(f"ATTACH '{dsn}' AS pg_db (TYPE POSTGRES)")
     
-    # Special handling para estabelecimento: garante que toda empresa referenciada existe
+    # Special handling para estabelecimento e socio: garante que toda empresa referenciada existe
     # (cnpj_basico pode estar em reference_month diferente — cria stub para não violar FK)
-    if table_name == "estabelecimento":
+    if table_name in ("estabelecimento", "socio"):
         logger.info("Ensuring all referenced empresas exist (creating stubs if needed)")
         
         # Collect all unique cnpj_basico from all parquet files using a temp table
@@ -313,33 +347,53 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     update_set = update_set.replace("updated_at = EXCLUDED.updated_at", "updated_at = CURRENT_TIMESTAMP")
                 
                 # Determine primary key constraint for ON CONFLICT clause
+                # socio has no natural unique key — handled separately via DELETE+INSERT
+                conflict_clause = None
                 if table_name == "empresa":
                     conflict_clause = "cnpj_basico"
                 elif table_name == "estabelecimento":
                     conflict_clause = "cnpj_basico, cnpj_ordem, cnpj_dv"
+                elif table_name == "simples":
+                    conflict_clause = "cnpj_basico"
+                elif table_name in ("cnae", "motivo_situacao_cadastral", "municipio",
+                                    "natureza_juridica", "pais", "qualificacao_socio"):
+                    conflict_clause = "codigo"
+                elif table_name == "socio":
+                    # Sócio não tem chave natural única — DELETE + INSERT por reference_month
+                    logger.info(f"  Socio UPSERT: deleting rows for {reference_month} before reinsert")
+                    cur.execute(f"DELETE FROM {schema}.{table_name} WHERE reference_month = %s",
+                                (reference_month,))
+                    cur.execute(f"""
+                        INSERT INTO {schema}.{table_name} ({col_list})
+                        SELECT {col_list} FROM {schema}.{table_name}_staging
+                    """)
+                    conn.commit()
+                    cur.execute(f"DROP TABLE IF EXISTS {schema}.{table_name}_staging")
+                    conn.commit()
                 else:
                     raise ValueError(f"Unknown table for UPSERT: {table_name}")
-                
-                # Execute UPSERT
-                upsert_sql = f"""
-                    INSERT INTO {schema}.{table_name} ({col_list})
-                    SELECT {col_list}
-                    FROM {schema}.{table_name}_staging
-                    ON CONFLICT ({conflict_clause}) DO UPDATE SET
-                        {update_set}
-                """
-                
-                logger.info(f"  Executing UPSERT with ON CONFLICT ({conflict_clause})")
-                cur.execute(upsert_sql)
-                upserted_count = cur.rowcount
-                conn.commit()
-                
-                upsert_duration = time.time() - upsert_start
-                logger.info(f"  UPSERT completed: {upserted_count:,} rows in {upsert_duration:.1f}s")
-                
-                # Drop staging table
-                cur.execute(f"DROP TABLE IF EXISTS {schema}.{table_name}_staging")
-                conn.commit()
+
+                if conflict_clause is not None:
+                    # Execute generic UPSERT via ON CONFLICT
+                    upsert_sql = f"""
+                        INSERT INTO {schema}.{table_name} ({col_list})
+                        SELECT {col_list}
+                        FROM {schema}.{table_name}_staging
+                        ON CONFLICT ({conflict_clause}) DO UPDATE SET
+                            {update_set}
+                    """
+
+                    logger.info(f"  Executing UPSERT with ON CONFLICT ({conflict_clause})")
+                    cur.execute(upsert_sql)
+                    upserted_count = cur.rowcount
+                    conn.commit()
+
+                    upsert_duration = time.time() - upsert_start
+                    logger.info(f"  UPSERT completed: {upserted_count:,} rows in {upsert_duration:.1f}s")
+
+                    # Drop staging table
+                    cur.execute(f"DROP TABLE IF EXISTS {schema}.{table_name}_staging")
+                    conn.commit()
                 
         except Exception as e:
             logger.error(f"UPSERT failed: {e}")
@@ -441,25 +495,108 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict
                     continue
                 
                 # Process in batches using DuckDB's LIMIT/OFFSET
+                # Pre-compute imports and schemas outside the batch loop
+                import decimal
+                from datetime import date as _date
+                from .config import (
+                    NEO4J_EMPRESA_FIELDS,
+                    NEO4J_ESTABELECIMENTO_FIELDS,
+                    NEO4J_PESSOA_NODE_FIELDS,
+                    NEO4J_SOCIO_REL_FIELDS,
+                )
+
+                def _neo4j_safe(v):
+                    if isinstance(v, decimal.Decimal):
+                        return float(v)
+                    if isinstance(v, _date):
+                        return v.isoformat()
+                    return v
+
+                # For Socio: derive reference_month from file path + build enriched schema
+                if entity_type == "Socio":
+                    import hashlib, re
+                    month_match = re.search(r'(\d{4}-\d{2})', str(file_path))
+                    ref_month = month_match.group(1) if month_match else "unknown"
+
+                    # Schema with duplicate_count (computed once, reused per batch)
+                    schema_with_dup = duck_conn.execute(f"""
+                        DESCRIBE (
+                            SELECT *,
+                                COUNT(*) OVER (
+                                    PARTITION BY cnpj_basico, cpf_cnpj_socio
+                                ) AS duplicate_count
+                            FROM '{parquet_file}'
+                            LIMIT 1
+                        )
+                    """).fetchall()
+                    cols_with_dup = [r[0] for r in schema_with_dup]
+
                 for batch_start in range(0, total_file_rows, batch_size):
+                    if entity_type == "Socio":
+                        # Single enriched read — includes duplicate_count via window fn
+                        raw_batch = duck_conn.execute(f"""
+                            SELECT *,
+                                COUNT(*) OVER (
+                                    PARTITION BY cnpj_basico, cpf_cnpj_socio
+                                ) AS duplicate_count
+                            FROM '{parquet_file}'
+                            LIMIT {batch_size} OFFSET {batch_start}
+                        """).fetchall()
+
+                        batch_dicts = []
+                        for row in raw_batch:
+                            rec = {k: _neo4j_safe(v) for k, v in zip(cols_with_dup, row)}
+
+                            # Derivar pessoa_id — chave estável de deduplicação
+                            cpf_cnpj = rec.get('cpf_cnpj_socio') or ''
+                            nome = rec.get('nome_socio_razao_social') or ''
+                            id_socio = rec.get('identificador_socio', 0) or 0
+                            # PJ: usa cpf_cnpj_socio diretamente (CNPJ básico confiável)
+                            if id_socio == 1 and cpf_cnpj:
+                                pessoa_id = cpf_cnpj.strip()
+                            elif cpf_cnpj and nome:
+                                pessoa_id = hashlib.md5(f"{cpf_cnpj}|{nome}".encode()).hexdigest()
+                            elif nome:
+                                pessoa_id = hashlib.md5(f"{nome}|{id_socio}".encode()).hexdigest()
+                            else:
+                                continue  # descarta registro sem identidade mínima
+
+                            batch_dicts.append({
+                                # Nó :Pessoa — 5 props (modelo híbrido)
+                                'pessoa_id': pessoa_id,
+                                'nome': nome or None,
+                                'cpf_cnpj_socio': cpf_cnpj or None,
+                                'identificador_socio': rec.get('identificador_socio'),
+                                'faixa_etaria': rec.get('faixa_etaria'),
+                                # Empresa alvo do relacionamento
+                                'cnpj_basico': rec['cnpj_basico'],
+                                # Relacionamento [:SOCIO_DE] — 4 props (modelo híbrido)
+                                'qualificacao_socio': rec.get('qualificacao_socio'),
+                                'data_entrada_sociedade': rec.get('data_entrada_sociedade'),
+                                'reference_month': ref_month,
+                                'duplicate_count': rec.get('duplicate_count', 1),
+                            })
+
+                        if batch_dicts:
+                            nodes_cr, rels_cr = session.execute_write(
+                                _create_pessoa_socio_batch, batch_dicts
+                            )
+                            total_nodes += nodes_cr
+                            total_relationships += rels_cr
+
+                        batch_end = min(batch_start + batch_size, total_file_rows)
+                        if batch_end < total_file_rows:
+                            logger.info(f"    Progress: {batch_end:,}/{total_file_rows:,} rows ({batch_end*100//total_file_rows}%)")
+                        continue  # pula o bloco Empresa/Estabelecimento
+
+                    # ---- Empresa / Estabelecimento path ----
                     # Read batch directly from parquet using DuckDB
                     batch_records = duck_conn.execute(f"""
                         SELECT * FROM '{parquet_file}'
                         LIMIT {batch_size} OFFSET {batch_start}
                     """).fetchall()
-                    
-                    # Filtra apenas os campos permitidos para o Neo4j e converte
-                    # tipos não suportados pelo driver (ex: Decimal → float).
-                    # Campos analíticos (capital_social, endereço, contatos) ficam
-                    # exclusivamente no PostgreSQL.
-                    import decimal
-                    from .config import NEO4J_EMPRESA_FIELDS, NEO4J_ESTABELECIMENTO_FIELDS
-                    allowed = NEO4J_EMPRESA_FIELDS if entity_type == "Empresa" else NEO4J_ESTABELECIMENTO_FIELDS
 
-                    def _neo4j_safe(v):
-                        if isinstance(v, decimal.Decimal):
-                            return float(v)
-                        return v
+                    allowed = NEO4J_EMPRESA_FIELDS if entity_type == "Empresa" else NEO4J_ESTABELECIMENTO_FIELDS
 
                     batch_dicts = [
                         {k: _neo4j_safe(v) for k, v in zip(columns, row) if k in allowed}
@@ -560,6 +697,56 @@ def _create_estabelecimento_nodes(tx, records):
     MERGE (est)-[r:PERTENCE_A]->(e)
     ON CREATE SET r.created_at = datetime()
     RETURN COUNT(DISTINCT est) AS nodes_created, COUNT(DISTINCT r) AS relationships_created
+    """
+    result = tx.run(query, records=records)
+    row = result.single()
+    return row["nodes_created"], row["relationships_created"]
+
+def _create_pessoa_socio_batch(tx, records):
+    """
+    Transaction function for the Modelo Híbrido de Sócios.
+
+    Cria/atualiza nós :Pessoa (5 props) e relacionamentos [:SOCIO_DE] (4 props)
+    apontando para :Empresa (MERGE stub).
+
+    Estrutura do nó :Pessoa (modelo híbrido):
+        pessoa_id           — chave de deduplicação (PJ: cpf_cnpj_socio; PF/ext: MD5)
+        nome                — nome_socio_razao_social
+        cpf_cnpj_socio      — CPF/CNPJ mascarado pela RF
+        identificador_socio — 1=PJ, 2=PF, 3=Estrangeiro
+        faixa_etaria        — código de faixa etária (alta utilidade OSINT)
+
+    Estrutura do relacionamento [:SOCIO_DE] (modelo híbrido):
+        qualificacao_socio       — tipo de vínculo societário
+        data_entrada_sociedade   — data de ingresso na empresa
+        reference_month          — snapshot mensal (chave de MERGE do rel)
+        duplicate_count          — nº de ocorrências do par pessoa×empresa no snapshot
+
+    Nota de design:
+        - O MERGE do relacionamento usa {reference_month} como chave discriminante,
+          permitindo múltiplos snapshots mensais entre o mesmo par (Pessoa, Empresa).
+        - A Empresa é criada como stub se não existir — será enriquecida pela carga
+          de empresas.parquet (padrão já usado em _create_estabelecimento_nodes).
+    """
+    query = """
+    UNWIND $records AS record
+    MERGE (p:Pessoa {pessoa_id: record.pessoa_id})
+    ON CREATE SET p.created_at = datetime()
+    SET p.nome                = record.nome,
+        p.cpf_cnpj_socio      = record.cpf_cnpj_socio,
+        p.identificador_socio = record.identificador_socio,
+        p.faixa_etaria        = record.faixa_etaria,
+        p.updated_at          = datetime()
+    WITH p, record
+    MERGE (e:Empresa {cnpj_basico: record.cnpj_basico})
+    ON CREATE SET e.created_at = datetime(), e._stub = true
+    MERGE (p)-[r:SOCIO_DE {reference_month: record.reference_month}]->(e)
+    ON CREATE SET r.created_at = datetime()
+    SET r.qualificacao_socio      = record.qualificacao_socio,
+        r.data_entrada_sociedade  = record.data_entrada_sociedade,
+        r.duplicate_count         = record.duplicate_count,
+        r.updated_at              = datetime()
+    RETURN COUNT(DISTINCT p) AS nodes_created, COUNT(DISTINCT r) AS relationships_created
     """
     result = tx.run(query, records=records)
     row = result.single()

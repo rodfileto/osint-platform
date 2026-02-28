@@ -14,8 +14,11 @@ from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Import task groups from refactored modules
 from tasks.process_tasks import (
-    transform_empresas_group, 
-    transform_estabelecimentos_group
+    transform_empresas_group,
+    transform_estabelecimentos_group,
+    transform_socios_group,
+    transform_simples_group,
+    transform_references_group,
 )
 from tasks.config import DEFAULT_REFERENCE_MONTH
 
@@ -47,6 +50,9 @@ with DAG(
         'reference_month': DEFAULT_REFERENCE_MONTH,
         'process_empresas': True,
         'process_estabelecimentos': True,
+        'process_socios': True,
+        'process_simples': True,
+        'process_references': True,
         'force_reprocess': False,  # Re-run already processed files
     },
 ) as dag:
@@ -60,14 +66,18 @@ with DAG(
         Decide which execution path to take based on DAG params.
         """
         params = context.get('params', {})
-        process_empresas = params.get('process_empresas', True)
-        process_estabelecimentos = params.get('process_estabelecimentos', True)
         
         tasks_to_run = []
-        if process_empresas:
+        if params.get('process_empresas', True):
             tasks_to_run.append('transform_empresas_group.get_ref_month')
-        if process_estabelecimentos:
+        if params.get('process_estabelecimentos', True):
             tasks_to_run.append('transform_estabelecimentos_group.get_ref_month')
+        if params.get('process_socios', True):
+            tasks_to_run.append('transform_socios_group.get_ref_month')
+        if params.get('process_simples', True):
+            tasks_to_run.append('transform_simples_group.get_ref_month')
+        if params.get('process_references', True):
+            tasks_to_run.append('transform_references_group.get_ref_month')
             
         if not tasks_to_run:
             return 'end'
@@ -82,6 +92,9 @@ with DAG(
     
     empresas = transform_empresas_group()
     estabelecimentos = transform_estabelecimentos_group()
+    socios = transform_socios_group()
+    simples = transform_simples_group()
+    references = transform_references_group()
     
     # End marker (with trigger_rule ALL_DONE to handle branching)
     end = EmptyOperator(task_id='end', trigger_rule='none_failed_min_one_success')
@@ -106,6 +119,9 @@ with DAG(
 
     branch >> empresas >> end
     branch >> estabelecimentos >> end
+    branch >> socios >> end
+    branch >> simples >> end
+    branch >> references >> end
     end >> trigger_next
 
 if __name__ == "__main__":
