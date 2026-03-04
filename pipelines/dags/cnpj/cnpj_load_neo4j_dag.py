@@ -10,6 +10,7 @@ from airflow.operators.empty import EmptyOperator
 
 # Import task groups from refactored modules
 from tasks.process_tasks import load_neo4j_group
+from tasks.neo4j_schema import ensure_neo4j_indexes
 from tasks.config import DEFAULT_REFERENCE_MONTH
 
 # ============================================================================
@@ -46,13 +47,18 @@ with DAG(
     # Start marker
     start = EmptyOperator(task_id='start')
     
+    # Ensure indexes/constraints exist before loading
+    # (IF NOT EXISTS is idempotent — safe to run every time)
+    # Indexes build in background and don't block loading
+    ensure_indexes = ensure_neo4j_indexes()
+    
     load_neo = load_neo4j_group()
     
     # End marker
     end = EmptyOperator(task_id='end')
     
     # Define dependencies
-    start >> load_neo >> end
+    start >> ensure_indexes >> load_neo >> end
 
 if __name__ == "__main__":
     dag.test()

@@ -115,6 +115,7 @@ services:
       NEO4J_dbms_memory_transaction_total_max: "2g" # total transaction memory
       # === Transaction Log Retention (disk space management) ===
       NEO4J_db_tx__log_rotation_retention__policy: "2 files"   # keep only 2 tx log files after checkpoint
+      NEO4J_db_checkpoint_interval_tx: "50"                    # checkpoint every 50 tx → ~500k nós/checkpoint → max ~520 MB de logs durante deleção
       TZ: America/Sao_Paulo
     restart: always
 

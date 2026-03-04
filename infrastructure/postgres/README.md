@@ -56,7 +56,7 @@ EOSQL
 
 ### 4. Criar Tabelas CNPJ com PRIMARY KEYs
 ```bash
-cat infrastructure/postgres/init-cnpj-schema.sql | \
+cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
 ```
 
@@ -113,7 +113,7 @@ DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
 EOF
 
 # Recria com constraints corretas
-cat infrastructure/postgres/init-cnpj-schema.sql | \
+cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
 ```
 
@@ -154,7 +154,7 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
     GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
 EOSQL
 
-cat infrastructure/postgres/init-cnpj-schema.sql | \
+cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
 ```
 
