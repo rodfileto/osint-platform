@@ -113,19 +113,13 @@ class Empresa(models.Model):
         blank=True,
         help_text='Company legal name'
     )
-    natureza_juridica = models.ForeignKey(
-        NaturezaJuridica,
-        on_delete=models.SET_NULL,
+    natureza_juridica = models.IntegerField(
         null=True,
-        db_column='natureza_juridica',
         help_text='Legal nature code'
     )
-    qualificacao_responsavel = models.ForeignKey(
-        QualificacaoSocio,
-        on_delete=models.SET_NULL,
+    qualificacao_responsavel = models.IntegerField(
         null=True,
-        db_column='qualificacao_responsavel',
-        help_text='Responsible person qualification'
+        help_text='Responsible person qualification code'
     )
     capital_social = models.DecimalField(
         max_digits=15,
@@ -146,6 +140,7 @@ class Empresa(models.Model):
 
     class Meta:
         db_table = '"cnpj"."empresa"'
+        managed = False  # Table created by Airflow
         verbose_name = 'Empresa'
         verbose_name_plural = 'Empresas'
         indexes = [
@@ -296,42 +291,24 @@ class Estabelecimento(models.Model):
         help_text='Municipality code'
     )
 
-    # Contact
-    ddd_1 = models.CharField(
-        max_length=4,
+    # Contact - stored as combined DDD+Phone in database
+    ddd_telefone_1 = models.CharField(
+        max_length=20,
         null=True,
         blank=True,
-        help_text='Primary phone area code'
+        help_text='Primary phone (DDD + number combined)'
     )
-    telefone_1 = models.CharField(
-        max_length=8,
+    ddd_telefone_2 = models.CharField(
+        max_length=20,
         null=True,
         blank=True,
-        help_text='Primary phone number'
-    )
-    ddd_2 = models.CharField(
-        max_length=4,
-        null=True,
-        blank=True,
-        help_text='Secondary phone area code'
-    )
-    telefone_2 = models.CharField(
-        max_length=8,
-        null=True,
-        blank=True,
-        help_text='Secondary phone number'
+        help_text='Secondary phone (DDD + number combined)'
     )
     ddd_fax = models.CharField(
-        max_length=4,
+        max_length=20,
         null=True,
         blank=True,
-        help_text='Fax area code'
-    )
-    fax = models.CharField(
-        max_length=8,
-        null=True,
-        blank=True,
-        help_text='Fax number'
+        help_text='Fax (DDD + number combined)'
     )
     correio_eletronico = models.CharField(
         max_length=255,
@@ -355,6 +332,7 @@ class Estabelecimento(models.Model):
 
     class Meta:
         db_table = '"cnpj"."estabelecimento"'
+        managed = False  # Table created by Airflow, has composite PK without id
         verbose_name = 'Estabelecimento'
         verbose_name_plural = 'Estabelecimentos'
         indexes = [
@@ -381,15 +359,28 @@ class Estabelecimento(models.Model):
     @property
     def telefone_1_completo(self):
         """Returns formatted primary phone number"""
-        if self.ddd_1 and self.telefone_1:
-            return f"({self.ddd_1}) {self.telefone_1}"
+        if self.ddd_telefone_1 and len(self.ddd_telefone_1) >= 10:
+            # Format: (XX) XXXXX-XXXX or (XX) XXXX-XXXX
+            phone = self.ddd_telefone_1.strip()
+            ddd = phone[:2]
+            if len(phone) == 11:
+                return f"({ddd}) {phone[2:7]}-{phone[7:]}"
+            elif len(phone) == 10:
+                return f"({ddd}) {phone[2:6]}-{phone[6:]}"
+            return phone
         return None
 
     @property
     def telefone_2_completo(self):
         """Returns formatted secondary phone number"""
-        if self.ddd_2 and self.telefone_2:
-            return f"({self.ddd_2}) {self.telefone_2}"
+        if self.ddd_telefone_2 and len(self.ddd_telefone_2) >= 10:
+            phone = self.ddd_telefone_2.strip()
+            ddd = phone[:2]
+            if len(phone) == 11:
+                return f"({ddd}) {phone[2:7]}-{phone[7:]}"
+            elif len(phone) == 10:
+                return f"({ddd}) {phone[2:6]}-{phone[6:]}"
+            return phone
         return None
 
 

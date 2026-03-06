@@ -59,66 +59,33 @@ def ensure_pg_trgm():
 @task
 def ensure_mv_exists():
     """
-    Verifica se cnpj.mv_company_search existe.
-    - Se não existir: CREATE MATERIALIZED VIEW WITH DATA (operação inicial, ~20-40 min).
-    - Se existir: REFRESH MATERIALIZED VIEW CONCURRENTLY (não bloqueia leituras).
+    A estrutura da MatView é sempre criada pelo init-cnpj-schema.sql (WITH NO DATA).
+    Esta task apenas popula ou atualiza os dados:
+    - Se vazia (primeira carga): REFRESH sem CONCURRENTLY.
+    - Se já populada: REFRESH CONCURRENTLY (não bloqueia leituras).
     """
     conn = _get_pg_conn()
     conn.autocommit = True
 
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT 1 FROM pg_matviews
-                WHERE schemaname = 'cnpj' AND matviewname = 'mv_company_search'
-            )
-        """)
-        exists = cur.fetchone()[0]
-
-    if not exists:
-        logger.info("MatView não existe — criando com WITH DATA (pode levar 20-40 min)...")
-        conn2 = _get_pg_conn()
-        conn2.autocommit = True
-        with conn2.cursor() as cur:
-            # Desabilita paralelismo para evitar esgotamento de shared memory no container
-            cur.execute("SET max_parallel_workers_per_gather = 0;")
-            cur.execute("""
-                CREATE MATERIALIZED VIEW cnpj.mv_company_search
-                TABLESPACE fast_ssd
-                AS
-                SELECT
-                    emp.cnpj_basico,
-                    emp.razao_social,
-                    est.nome_fantasia,
-                    est.cnpj_ordem,
-                    est.cnpj_dv,
-                    (emp.cnpj_basico || est.cnpj_ordem || est.cnpj_dv) AS cnpj_14,
-                    est.situacao_cadastral,
-                    est.municipio,
-                    est.uf,
-                    est.cnae_fiscal_principal,
-                    emp.porte_empresa,
-                    emp.natureza_juridica,
-                    emp.capital_social
-                FROM cnpj.empresa emp
-                JOIN cnpj.estabelecimento est
-                    ON emp.cnpj_basico = est.cnpj_basico
-                WHERE est.situacao_cadastral = 2
-                WITH DATA;
-            """)
-        conn2.close()
-        logger.info("MatView criada com sucesso.")
-    else:
-        logger.info("MatView já existe — executando REFRESH CONCURRENTLY...")
-        conn3 = _get_pg_conn()
-        conn3.autocommit = True
-        with conn3.cursor() as cur:
-            cur.execute("SET max_parallel_workers_per_gather = 0;")
-            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY cnpj.mv_company_search;")
-        conn3.close()
-        logger.info("REFRESH concluído.")
+        cur.execute("SELECT COUNT(*) FROM cnpj.mv_company_search LIMIT 1;")
+        row_count = cur.fetchone()[0]
 
     conn.close()
+
+    conn2 = _get_pg_conn()
+    conn2.autocommit = True
+    with conn2.cursor() as cur:
+        cur.execute("SET max_parallel_workers_per_gather = 0;")
+        if row_count == 0:
+            logger.info("MatView vazia — executando REFRESH inicial (pode levar 20-40 min)...")
+            cur.execute("REFRESH MATERIALIZED VIEW cnpj.mv_company_search;")
+            logger.info("REFRESH inicial concluído.")
+        else:
+            logger.info(f"MatView tem {row_count:,} registros — executando REFRESH CONCURRENTLY...")
+            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY cnpj.mv_company_search;")
+            logger.info("REFRESH CONCURRENTLY concluído.")
+    conn2.close()
 
 
 @task

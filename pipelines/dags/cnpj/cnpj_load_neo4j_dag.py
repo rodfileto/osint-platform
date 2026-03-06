@@ -24,7 +24,7 @@ default_args = {
     'email_on_retry': False,
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=12),  # 66M empresas + ~17.5M Pessoa + ~17.5M SOCIO_DE
+    'execution_timeout': timedelta(hours=12),  # 66M Empresa + 17.5M Pessoa + 27M SOCIO_DE (PF+PJ)
 }
 
 with DAG(

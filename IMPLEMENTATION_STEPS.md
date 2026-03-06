@@ -168,6 +168,22 @@ cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo
 - Dumps CNPJ são **full snapshots** — apenas o mês mais recente (2026-02) é processado
 - Parquets transformados em `data/cnpj/processed/2026-02/`
 
+### ✅ Backend API (Django) — Endpoints CNPJ
+- `GET /api/cnpj/search/` — busca paginada de empresas
+  - `?q=petrobras` → 806 results (text search c/ accent normalization)
+  - `?q=47.960.950/0001-21` → Magazine Luiza (CNPJ parsing com formatação)
+  - `?q=petrobras&uf=RJ` → 260 results (combined filters)
+  - `?municipio=São Paulo` → filter por município
+  - `?cnae=4713004` → 11.508 results (match exato por CNAE fiscal principal)
+- `GET /api/cnpj/search/{cnpj_14}/` — detalhe por CNPJ
+- `GET /api/cnpj/empresa/{cnpj_basico}/` — detalhe completo de empresa + estabelecimentos
+  - Retorna dados da empresa (razão social, capital social, natureza jurídica, porte)
+  - Inclui `total_estabelecimentos` e `estabelecimentos_ativos` (situacao_cadastral=2)
+  - Array completo de estabelecimentos com endereços e dados de contato
+  - Performance: ~355ms para empresa com 654 estabelecimentos (Petrobras)
+- Paginação automática via DRF (`next`/`previous` links)
+- Accent normalization: "São Paulo" encontra "SAO PAULO" na base
+
 ---
 
 ## Comandos Operacionais
@@ -222,6 +238,28 @@ SELECT 'mv_company_search',           COUNT(*) FROM cnpj.mv_company_search;
 "
 ```
 
+### Testar Backend API
+```bash
+# Busca por texto
+curl "http://localhost:8000/api/cnpj/search/?q=petrobras" | python3 -m json.tool
+
+# Busca por CNPJ formatado
+curl "http://localhost:8000/api/cnpj/search/?q=47.960.950/0001-21" | python3 -m json.tool
+
+# Busca com filtro de UF
+curl "http://localhost:8000/api/cnpj/search/?q=petrobras&uf=RJ" | python3 -m json.tool
+
+# Busca com filtro de CNAE (match exato)
+curl "http://localhost:8000/api/cnpj/search/?cnae=4713004" | python3 -m json.tool
+
+# Detalhe de empresa por CNPJ 14 dígitos
+curl "http://localhost:8000/api/cnpj/search/47960950000121/" | python3 -m json.tool
+
+# Detalhe completo de empresa + todos estabelecimentos (por CNPJ básico)
+curl "http://localhost:8000/api/cnpj/empresa/47960950/" | python3 -m json.tool
+curl "http://localhost:8000/api/cnpj/empresa/33000167/" | python3 -m json.tool  # Petrobras
+```
+
 ### Matar Run Travado no Airflow (emergência)
 ```bash
 docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
@@ -239,9 +277,18 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
 ## Próximos Passos
 
 ### Backend API (Django)
-- [ ] Endpoint de busca em `cnpj.mv_company_search` (razão social, nome fantasia, CNPJ)
-- [ ] Paginação e filtros por UF / município / CNAE / situação cadastral
-- [ ] Endpoint de detalhe de empresa (JOIN empresa + estabelecimentos)
+- [x] Endpoint de busca em `cnpj.mv_company_search` (razão social, nome fantasia, CNPJ)
+  - `GET /api/cnpj/search/?q=<texto|cnpj>` — text/CNPJ search com accent normalization
+  - `GET /api/cnpj/search/{cnpj_14}/` — detalhe por CNPJ de 14 dígitos
+- [x] Paginação via DRF (next/previous links automáticos)
+- [x] Filtros por UF, município e CNAE (`?uf=SP&municipio=São Paulo&cnae=4713004`)
+- [x] **Limitação:** Busca apenas empresas ATIVAS (situacao_cadastral=2)
+  - MatView atual contém apenas empresas ativas (~28M registros, rápido)
+  - Buscar empresas inativas requer MatView adicional (69M estabelecimentos, lento sem índices)
+- [x] Endpoint de detalhe de empresa (JOIN empresa + estabelecimentos)
+  - `GET /api/cnpj/empresa/{cnpj_basico}/` — retorna empresa + array de estabelecimentos
+  - Contadores: total_estabelecimentos, estabelecimentos_ativos
+  - ~355ms para empresa com 654 estabelecimentos
 - [ ] Autenticação JWT e rate limiting
 
 ### Frontend
@@ -255,6 +302,10 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
 - [ ] Relacionamentos Neo4j entre Empresa e Estabelecimento
 - [ ] Pipeline de sanções
 - [ ] Pipeline de contratos públicos (PNCP)
+- [ ] **MatView para empresas inativas** — Para suportar busca de empresas baixadas/suspensas
+  - Opção 1: MatView separada `mv_company_inactive` (situacao_cadastral IN (1,3,4,8))
+  - Opção 2: Expandir `mv_company_search` para incluir todas as situações (aumenta de 28M para 69M)
+  - Requer índices GIN similares ao MatView atual para performance
 
 ### Operacional
 - [ ] Refresh semanal automático da MatView (`schedule_interval='@weekly'`)

@@ -20,3 +20,23 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     GRANT ALL PRIVILEGES ON SCHEMA sanctions TO $POSTGRES_USER;
     GRANT ALL PRIVILEGES ON SCHEMA contracts TO $POSTGRES_USER;
 EOSQL
+
+# Execute CNPJ schema initialization scripts
+echo "Initializing CNPJ schemas..."
+for sql_file in /docker-entrypoint-initdb.d/cnpj/*.sql; do
+    if [ -f "$sql_file" ]; then
+        echo "Running $sql_file..."
+        psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -f "$sql_file"
+    fi
+done
+
+# Execute FINEP schema initialization scripts
+echo "Initializing FINEP schemas..."
+for sql_file in /docker-entrypoint-initdb.d/finep/*.sql; do
+    if [ -f "$sql_file" ]; then
+        echo "Running $sql_file..."
+        psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -f "$sql_file"
+    fi
+done
+
+echo "Database initialization complete!"

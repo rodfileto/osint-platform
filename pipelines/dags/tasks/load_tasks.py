@@ -67,7 +67,7 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
         heavy_indexes = [
             ("idx_estabelecimento_nome_fantasia", "USING GIN (to_tsvector('portuguese', nome_fantasia))"),
             ("idx_estabelecimento_situacao",      "(situacao_cadastral)"),
-            ("idx_estabelecimento_municipio",     "(municipio)"),
+            ("idx_estabelecimento_municipio",     "(codigo_municipio)"),
             ("idx_estabelecimento_uf",            "(uf)"),
             ("idx_estabelecimento_cnae",          "(cnae_fiscal_principal)"),
             ("idx_estabelecimento_ref_month",     "(reference_month)"),
@@ -543,45 +543,74 @@ def load_to_neo4j(parquet_files: list[str], entity_type: str, **context) -> dict
                             LIMIT {batch_size} OFFSET {batch_start}
                         """).fetchall()
 
-                        batch_dicts = []
+                        # Separate PJ socios from PF/Estrangeiro
+                        pessoa_batch = []      # PF/Estrangeiro → Pessoa nodes
+                        empresa_socio_batch = []  # PJ → Empresa-Empresa relationships
+                        
                         for row in raw_batch:
                             rec = {k: _neo4j_safe(v) for k, v in zip(cols_with_dup, row)}
 
-                            # Derivar pessoa_id — chave estável de deduplicação
                             cpf_cnpj = rec.get('cpf_cnpj_socio') or ''
                             nome = rec.get('nome_socio_razao_social') or ''
                             id_socio = rec.get('identificador_socio', 0) or 0
-                            # PJ: usa cpf_cnpj_socio diretamente (CNPJ básico confiável)
-                            if id_socio == 1 and cpf_cnpj:
-                                pessoa_id = cpf_cnpj.strip()
-                            elif cpf_cnpj and nome:
-                                pessoa_id = hashlib.md5(f"{cpf_cnpj}|{nome}".encode()).hexdigest()
-                            elif nome:
-                                pessoa_id = hashlib.md5(f"{nome}|{id_socio}".encode()).hexdigest()
+                            
+                            # PJ Sócio (identificador = 1) → Empresa-Empresa relationship
+                            if id_socio == 1:
+                                if not cpf_cnpj or len(cpf_cnpj) < 14:
+                                    continue  # CNPJ inválido — descarta
+                                
+                                # Extrair CNPJ básico (primeiros 8 dígitos) do sócio PJ
+                                cnpj_socio_basico = cpf_cnpj[:8].strip()
+                                
+                                empresa_socio_batch.append({
+                                    'cnpj_socio_basico': cnpj_socio_basico,
+                                    'cnpj_basico': rec['cnpj_basico'],
+                                    'razao_social_socio': nome or None,
+                                    'qualificacao_socio': rec.get('qualificacao_socio'),
+                                    'data_entrada_sociedade': rec.get('data_entrada_sociedade'),
+                                    'reference_month': ref_month,
+                                    'duplicate_count': rec.get('duplicate_count', 1),
+                                })
+                            
+                            # PF/Estrangeiro (identificador = 2, 3) → Pessoa nodes
                             else:
-                                continue  # descarta registro sem identidade mínima
+                                # Derivar pessoa_id para PF/Estrangeiro
+                                if cpf_cnpj and nome:
+                                    pessoa_id = hashlib.md5(f"{cpf_cnpj}|{nome}".encode()).hexdigest()
+                                elif nome:
+                                    pessoa_id = hashlib.md5(f"{nome}|{id_socio}".encode()).hexdigest()
+                                else:
+                                    continue  # descarta registro sem identidade mínima
 
-                            batch_dicts.append({
-                                # Nó :Pessoa — 5 props (modelo híbrido)
-                                'pessoa_id': pessoa_id,
-                                'nome': nome or None,
-                                'cpf_cnpj_socio': cpf_cnpj or None,
-                                'identificador_socio': rec.get('identificador_socio'),
-                                'faixa_etaria': rec.get('faixa_etaria'),
-                                # Empresa alvo do relacionamento
-                                'cnpj_basico': rec['cnpj_basico'],
-                                # Relacionamento [:SOCIO_DE] — 4 props (modelo híbrido)
-                                'qualificacao_socio': rec.get('qualificacao_socio'),
-                                'data_entrada_sociedade': rec.get('data_entrada_sociedade'),
-                                'reference_month': ref_month,
-                                'duplicate_count': rec.get('duplicate_count', 1),
-                            })
+                                pessoa_batch.append({
+                                    # Nó :Pessoa — 5 props (modelo híbrido)
+                                    'pessoa_id': pessoa_id,
+                                    'nome': nome or None,
+                                    'cpf_cnpj_socio': cpf_cnpj or None,
+                                    'identificador_socio': id_socio,
+                                    'faixa_etaria': rec.get('faixa_etaria'),
+                                    # Empresa alvo do relacionamento
+                                    'cnpj_basico': rec['cnpj_basico'],
+                                    # Relacionamento [:SOCIO_DE] — 4 props (modelo híbrido)
+                                    'qualificacao_socio': rec.get('qualificacao_socio'),
+                                    'data_entrada_sociedade': rec.get('data_entrada_sociedade'),
+                                    'reference_month': ref_month,
+                                    'duplicate_count': rec.get('duplicate_count', 1),
+                                })
 
-                        if batch_dicts:
+                        # Load PF/Estrangeiro → Pessoa nodes + relationships
+                        if pessoa_batch:
                             nodes_cr, rels_cr = session.execute_write(
-                                _create_pessoa_socio_batch, batch_dicts
+                                _create_pessoa_socio_batch, pessoa_batch
                             )
                             total_nodes += nodes_cr
+                            total_relationships += rels_cr
+                        
+                        # Load PJ → Empresa-Empresa relationships
+                        if empresa_socio_batch:
+                            rels_cr = session.execute_write(
+                                _create_empresa_socio_batch, empresa_socio_batch
+                            )
                             total_relationships += rels_cr
 
                         batch_end = min(batch_start + batch_size, total_file_rows)
@@ -704,16 +733,16 @@ def _create_estabelecimento_nodes(tx, records):
 
 def _create_pessoa_socio_batch(tx, records):
     """
-    Transaction function for the Modelo Híbrido de Sócios.
+    Transaction function for the Modelo Híbrido de Sócios - PF/Estrangeiro only.
 
     Cria/atualiza nós :Pessoa (5 props) e relacionamentos [:SOCIO_DE] (4 props)
     apontando para :Empresa (MERGE stub).
 
     Estrutura do nó :Pessoa (modelo híbrido):
-        pessoa_id           — chave de deduplicação (PJ: cpf_cnpj_socio; PF/ext: MD5)
+        pessoa_id           — chave de deduplicação (MD5 de cpf_mask|nome)
         nome                — nome_socio_razao_social
-        cpf_cnpj_socio      — CPF/CNPJ mascarado pela RF
-        identificador_socio — 1=PJ, 2=PF, 3=Estrangeiro
+        cpf_cnpj_socio      — CPF mascarado pela RF
+        identificador_socio — 2=PF, 3=Estrangeiro
         faixa_etaria        — código de faixa etária (alta utilidade OSINT)
 
     Estrutura do relacionamento [:SOCIO_DE] (modelo híbrido):
@@ -751,3 +780,44 @@ def _create_pessoa_socio_batch(tx, records):
     result = tx.run(query, records=records)
     row = result.single()
     return row["nodes_created"], row["relationships_created"]
+
+
+def _create_empresa_socio_batch(tx, records):
+    """
+    Transaction function for PJ Socios - Empresa→Empresa relationships.
+
+    Cria relacionamentos [:SOCIO_DE] entre duas empresas quando uma empresa 
+    é sócia de outra (identificador_socio = 1).
+
+    Estrutura do relacionamento [:SOCIO_DE] para PJ:
+        qualificacao_socio       — tipo de vínculo societário
+        data_entrada_sociedade   — data de ingresso na empresa
+        reference_month          — snapshot mensal (chave de MERGE do rel)
+        duplicate_count          — nº de ocorrências do par empresa×empresa no snapshot
+        razao_social_socio       — razão social da empresa sócia (opcional, para enriquecimento)
+
+    Nota de design:
+        - Ambas as Empresas (sócia e alvo) são criadas como stubs se não existirem,
+          para serem enriquecidas posteriormente pela carga de empresas.parquet.
+        - O MERGE do relacionamento usa {reference_month} como chave discriminante,
+          permitindo múltiplos snapshots mensais entre o mesmo par de empresas.
+        - Não cria nó :Pessoa — relacionamento direto Empresa→Empresa.
+    """
+    query = """
+    UNWIND $records AS record
+    MERGE (socio:Empresa {cnpj_basico: record.cnpj_socio_basico})
+    ON CREATE SET socio.created_at = datetime(), socio._stub = true
+    WITH socio, record
+    MERGE (alvo:Empresa {cnpj_basico: record.cnpj_basico})
+    ON CREATE SET alvo.created_at = datetime(), alvo._stub = true
+    MERGE (socio)-[r:SOCIO_DE {reference_month: record.reference_month}]->(alvo)
+    ON CREATE SET r.created_at = datetime()
+    SET r.qualificacao_socio       = record.qualificacao_socio,
+        r.data_entrada_sociedade   = record.data_entrada_sociedade,
+        r.duplicate_count          = record.duplicate_count,
+        r.razao_social_socio       = record.razao_social_socio,
+        r.updated_at               = datetime()
+    RETURN COUNT(DISTINCT r) AS relationships_created
+    """
+    result = tx.run(query, records=records)
+    return result.single()["relationships_created"]

@@ -6,11 +6,6 @@
 -- CNPJ Schema Tables
 -- =====================================================
 
--- Drop existing tables to ensure clean creation with constraints
-DROP TABLE IF EXISTS cnpj.socio CASCADE;
-DROP TABLE IF EXISTS cnpj.estabelecimento CASCADE;
-DROP TABLE IF EXISTS cnpj.empresa CASCADE;
-
 -- Download Manifest Table (tracks downloaded files and processing status)
 CREATE TABLE IF NOT EXISTS cnpj.download_manifest (
     id SERIAL PRIMARY KEY,
@@ -61,13 +56,15 @@ CREATE TABLE IF NOT EXISTS cnpj.empresa (
     cnpj_basico VARCHAR(8) PRIMARY KEY,
     razao_social TEXT NOT NULL,
     natureza_juridica INTEGER,
-    qualificacao_responsavel INTEGER,
+    qualificacao_responsavel VARCHAR(2),
     capital_social DECIMAL(15,2) DEFAULT 0.0,
     porte_empresa VARCHAR(2) DEFAULT '00',
     ente_federativo_responsavel TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    reference_month VARCHAR(7) NOT NULL
+    reference_month VARCHAR(7) NOT NULL,
+    FOREIGN KEY (natureza_juridica) REFERENCES cnpj.natureza_juridica(codigo) ON DELETE SET NULL,
+    FOREIGN KEY (qualificacao_responsavel) REFERENCES cnpj.qualificacao_socio(codigo) ON DELETE SET NULL
 );
 
 -- Estabelecimento table (establishment locations) - singular form used by current pipeline
@@ -77,13 +74,13 @@ CREATE TABLE IF NOT EXISTS cnpj.estabelecimento (
     cnpj_dv VARCHAR(2) NOT NULL,
     identificador_matriz_filial INTEGER,
     nome_fantasia TEXT,
-    situacao_cadastral INTEGER,
+    situacao_cadastral VARCHAR(2),
     data_situacao_cadastral DATE,
-    motivo_situacao_cadastral INTEGER,
+    motivo_situacao_cadastral VARCHAR(2),
     nome_cidade_exterior TEXT,
-    codigo_pais INTEGER,
+    codigo_pais VARCHAR(3),
     data_inicio_atividade DATE,
-    cnae_fiscal_principal INTEGER,
+    cnae_fiscal_principal VARCHAR(7),
     cnae_fiscal_secundaria TEXT,
     tipo_logradouro TEXT,
     logradouro TEXT,
@@ -92,11 +89,13 @@ CREATE TABLE IF NOT EXISTS cnpj.estabelecimento (
     bairro TEXT,
     cep VARCHAR(8),
     uf VARCHAR(2),
-    codigo_municipio INTEGER,
-    municipio TEXT,
-    ddd_telefone_1 TEXT,
-    ddd_telefone_2 TEXT,
-    ddd_fax TEXT,
+    codigo_municipio VARCHAR(4),
+    ddd_1 VARCHAR(4),
+    telefone_1 INTEGER,
+    ddd_2 VARCHAR(4),
+    telefone_2 INTEGER,
+    ddd_fax VARCHAR(4),
+    fax INTEGER,
     correio_eletronico TEXT,
     situacao_especial TEXT,
     data_situacao_especial DATE,
@@ -104,6 +103,25 @@ CREATE TABLE IF NOT EXISTS cnpj.estabelecimento (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reference_month VARCHAR(7) NOT NULL,
     PRIMARY KEY (cnpj_basico, cnpj_ordem, cnpj_dv),
+    FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE,
+    FOREIGN KEY (motivo_situacao_cadastral) REFERENCES cnpj.motivo_situacao_cadastral(codigo) ON DELETE SET NULL,
+    FOREIGN KEY (codigo_pais) REFERENCES cnpj.pais(codigo) ON DELETE SET NULL,
+    FOREIGN KEY (cnae_fiscal_principal) REFERENCES cnpj.cnae(cnae_fiscal) ON DELETE SET NULL,
+    FOREIGN KEY (codigo_municipio) REFERENCES cnpj.municipio(codigo) ON DELETE SET NULL
+);
+
+-- Simples Nacional table (simplified tax regime data)
+CREATE TABLE IF NOT EXISTS cnpj.simples_nacional (
+    cnpj_basico VARCHAR(8) PRIMARY KEY,
+    optante_simples_nacional BOOLEAN,
+    data_optante_simples_nacional DATE,
+    data_exclusao_simples_nacional DATE,
+    opcao_mei BOOLEAN,
+    data_opcao_mei DATE,
+    data_exclusao_mei DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reference_month VARCHAR(7) NOT NULL,
     FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE
 );
 
@@ -114,16 +132,19 @@ CREATE TABLE IF NOT EXISTS cnpj.socio (
     identificador_socio             INTEGER,
     nome_socio_razao_social         TEXT,
     cpf_cnpj_socio                  VARCHAR(14),
-    qualificacao_socio              INTEGER,
+    qualificacao_socio              VARCHAR(2),
     data_entrada_sociedade          DATE,
-    pais                            INTEGER,
+    pais                            VARCHAR(3),
     representante_legal             VARCHAR(14),
     nome_do_representante           TEXT,
-    qualificacao_representante_legal INTEGER,
+    qualificacao_representante_legal VARCHAR(2),
     faixa_etaria                    INTEGER,
     reference_month                 VARCHAR(7)   NOT NULL,
     created_at                      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE
+    FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE,
+    FOREIGN KEY (qualificacao_socio) REFERENCES cnpj.qualificacao_socio(codigo) ON DELETE SET NULL,
+    FOREIGN KEY (pais) REFERENCES cnpj.pais(codigo) ON DELETE SET NULL,
+    FOREIGN KEY (qualificacao_representante_legal) REFERENCES cnpj.qualificacao_socio(codigo) ON DELETE SET NULL
 );
 
 COMMENT ON TABLE cnpj.socio IS 'Quadro Societário — snapshot por reference_month (sem chave natural única)';
@@ -132,6 +153,42 @@ COMMENT ON COLUMN cnpj.socio.cpf_cnpj_socio IS 'CPF mascarado pela RF (***XXXXXX
 COMMENT ON COLUMN cnpj.socio.pais IS 'NULL = Brasil; código da tabela cnpj.pais';
 COMMENT ON COLUMN cnpj.socio.faixa_etaria IS '0=não informado, 1=<=20, 2=21-30, ..., 9=>80';
 COMMENT ON COLUMN cnpj.socio.reference_month IS 'Snapshot de origem YYYY-MM; carga via DELETE+INSERT por mês';
+
+-- CNAE table (economic activity codes)
+CREATE TABLE IF NOT EXISTS cnpj.cnae (
+    cnae_fiscal VARCHAR(7) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- Motivo Situacao Cadastral table (reason for registration status)
+CREATE TABLE IF NOT EXISTS cnpj.motivo_situacao_cadastral (
+    codigo VARCHAR(2) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- MUNICIPIO table (municipality codes)
+CREATE TABLE IF NOT EXISTS cnpj.municipio (
+    codigo VARCHAR(4) PRIMARY KEY,
+    nome TEXT NOT NULL
+    );
+
+-- Natureza Juridica table (legal nature codes)
+CREATE TABLE IF NOT EXISTS cnpj.natureza_juridica (
+    codigo INTEGER PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- Pais table (country codes)
+CREATE TABLE IF NOT EXISTS cnpj.pais (
+    codigo VARCHAR(3) PRIMARY KEY,
+    nome TEXT NOT NULL
+);
+
+-- Qualificações table (partner qualifications)
+CREATE TABLE IF NOT EXISTS cnpj.qualificacao_socio (
+    codigo VARCHAR(2) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
 
 -- Indexes for performance
 
@@ -158,7 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_socio_qualificacao    ON cnpj.socio(qualificacao_
 
 -- Estabelecimento indexes
 CREATE INDEX IF NOT EXISTS idx_estabelecimento_situacao ON cnpj.estabelecimento(situacao_cadastral);
-CREATE INDEX IF NOT EXISTS idx_estabelecimento_municipio ON cnpj.estabelecimento(municipio);
+CREATE INDEX IF NOT EXISTS idx_estabelecimento_municipio ON cnpj.estabelecimento(codigo_municipio);
 CREATE INDEX IF NOT EXISTS idx_estabelecimento_uf ON cnpj.estabelecimento(uf);
 CREATE INDEX IF NOT EXISTS idx_estabelecimento_cnae ON cnpj.estabelecimento(cnae_fiscal_principal);
 CREATE INDEX IF NOT EXISTS idx_estabelecimento_ref_month ON cnpj.estabelecimento(reference_month);
@@ -247,8 +304,68 @@ WHERE download_date IS NOT NULL
     )
 ORDER BY reference_month DESC, file_type, file_name;
 
+-- =====================================================
+-- MATERIALIZED VIEW FOR SEARCH (structure only)
+-- =====================================================
+
+-- Required extension for trigram-based fuzzy search
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Matview is created empty here; data is populated/refreshed by cnpj_matview_refresh DAG
+CREATE MATERIALIZED VIEW IF NOT EXISTS cnpj.mv_company_search AS
+SELECT
+    emp.cnpj_basico,
+    emp.razao_social,
+    est.nome_fantasia,
+    est.cnpj_ordem,
+    est.cnpj_dv,
+    (emp.cnpj_basico || est.cnpj_ordem || est.cnpj_dv) AS cnpj_14,
+    est.situacao_cadastral,
+    est.codigo_municipio,
+    m.nome                      AS municipio_nome,
+    est.uf,
+    est.cnae_fiscal_principal,
+    c.descricao                 AS cnae_descricao,
+    emp.porte_empresa,
+    emp.natureza_juridica,
+    nj.descricao                AS natureza_juridica_descricao,
+    emp.capital_social,
+    est.data_inicio_atividade,
+    est.correio_eletronico,
+    emp.reference_month
+FROM cnpj.empresa emp
+JOIN cnpj.estabelecimento est
+    ON emp.cnpj_basico = est.cnpj_basico
+    AND est.identificador_matriz_filial = 1          -- only HQ (matriz)
+LEFT JOIN cnpj.municipio m  ON est.codigo_municipio = m.codigo
+LEFT JOIN cnpj.cnae c       ON est.cnae_fiscal_principal = c.cnae_fiscal
+LEFT JOIN cnpj.natureza_juridica nj ON emp.natureza_juridica = nj.codigo
+WHERE est.situacao_cadastral = '02'                  -- active companies only
+WITH NO DATA;
+
+COMMENT ON MATERIALIZED VIEW cnpj.mv_company_search IS
+    'Denormalised search view – populated/refreshed by DAG cnpj_matview_refresh. '
+    'First refresh: REFRESH MATERIALIZED VIEW cnpj.mv_company_search; '
+    'Subsequent: REFRESH MATERIALIZED VIEW CONCURRENTLY cnpj.mv_company_search;';
+
+-- Indexes on matview (created on empty structure; rebuilt automatically on first REFRESH)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_cnpj14
+    ON cnpj.mv_company_search(cnpj_14);
+
+CREATE INDEX IF NOT EXISTS idx_mv_razao_social_trgm
+    ON cnpj.mv_company_search USING gin (razao_social gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_mv_nome_fantasia_trgm
+    ON cnpj.mv_company_search USING gin (nome_fantasia gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_mv_uf_municipio
+    ON cnpj.mv_company_search(uf, codigo_municipio);
+
+CREATE INDEX IF NOT EXISTS idx_mv_situacao
+    ON cnpj.mv_company_search(situacao_cadastral);
+
 -- Grant table permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cnpj TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA cnpj TO osint_admin;
 
-\echo '✓ CNPJ tables and indexes created successfully'
+\echo '✓ CNPJ tables, indexes, and materialized view structure created successfully'

@@ -10,7 +10,7 @@ from airflow.operators.empty import EmptyOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Import task groups from refactored modules
-from tasks.process_tasks import load_postgres_group
+from tasks.process_tasks import load_reference_tables_group, load_postgres_group
 from tasks.config import DEFAULT_REFERENCE_MONTH
 
 # ============================================================================
@@ -37,8 +37,10 @@ with DAG(
     max_active_runs=1,
     tags=['cnpj', 'etl', 'postgres', 'load'],
     params={
-        'reference_month': DEFAULT_REFERENCE_MONTH, # Can be 'all'
-        'entity_type': 'all', # Can be 'empresas', 'estabelecimentos', or 'all'
+        'reference_month': DEFAULT_REFERENCE_MONTH,  # Can be 'all'
+        'entity_type': 'all',  # Main tables only: 'empresas', 'estabelecimentos', 'socios', 'simples', or 'all'
+                               # Use 'all' to load all main tables in FK-safe order (empresa→simples→estabelecimento→socio)
+                               # Aux reference tables (cnaes, municipios, paises…) are always loaded first by load_ref_tables
         'force_reprocess': False,  # Re-run already processed files (UPSERT mode)
         'max_files': 0,  # 0 = sem limite; >0 = limita parquet files por entidade (útil para testes)
     },
@@ -46,9 +48,16 @@ with DAG(
     
     # Start marker
     start = EmptyOperator(task_id='start')
-    
+
+    # Step 1: Load auxiliary / reference tables first (cnaes, motivos, municipios,
+    #         naturezas, paises, qualificacoes).  These carry no FK dependencies on
+    #         other cnpj tables and must exist before main tables are inserted.
+    load_ref = load_reference_tables_group()
+
+    # Step 2: Load main transactional tables in FK-safe order:
+    #         empresa → simples → estabelecimento → socio
     load_pg = load_postgres_group()
-    
+
     # Dispara refresh da MatView de busca após carga concluída
     trigger_matview = TriggerDagRunOperator(
         task_id='trigger_matview_refresh',
@@ -66,7 +75,7 @@ with DAG(
     end = EmptyOperator(task_id='end')
     
     # Define dependencies
-    start >> load_pg >> trigger_matview >> end
+    start >> load_ref >> load_pg >> trigger_matview >> end
 
 if __name__ == "__main__":
     dag.test()

@@ -27,6 +27,40 @@ RAW_PATH = BASE_PATH / "raw"
 STAGING_PATH = BASE_PATH / "staging"
 PROCESSED_PATH = BASE_PATH / "processed"
 
+# ---------------------------------------------------------------------------
+# Entity loading order — respects FK dependency graph
+# ---------------------------------------------------------------------------
+# 1. Auxiliary / reference tables (no FK dependencies on other cnpj tables)
+AUX_ENTITIES = [
+    'cnaes',          # → cnpj.cnae
+    'motivos',        # → cnpj.motivo_situacao_cadastral
+    'municipios',     # → cnpj.municipio
+    'naturezas',      # → cnpj.natureza_juridica
+    'paises',         # → cnpj.pais
+    'qualificacoes',  # → cnpj.qualificacao_socio
+]
+# 2. Main transactional tables (loaded after aux; respects intra-group FK order)
+#    empresa must precede estabelecimento, simples, and socio
+MAIN_ENTITIES_ORDERED = [
+    'empresas',           # PK referenced by all below
+    'simples',            # FK → empresa
+    'estabelecimentos',   # FK → empresa + aux tables
+    'socios',             # FK → empresa + aux tables
+]
+
+ENTITY_TABLE_MAP = {
+    'empresas':        'empresa',
+    'estabelecimentos':'estabelecimento',
+    'socios':          'socio',
+    'simples':         'simples_nacional',
+    'cnaes':           'cnae',
+    'motivos':         'motivo_situacao_cadastral',
+    'municipios':      'municipio',
+    'naturezas':       'natureza_juridica',
+    'paises':          'pais',
+    'qualificacoes':   'qualificacao_socio',
+}
+
 
 @task
 def process_empresas_file(reference_month: str, file_name: str, **context) -> dict:
@@ -353,9 +387,71 @@ def get_parquets_for_month_and_type(reference_month: str, entity_type: str) -> l
 # ============================================================================
 
 @task_group
+def load_reference_tables_group():
+    """
+    Load auxiliary / reference tables (cnaes, motivos, municipios, naturezas,
+    paises, qualificacoes) for the given reference_month.
+
+    These tables carry no FK dependencies on other cnpj tables and MUST be
+    populated before the main transactional tables (empresa, estabelecimento,
+    socio) to satisfy FK constraints.
+
+    Reference tables are static per release: only the target month is loaded
+    (not 'all'), because they are the same across months and loading once is
+    sufficient.  A TRUNCATE + INSERT strategy is used upstream.
+    """
+    @task
+    def get_params(**context) -> dict:
+        from .config import DEFAULT_REFERENCE_MONTH
+        return {
+            'reference_month': context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH),
+        }
+
+    @task(execution_timeout=None)
+    def load_aux_tables(task_params: dict, **context) -> dict:
+        ref_month = task_params['reference_month']
+        # Aux tables are the same for every month — always load from the
+        # explicit reference_month (never 'all').
+        if ref_month.lower() == 'all':
+            from .config import DEFAULT_REFERENCE_MONTH
+            ref_month = DEFAULT_REFERENCE_MONTH
+            logger.info(
+                f"reference_month='all' is not applicable for reference tables; "
+                f"using DEFAULT_REFERENCE_MONTH={ref_month}"
+            )
+
+        total_loaded = 0
+        for entity in AUX_ENTITIES:
+            parquet_files = get_parquets_for_month_and_type.function(ref_month, entity)
+            if not parquet_files:
+                logger.warning(f"  No parquet found for aux entity '{entity}' / {ref_month} — skipping")
+                continue
+            table_name = ENTITY_TABLE_MAP[entity]
+            logger.info(f"  Loading aux table '{table_name}' from {len(parquet_files)} file(s)…")
+            result = load_to_postgresql.function(
+                parquet_files=parquet_files,
+                table_name=table_name,
+                schema="cnpj",
+                reference_month=ref_month,
+                **context
+            )
+            total_loaded += result.get('row_count', 0)
+            logger.info(f"  ✓ {table_name}: {result.get('row_count', 0):,} rows loaded")
+
+        logger.info(f"Reference tables done — total rows: {total_loaded:,}")
+        return {"total_loaded": total_loaded}
+
+    params = get_params()
+    load_aux_tables(params)
+
+
+@task_group
 def load_postgres_group():
     """
-    Load existing parquet files to PostgreSQL.
+    Load main transactional CNPJ tables to PostgreSQL.
+
+    Loads in FK-safe order: empresa → simples → estabelecimento → socio.
+    Assumes reference tables are already populated (run load_reference_tables_group first).
     Supports specific month or 'all', and specific entity or 'all'.
     """
     @task
@@ -365,41 +461,33 @@ def load_postgres_group():
             'reference_month': context['params'].get('reference_month', DEFAULT_REFERENCE_MONTH),
             'entity_type': context['params'].get('entity_type', 'all')
         }
-    
+
     @task(execution_timeout=None)  # UPSERT de 135M rows pode levar várias horas
     def load_to_pg(task_params: dict, **context) -> dict:
         ref_month = task_params['reference_month']
         entity_type = task_params['entity_type']
         max_files = int(context.get('params', {}).get('max_files', 0))
-        
+
         months_to_process = [ref_month]
         if ref_month.lower() == 'all':
             months_to_process = get_all_processed_months.function()
-            
-        ALL_ENTITIES = ['empresas', 'estabelecimentos', 'socios', 'simples',
-                        'cnaes', 'motivos', 'municipios', 'naturezas', 'paises', 'qualificacoes']
-        ENTITY_TABLE_MAP = {
-            'empresas': 'empresa',
-            'estabelecimentos': 'estabelecimento',
-            'socios': 'socio',
-            'simples': 'simples',
-            'cnaes': 'cnae',
-            'motivos': 'motivo_situacao_cadastral',
-            'municipios': 'municipio',
-            'naturezas': 'natureza_juridica',
-            'paises': 'pais',
-            'qualificacoes': 'qualificacao_socio',
-        }
 
-        if entity_type.lower() in ALL_ENTITIES:
+        # Only main entities here; aux tables are handled by load_reference_tables_group
+        if entity_type.lower() in MAIN_ENTITIES_ORDERED:
             entities_to_process = [entity_type.lower()]
+        elif entity_type.lower() in AUX_ENTITIES:
+            logger.warning(
+                f"entity_type='{entity_type}' is a reference table — "
+                "use load_reference_tables_group instead. Skipping."
+            )
+            return {"total_loaded": 0}
         else:
-            entities_to_process = ALL_ENTITIES
+            entities_to_process = MAIN_ENTITIES_ORDERED  # FK-safe order
 
         total_loaded = 0
 
         for month in months_to_process:
-            logger.info(f"Loading to Postgres for month: {month}")
+            logger.info(f"Loading main tables to Postgres for month: {month}")
 
             for entity in entities_to_process:
                 parquet_files = get_parquets_for_month_and_type.function(month, entity)
@@ -418,9 +506,10 @@ def load_postgres_group():
                     **context
                 )
                 total_loaded += result.get('row_count', 0)
+                logger.info(f"  ✓ {table_name}: {result.get('row_count', 0):,} rows loaded")
 
         return {"total_loaded": total_loaded}
-        
+
     params = get_params()
     load_to_pg(params)
 

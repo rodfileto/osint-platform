@@ -33,10 +33,10 @@ def empresas_cleaning_template() -> str:
             0
         ) as natureza_juridica,
         
-        -- Qualificação do responsável (integer)
-        COALESCE(
-            TRY_CAST(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')) AS INTEGER),
-            0
+        -- Qualificação do responsável (zero-padded 2-char code, e.g. '00', '05', '50')
+        NULLIF(
+            LPAD(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')), 2, '0'),
+            '00'
         ) as qualificacao_responsavel,
         
         -- Capital social (decimal, Brazilian format)
@@ -95,8 +95,8 @@ def estabelecimentos_cleaning_template() -> str:
             ELSE NULL 
         END as nome_fantasia,
         
-        -- Situação cadastral
-        TRY_CAST(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')) AS INTEGER) as situacao_cadastral,
+        -- Situação cadastral (zero-padded 2-char: '01','02','03','08')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0'), '00') as situacao_cadastral,
         
         -- Data situação cadastral (YYYYMMDD -> DATE)
         CASE 
@@ -106,8 +106,8 @@ def estabelecimentos_cleaning_template() -> str:
             ELSE NULL 
         END as data_situacao_cadastral,
         
-        -- Motivo situação cadastral
-        TRY_CAST(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', '')) AS INTEGER) as motivo_situacao_cadastral,
+        -- Motivo situação cadastral (zero-padded 2-char: '01'..'63')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', '')), 2, '0'), '00') as motivo_situacao_cadastral,
         
         -- Cidade exterior
         CASE 
@@ -116,8 +116,8 @@ def estabelecimentos_cleaning_template() -> str:
             ELSE NULL 
         END as nome_cidade_exterior,
         
-        -- País code
-        TRY_CAST(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')) AS INTEGER) as codigo_pais,
+        -- País code (zero-padded 3-char: '000','013','158')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')), 3, '0'), '000') as codigo_pais,
         
         -- Data início atividade
         CASE 
@@ -127,8 +127,8 @@ def estabelecimentos_cleaning_template() -> str:
             ELSE NULL 
         END as data_inicio_atividade,
         
-        -- CNAE principal and secondary
-        TRY_CAST(TRIM(REPLACE(CAST(column11 AS VARCHAR), '"', '')) AS INTEGER) as cnae_fiscal_principal,
+        -- CNAE principal (zero-padded 7-char: '0111301','8888888')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column11 AS VARCHAR), '"', '')), 7, '0'), '0000000') as cnae_fiscal_principal,
         CASE 
             WHEN LENGTH(TRIM(REPLACE(CAST(column12 AS VARCHAR), '"', ''))) > 0 
             THEN TRIM(REPLACE(CAST(column12 AS VARCHAR), '"', ''))
@@ -171,46 +171,45 @@ def estabelecimentos_cleaning_template() -> str:
             THEN TRIM(REPLACE(CAST(column19 AS VARCHAR), '"', ''))
             ELSE NULL 
         END as uf,
-        TRY_CAST(TRIM(REPLACE(CAST(column20 AS VARCHAR), '"', '')) AS INTEGER) as codigo_municipio,
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', ''))) > 0 
-            THEN UPPER(TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', '')))
-            ELSE NULL 
-        END as municipio,
-        
-        -- Contact
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column22 AS VARCHAR), '"', ''))) > 0 
-            THEN TRIM(REPLACE(CAST(column22 AS VARCHAR), '"', ''))
-            ELSE NULL 
-        END as ddd_telefone_1,
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column23 AS VARCHAR), '"', ''))) > 0 
+        -- codigo_municipio: zero-padded 4-char code, e.g. '0001', '9997'
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column20 AS VARCHAR), '"', '')), 4, '0'), '0000') as codigo_municipio,
+
+        -- Contact (RF layout: ddd_1, telefone_1, ddd_2, telefone_2, ddd_fax, fax, correio)
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END as ddd_1,
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column22 AS VARCHAR), '"', '')) AS INTEGER), 0) as telefone_1,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column23 AS VARCHAR), '"', ''))) > 0
             THEN TRIM(REPLACE(CAST(column23 AS VARCHAR), '"', ''))
-            ELSE NULL 
-        END as ddd_telefone_2,
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column24 AS VARCHAR), '"', ''))) > 0 
-            THEN TRIM(REPLACE(CAST(column24 AS VARCHAR), '"', ''))
-            ELSE NULL 
+            ELSE NULL
+        END as ddd_2,
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column24 AS VARCHAR), '"', '')) AS INTEGER), 0) as telefone_2,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', ''))
+            ELSE NULL
         END as ddd_fax,
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', ''))) > 0 
-            THEN LOWER(TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', '')))
-            ELSE NULL 
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column26 AS VARCHAR), '"', '')) AS INTEGER), 0) as fax,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column27 AS VARCHAR), '"', ''))) > 0
+            THEN LOWER(TRIM(REPLACE(CAST(column27 AS VARCHAR), '"', '')))
+            ELSE NULL
         END as correio_eletronico,
-        
+
         -- Situação especial
-        CASE 
-            WHEN LENGTH(TRIM(REPLACE(CAST(column26 AS VARCHAR), '"', ''))) > 0 
-            THEN UPPER(TRIM(REPLACE(CAST(column26 AS VARCHAR), '"', '')))
-            ELSE NULL 
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column28 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column28 AS VARCHAR), '"', '')))
+            ELSE NULL
         END as situacao_especial,
-        CASE 
-            WHEN CAST(column27 AS VARCHAR) = '0' OR TRIM(CAST(column27 AS VARCHAR)) = '' THEN NULL
-            WHEN LENGTH(TRIM(CAST(column27 AS VARCHAR))) = 8 THEN
-                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column27 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
-            ELSE NULL 
+        CASE
+            WHEN CAST(column29 AS VARCHAR) = '0' OR TRIM(CAST(column29 AS VARCHAR)) = '' THEN NULL
+            WHEN LENGTH(TRIM(CAST(column29 AS VARCHAR))) = 8 THEN
+                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column29 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
         END as data_situacao_especial"""
 
 
@@ -285,12 +284,12 @@ def socios_cleaning_template() -> str:
         1  identificador_socio      INTEGER  (1=PJ, 2=PF, 3=Estrangeiro)
         2  nome_socio_razao_social  TEXT
         3  cpf_cnpj_socio           VARCHAR(14) — mascarado pela RF
-        4  qualificacao_socio       INTEGER
+        4  qualificacao_socio       VARCHAR(2)  (zero-padded, e.g. '05', '22', '50')
         5  data_entrada_sociedade   DATE (YYYYMMDD)
         6  pais                     INTEGER (código)
         7  representante_legal      VARCHAR(14) — CPF mascarado
         8  nome_do_representante    TEXT
-        9  qualificacao_representante_legal  INTEGER
+        9  qualificacao_representante_legal  VARCHAR(2)  (NULL if '00'/empty)
        10  faixa_etaria             INTEGER
     """
     return """SELECT
@@ -310,7 +309,7 @@ def socios_cleaning_template() -> str:
             ELSE NULL
         END AS cpf_cnpj_socio,
 
-        TRY_CAST(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')) AS INTEGER) AS qualificacao_socio,
+        LPAD(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), 2, '0') AS qualificacao_socio,
 
         CASE
             WHEN TRIM(CAST(column5 AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
@@ -333,7 +332,7 @@ def socios_cleaning_template() -> str:
             ELSE NULL
         END AS nome_do_representante,
 
-        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')) AS INTEGER), 0) AS qualificacao_representante_legal,
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')), 2, '0'), '00') AS qualificacao_representante_legal,
 
         TRY_CAST(TRIM(REPLACE(CAST(column10 AS VARCHAR), '"', '')) AS INTEGER) AS faixa_etaria"""
 
@@ -442,11 +441,11 @@ def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str
     All reference CSVs share the same structure: codigo;descricao
     The primary key type varies:
         - cnaes:          VARCHAR(7)
-        - motivos:        INTEGER
-        - municipios:     INTEGER
+        - motivos:        VARCHAR(2)  (zero-padded, e.g. '01', '63')
+        - municipios:     VARCHAR(4)  (zero-padded, e.g. '0001', '9997')
         - naturezas:      INTEGER
-        - paises:         INTEGER
-        - qualificacoes:  INTEGER
+        - paises:         VARCHAR(3)  (zero-padded, e.g. '000', '013', '158')
+        - qualificacoes:  VARCHAR(2)  (zero-padded, e.g. '00', '05', '50')
 
     Args:
         csv_path:  Path to input CSV file
@@ -457,8 +456,17 @@ def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str
         Complete SQL query string
     """
     varchar_refs = {'cnaes'}
+    lpad2_refs   = {'qualificacoes', 'motivos'}    # zero-padded 2-char codes
+    lpad3_refs   = {'paises'}                       # zero-padded 3-char codes
+    lpad4_refs   = {'municipios'}                   # zero-padded 4-char codes
     if ref_type in varchar_refs:
         codigo_expr = "TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS codigo"
+    elif ref_type in lpad2_refs:
+        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 2, '0') AS codigo"
+    elif ref_type in lpad3_refs:
+        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 3, '0') AS codigo"
+    elif ref_type in lpad4_refs:
+        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 4, '0') AS codigo"
     else:
         codigo_expr = "TRY_CAST(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS INTEGER) AS codigo"
 
