@@ -47,6 +47,11 @@ Cluster único com separação por schema:
 **Desempenho:** dados históricos (HDD) + Materialized Views de busca (SSD via Tablespace).
 Isso permite que a camada de busca do frontend use I/O de SSD sem pagar o custo do HDD para dados raw.
 
+**Layout atual de volumes:**
+- Data dir principal: `/srv/osint/postgres/data` (NVMe)
+- Tablespace de busca `fast_ssd`: `/srv/osint/postgres/ssd_tablespace` (NVMe)
+- Estratégia: PostgreSQL permanece no NVMe para menor latência; datasets de arquivo e objeto ficam fora do cluster, em HDD
+
 ### Neo4j — Camada de Grafo
 
 Grafo unificado entre todas as fontes para inteligência cross-domínio:
@@ -57,12 +62,27 @@ Grafo unificado entre todas as fontes para inteligência cross-domínio:
 
 Permite consultas como: *"Um sócio da Empresa A aparece em lista de sanções e venceu licitações públicas?"*
 
+**Layout atual de volumes:**
+- Data dir Neo4j: `/srv/osint/neo4j/data` (NVMe)
+- Plugins: `./infrastructure/neo4j/plugins`
+
 ### Storage Tiers
 
 ```
-HDD (/media/bigdata)  →  tabelas raw (cnpj.empresa, cnpj.estabelecimento)
-SSD (/)               →  Materialized Views + índices de busca (fast_ssd tablespace)
+NVMe (/srv/osint)           →  PostgreSQL, tablespace `fast_ssd`, Neo4j, temp rápido do Airflow
+HDD 10 TB (/mnt/data10tb)   →  `/opt/airflow/data` (raw/staging/processed) + MinIO object storage
+HDD 2 TB (/mnt/data2tb)     →  backups e retenção operacional
 ```
+
+**Mounts nativos do host:**
+- `/mnt/data10tb` — volume bulk para pipelines e MinIO
+- `/mnt/data2tb` — volume de backup/retenção
+- `/srv/osint` — diretórios quentes de serviço no NVMe
+
+**Object storage (MinIO):**
+- Serviço local para arquivos raw/processados, logs arquivados e backups
+- Data dir: `/mnt/data10tb/osint/minio`
+- Buckets iniciais planejados: `osint-raw`, `osint-processed`, `osint-airflow-logs`, `osint-backups`
 
 ---
 
@@ -107,8 +127,16 @@ Permite descoberta de conexões entre domínios diferentes.
 | ETL | Apache Airflow 2.x | Agenda e monitora pipelines |
 | Storage relacional | PostgreSQL 16 | Dados estruturados + busca |
 | Storage grafo | Neo4j | Inteligência de relacionamentos |
+| Object storage | MinIO | Arquivos raw/processados, logs e backups |
 | Cache / fila | Redis | Sessões, filas Airflow |
 | Workers assíncronos | Celery | Background tasks (planejado) |
+
+### Convenções Operacionais
+
+- Paths internos dos containers permanecem estáveis (`/opt/airflow/data`, `/opt/airflow/temp_ssd`, `/var/lib/postgresql/data`, `/data` no Neo4j)
+- O mapeamento para discos físicos é feito por bind mounts no `docker-compose.yml`
+- O ambiente usa mounts nativos em `/mnt` em vez de automounts em `/media`
+- O automount do GNOME foi desabilitado para evitar remount automático dos HDDs fora do `fstab`
 
 ---
 

@@ -14,8 +14,14 @@
 set -euo pipefail
 
 AIRFLOW_CONTAINER="osint-platform-airflow-webserver-1"
-RAW_DATA_DIR="/media/bigdata/osint-platform/data/cnpj/raw"
+RAW_DATA_DIR="${CNPJ_RAW_DATA_DIR:-${AIRFLOW_DATA_HOST_PATH:-/mnt/data10tb/osint/pipelines/data}/cnpj/raw}"
 POLL_INTERVAL=30
+
+[[ -d "$RAW_DATA_DIR" ]] || {
+    echo "Diretório de dados não encontrado: $RAW_DATA_DIR" >&2
+    echo "Defina CNPJ_RAW_DATA_DIR ou AIRFLOW_DATA_HOST_PATH corretamente." >&2
+    exit 1
+}
 
 REFERENCE_MONTH="${1:-$(ls "$RAW_DATA_DIR" | grep -E '^[0-9]{4}-[0-9]{2}$' | sort | tail -1)}"
 FORCE_REPROCESS="${2:-false}"

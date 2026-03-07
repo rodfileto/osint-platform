@@ -13,18 +13,34 @@
 |---------|--------------|
 | CPU | Intel i7-9700K — 8 cores |
 | RAM | 64 GB |
-| HDD | 9.1 TB — `/media/bigdata` — dados raw e banco PostgreSQL |
-| SSD | 384 GB — `/` — MatViews, índices de busca e Neo4j |
+| NVMe | 4 TB — `/` + `/srv/osint` — PostgreSQL, `fast_ssd`, Neo4j e temp rápido |
+| HDD | 10 TB — `/mnt/data10tb` — dados raw/staging/processed e MinIO |
+| HDD | 2 TB — `/mnt/data2tb` — backups e retenção operacional |
+
+### Layout Atual de Volumes
+
+**Diretórios quentes no NVMe (`/srv/osint`):**
+- PostgreSQL data dir: `/srv/osint/postgres/data`
+- Tablespace `fast_ssd`: `/srv/osint/postgres/ssd_tablespace`
+- Neo4j data dir: `/srv/osint/neo4j/data`
+- Airflow temp SSD: `/srv/osint/airflow/temp_ssd`
+
+**Diretórios bulk e object storage:**
+- Dados do pipeline: `/mnt/data10tb/osint/pipelines/data`
+- MinIO data dir: `/mnt/data10tb/osint/minio`
+- Backups: `/mnt/data2tb/osint/backups`
+
+**Observação operacional:** os mounts do host são nativos em `/mnt` (via `fstab`), e o automount do GNOME foi desabilitado para evitar remount automático em `/media`.
 
 ### Banco de Dados (estado atual — fev/2026)
 
 **PostgreSQL 16 (`osint_metadata`):** 106 GB total
 - `cnpj.empresa`: 83 GB — 66.936.364 registros
 - `cnpj.estabelecimento`: 24 GB — 69.446.909 registros
-- `cnpj.mv_company_search`: 6.785 MB no SSD — 27.795.796 registros (ativos)
+- `cnpj.mv_company_search`: 6.785 MB no NVMe — 27.795.796 registros (ativos)
 - `cnpj.download_manifest`: ~1 MB
 
-**Neo4j:** 5.2 GB (localizado no SSD)
+**Neo4j:** 5.2 GB (localizado no NVMe)
 - `Empresa`: 66.682.246 nós
 - `Estabelecimento`: 69.177.350 nós
 
@@ -32,7 +48,7 @@
 
 ### Tuning Aplicado
 
-**PostgreSQL** (otimizado para 64 GB RAM + HDD):
+**PostgreSQL** (configuração atual para 64 GB RAM e workload híbrido):
 ```
 shared_buffers           = 16GB   (25% da RAM)
 effective_cache_size     = 48GB   (75% da RAM)
@@ -43,15 +59,15 @@ effective_io_concurrency = 2      (HDD)
 max_parallel_workers_per_gather = 4
 ```
 
-**Tablespace `fast_ssd`** (para MatViews no SSD):
+**Tablespace `fast_ssd`** (para MatViews no NVMe):
 ```
 random_page_cost = 1.1
 seq_page_cost    = 1.0
 location         = /var/lib/postgresql/ssd_tablespace
-host path        = /home/rfileto/osint_pg_ssd/
+host path        = /srv/osint/postgres/ssd_tablespace
 ```
 
-**Neo4j** (no SSD):
+**Neo4j** (no NVMe):
 ```
 pagecache = 6GB   (comporta os 5.2 GB inteiros)
 heap      = 4GB
@@ -74,12 +90,15 @@ SET max_parallel_workers_per_gather = 0;
 | Backend API (Django) | http://localhost:8000 | — |
 | Airflow UI | http://localhost:8080 | airflow / airflow |
 | Neo4j Browser | http://localhost:7474 | neo4j / osint_password |
+| MinIO API | http://localhost:9000 | ver `.env` (`MINIO_ROOT_USER`) |
+| MinIO Console | http://localhost:9001 | ver `.env` (`MINIO_ROOT_USER`) |
 | PostgreSQL | localhost:5432 | osint_admin / (ver .env) |
 
 **Containers principais:**
 - `osint_postgres` — PostgreSQL 16
 - `osint-platform-airflow-webserver-1` — Airflow 2.10.4
 - `osint-platform-airflow-scheduler-1`
+- `osint_minio` — MinIO object storage
 
 ---
 
@@ -87,9 +106,11 @@ SET max_parallel_workers_per_gather = 0;
 
 ### ✅ Infraestrutura Base
 - Estrutura de diretórios (`backend`, `frontend`, `pipelines`, `infrastructure`)
-- `docker-compose.yml` com PostgreSQL, Neo4j, Redis e Airflow
+- `docker-compose.yml` com PostgreSQL, Neo4j, Redis, MinIO e Airflow
 - `.env` com defaults seguros
 - Script `init-db.sh` para inicialização do PostgreSQL
+- Bind mounts parametrizados para `/srv/osint`, `/mnt/data10tb` e `/mnt/data2tb`
+- Healthcheck do `airflow-scheduler` ajustado para `airflow jobs check --job-type SchedulerJob --local`
 
 ### ✅ Backend (Django)
 - Dockerfile em `/backend`
@@ -108,6 +129,7 @@ SET max_parallel_workers_per_gather = 0;
 ### ✅ Airflow & Pipelines
 - Webserver, scheduler e triggerer rodando em http://localhost:8080
 - DAG de teste de conexão em `pipelines/dags/test_connection.py`
+- Logs com ownership compatível com `AIRFLOW_UID=50000`
 
 ### ✅ Pipeline CNPJ — Limpeza e Transformação
 - `/pipelines/scripts/cnpj/cleaners.py` — 650+ linhas, 15+ funções Python
@@ -164,9 +186,14 @@ cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo
 - SP lidera com 8.437.482 estabelecimentos ativos
 
 ### ✅ Dados Históricos CNPJ
-- 49+ meses disponíveis em `data/cnpj/raw/` (2021-10 a 2026-02, 174+ GB)
+- 49+ meses disponíveis em `/mnt/data10tb/osint/pipelines/data/cnpj/raw/` (2021-10 a 2026-02, 174+ GB)
 - Dumps CNPJ são **full snapshots** — apenas o mês mais recente (2026-02) é processado
-- Parquets transformados em `data/cnpj/processed/2026-02/`
+- Parquets transformados em `/mnt/data10tb/osint/pipelines/data/cnpj/processed/2026-02/`
+
+### ✅ Object Storage (MinIO)
+- Serviço `osint_minio` rodando em `http://localhost:9000` (API) e `http://localhost:9001` (console)
+- Volume persistente em `/mnt/data10tb/osint/minio`
+- Bucket inicial validado: `osint-raw`
 
 ### ✅ Backend API (Django) — Endpoints CNPJ
 - `GET /api/cnpj/search/` — busca paginada de empresas
@@ -190,9 +217,9 @@ cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo
 
 ### Iniciar Ambiente
 ```bash
-cd /media/bigdata/osint-platform
-docker-compose up -d postgres neo4j redis airflow-webserver airflow-scheduler
-docker-compose ps
+cd /home/rfileto/projects/osint-platform
+docker compose up -d postgres neo4j redis minio airflow-webserver airflow-scheduler airflow-triggerer
+docker compose ps
 ```
 
 ### Reset Completo
@@ -225,6 +252,20 @@ docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_load_po
 
 # Refresh manual da MatView
 docker exec osint-platform-airflow-webserver-1 airflow dags trigger cnpj_matview_refresh
+```
+
+### Validar Infraestrutura de Storage
+```bash
+# Mounts nativos dos HDDs
+mount | grep -E 'data10tb|data2tb'
+
+# Saúde dos serviços principais
+docker compose ps
+curl -fsS http://localhost:8080/health
+curl -fsS http://localhost:9000/minio/health/live
+
+# Neo4j
+docker exec osint_neo4j cypher-shell -u neo4j -p osint_graph_password 'RETURN 1 AS ok;'
 ```
 
 ### Verificar Counts Principais
@@ -311,6 +352,7 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "
 - [ ] Refresh semanal automático da MatView (`schedule_interval='@weekly'`)
 - [ ] Alertas por e-mail em falha de pipeline
 - [ ] Backup automatizado do tablespace SSD
+- [ ] Buckets definitivos do MinIO (`osint-processed`, `osint-airflow-logs`, `osint-backups`)
 
 ---
 

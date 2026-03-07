@@ -1,14 +1,20 @@
 #!/bin/bash
 # Populate download_manifest table with existing downloaded files
 
-set -e
+set -euo pipefail
+
+HOST_CNPJ_RAW_DIR="${CNPJ_RAW_DATA_DIR:-${AIRFLOW_DATA_HOST_PATH:-/mnt/data10tb/osint/pipelines/data}/cnpj/raw}"
+DOCKER_CMD="${DOCKER_CMD:-docker}"
 
 echo "=== CNPJ Download Manifest Population ==="
-echo "Scanning: /media/bigdata/osint-platform/data/cnpj/raw"
+echo "Scanning: ${HOST_CNPJ_RAW_DIR}"
 echo ""
 
-# Use full docker path
-DOCKER_CMD="/snap/bin/docker"
+[[ -d "$HOST_CNPJ_RAW_DIR" ]] || {
+    echo "Diretório de dados não encontrado: $HOST_CNPJ_RAW_DIR" >&2
+    echo "Defina CNPJ_RAW_DATA_DIR ou AIRFLOW_DATA_HOST_PATH corretamente." >&2
+    exit 1
+}
 
 # Run Python script inside Airflow scheduler container
 $DOCKER_CMD compose exec -T airflow-scheduler python3 << 'PYTHON_SCRIPT'
