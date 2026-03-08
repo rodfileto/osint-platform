@@ -6,6 +6,7 @@ USER root
 # Install system dependencies needed for data processing
 RUN apt-get update && apt-get install -y \
     build-essential \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Switch back to airflow user

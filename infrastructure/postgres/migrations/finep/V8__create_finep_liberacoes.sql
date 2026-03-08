@@ -10,10 +10,6 @@
 --   finep.liberacoes_operacao_direta        (~33.800 linhas)
 --   finep.liberacoes_credito_descentralizado (~4.700 linhas)
 --   finep.liberacoes_ancine                  (~300 linhas)
---
--- Usage:
---   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata \
---     < infrastructure/postgres/init-finep-liberacoes-schema.sql
 -- ============================================================
 
 
@@ -157,7 +153,3 @@ CREATE INDEX IF NOT EXISTS idx_finep_la_manifest
 -- ── Permissões ─────────────────────────────────────────────────────────────
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
-
-\echo '✓ finep.liberacoes_operacao_direta criada'
-\echo '✓ finep.liberacoes_credito_descentralizado criada'
-\echo '✓ finep.liberacoes_ancine criada'

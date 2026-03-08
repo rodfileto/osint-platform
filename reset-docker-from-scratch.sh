@@ -34,7 +34,7 @@ tmux kill-session -t drop_neo4j 2>/dev/null || true
 
 # Para todos os containers do compose
 echo "  → Parando containers..."
-docker-compose down --remove-orphans 2>/dev/null || true
+docker compose down --remove-orphans 2>/dev/null || true
 
 # Force remove se ainda existirem
 echo "  → Removendo containers remanescentes..."
@@ -55,7 +55,7 @@ echo ""
 echo "🐳 STEP 2: Criando containers..."
 echo "----------------------------------------------"
 
-docker-compose up -d postgres neo4j
+docker compose up -d postgres neo4j
 
 echo "✓ Containers criados"
 
@@ -101,35 +101,16 @@ fi
 echo "✓ Neo4j pronto"
 
 # ==============================================
-# STEP 4: Criar schemas e tabelas
+# STEP 4: Aplicar migrations
 # ==============================================
 echo ""
-echo "🗃️  STEP 4: Criando schemas e tabelas..."
+echo "🗃️  STEP 4: Aplicando migrations do PostgreSQL..."
 echo "----------------------------------------------"
 
-# PostgreSQL - Schemas base (equivalente ao init-db.sh)
-echo "  → Criando schemas PostgreSQL..."
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
-    CREATE SCHEMA IF NOT EXISTS airflow;
-    CREATE SCHEMA IF NOT EXISTS naturalization;
-    CREATE SCHEMA IF NOT EXISTS cnpj;
-    CREATE SCHEMA IF NOT EXISTS sanctions;
-    CREATE SCHEMA IF NOT EXISTS contracts;
-    
-    GRANT ALL PRIVILEGES ON SCHEMA airflow TO osint_admin;
-    GRANT ALL PRIVILEGES ON SCHEMA naturalization TO osint_admin;
-    GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
-    GRANT ALL PRIVILEGES ON SCHEMA sanctions TO osint_admin;
-    GRANT ALL PRIVILEGES ON SCHEMA contracts TO osint_admin;
-EOSQL
+echo "  → Executando Flyway migrate..."
+bash infrastructure/postgres/run-flyway.sh migrate
 
-echo "✓ Schemas PostgreSQL criados"
-
-# PostgreSQL - Tabelas CNPJ
-echo "  → Criando tabelas CNPJ..."
-cat infrastructure/postgres/init-cnpj-schema.sql | docker exec -i osint_postgres psql -U osint_admin -d osint_metadata 2>&1 | grep -E "(CREATE|DROP|ERROR|✓)" || true
-
-echo "✓ Tabelas CNPJ criadas"
+echo "✓ Migrations PostgreSQL aplicadas"
 
 # Neo4j - Schema e constraints
 echo "  → Criando schema Neo4j..."
@@ -185,7 +166,7 @@ read -p "Iniciar Airflow também? (y/N) " -n 1 -r
 echo ""
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "  → Iniciando Airflow..."
-    docker-compose up -d airflow-webserver airflow-scheduler
+    docker compose up -d airflow-webserver airflow-scheduler
     echo "✓ Airflow iniciado"
     echo "    Acesse: http://localhost:8080"
 else
@@ -202,7 +183,7 @@ echo ""
 echo "Ambiente pronto para testes. Próximos passos:"
 echo ""
 echo "1. Verificar containers:"
-echo "   docker-compose ps"
+echo "   docker compose ps"
 echo ""
 echo "2. Testar conexão PostgreSQL:"
 echo "   docker exec -it osint_postgres psql -U osint_admin -d osint_metadata -c '\dt cnpj.*'"

@@ -1,4 +1,4 @@
-# PostgreSQL Setup - CNPJ Schema
+# PostgreSQL Setup
 
 ## ⚡ Reset Completo (RECOMENDADO)
 
@@ -15,9 +15,33 @@ Este script:
 - ✅ Limpa todos os volumes de dados
 - ✅ Recria containers do zero
 - ✅ Aguarda inicialização correta (com retry logic)
-- ✅ Cria schemas e tabelas automaticamente
+- ✅ Aplica migrations Flyway automaticamente
 - ✅ Verifica instalação (PKs, constraints, conexões)
 - ✅ Opcionalmente inicia Airflow
+
+## Versionamento com Flyway
+
+O Flyway é a fonte única de verdade para schema PostgreSQL neste projeto.
+
+As migrations versionadas ficam em:
+
+- `infrastructure/postgres/migrations/cnpj/`
+- `infrastructure/postgres/migrations/finep/`
+
+Comandos principais:
+
+```bash
+./infrastructure/postgres/run-flyway.sh info
+./infrastructure/postgres/run-flyway.sh validate
+./infrastructure/postgres/run-flyway.sh migrate
+```
+
+Regras práticas:
+
+- Banco vazio: `flyway migrate`
+- Banco existente: `flyway migrate`
+- Não edite migrations já aplicadas; crie uma nova migration
+- Use versões globais únicas, por exemplo `V2026.03.07.001__cnpj_add_new_index.sql`
 
 ---
 
@@ -25,42 +49,15 @@ Este script:
 
 ### 1. Iniciar PostgreSQL
 ```bash
-docker-compose up -d postgres
+docker compose up -d postgres
 ```
 
-### 2. Aguardar inicialização
+### 2. Aplicar migrations
 ```bash
-# Aguarda até PostgreSQL estar ready
-until docker exec osint_postgres pg_isready -U osint_admin; do
-  echo "Aguardando PostgreSQL..."
-  sleep 2
-done
+./infrastructure/postgres/run-flyway.sh migrate
 ```
 
-### 3. Criar Schemas Base
-
-**Importante:** O arquivo `init-db.sh` só executa automaticamente na primeira criação do container (quando o volume está vazio). Para execução manual:
-
-```bash
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
-    CREATE SCHEMA IF NOT EXISTS airflow;
-    CREATE SCHEMA IF NOT EXISTS cnpj;
-    CREATE SCHEMA IF NOT EXISTS naturalization;
-    CREATE SCHEMA IF NOT EXISTS sanctions;
-    CREATE SCHEMA IF NOT EXISTS contracts;
-    
-    GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
-    GRANT ALL PRIVILEGES ON ALL OTHER SCHEMAS TO osint_admin;
-EOSQL
-```
-
-### 4. Criar Tabelas CNPJ com PRIMARY KEYs
-```bash
-cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
-  docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
-```
-
-### 5. Verificar Instalação
+### 3. Verificar instalação
 ```bash
 # Verificar tabelas criadas
 docker exec osint_postgres psql -U osint_admin -d osint_metadata -c "\dt cnpj.*"
@@ -94,11 +91,13 @@ ORDER BY tc.table_name;
 
 ## 🔧 Troubleshooting
 
-### Problema: init-db.sh não executa
+### Problema: migrations falharam
 
-**Causa:** Scripts em `/docker-entrypoint-initdb.d/` só rodam quando o diretório de dados PostgreSQL está vazio.
-
-**Solução:** Execute manualmente ou use o script de reset completo.
+```bash
+./infrastructure/postgres/run-flyway.sh info
+./infrastructure/postgres/run-flyway.sh validate
+docker logs osint_flyway --tail 100
+```
 
 ### Problema: Tabelas sem PRIMARY KEY
 
@@ -112,9 +111,8 @@ DROP TABLE IF EXISTS cnpj.empresa CASCADE;
 DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
 EOF
 
-# Recria com constraints corretas
-cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
-  docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
+# Recria com migrations
+./infrastructure/postgres/run-flyway.sh migrate
 ```
 
 ### Problema: Container não inicia
@@ -134,28 +132,22 @@ sudo pkill -9 postgres
 
 ```bash
 # Para apenas o PostgreSQL
-docker-compose stop postgres
+docker compose stop postgres
 docker rm -f osint_postgres
 
 # Limpa dados
 sudo rm -rf infrastructure/postgres/data/*
 
 # Reinicia
-docker-compose up -d postgres
+docker compose up -d postgres
 
 # Aguarda ficar pronto
 until docker exec osint_postgres pg_isready -U osint_admin; do
   sleep 2
 done
 
-# Recria schemas e tabelas
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
-    CREATE SCHEMA IF NOT EXISTS cnpj;
-    GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
-EOSQL
-
-cat infrastructure/postgres/cnpj/init-cnpj-schema.sql | \
-  docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
+# Recria via Flyway
+./infrastructure/postgres/run-flyway.sh migrate
 ```
 
 ---

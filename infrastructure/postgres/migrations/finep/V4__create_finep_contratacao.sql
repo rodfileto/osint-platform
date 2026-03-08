@@ -7,10 +7,6 @@
 --   2. Proj__Crédito_Descentralizado → finep.projetos_credito_descentralizado (TODO)
 --   3. Projetos_Investimento         → finep.projetos_investimento            (TODO)
 --   4. Projetos_Ancine               → finep.projetos_ancine                  (TODO)
---
--- Usage:
---   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata \
---     < infrastructure/postgres/init-finep-contratacao-schema.sql
 -- ============================================================
 
 -- ============================================================
@@ -143,5 +139,3 @@ CREATE INDEX IF NOT EXISTS idx_finep_pod_manifest_id
 -- ── Permissões ─────────────────────────────────────────────────────────────
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
-
-\echo '✓ finep.projetos_operacao_direta criada com sucesso'

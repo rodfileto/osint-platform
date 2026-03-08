@@ -1,5 +1,9 @@
 # Guia de Reset do Docker - OSINT Platform
 
+> Atenção: este guia contém contexto histórico do fluxo antigo baseado em scripts de init do PostgreSQL.
+> O fluxo atual de schema PostgreSQL é gerenciado por Flyway. Use `bash infrastructure/postgres/run-flyway.sh migrate`
+> e consulte `infrastructure/postgres/README.md` como referência principal.
+
 ## 🎯 Problema Identificado
 
 Você estava enfrentando dificuldades para reiniciar os containers Docker do zero devido a:
@@ -68,8 +72,7 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
     GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
 EOSQL
 
-cat infrastructure/postgres/init-cnpj-schema.sql | \
-    docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
+bash infrastructure/postgres/run-flyway.sh migrate
 ```
 
 ### Reset Apenas Neo4j
@@ -100,8 +103,7 @@ DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
 EOF
 
 # Recria
-cat infrastructure/postgres/init-cnpj-schema.sql | \
-    docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
+bash infrastructure/postgres/run-flyway.sh migrate
 ```
 
 ---
@@ -216,8 +218,7 @@ DROP TABLE IF EXISTS cnpj.estabelecimento CASCADE;
 DROP TABLE IF EXISTS cnpj.empresa CASCADE;
 EOF
 
-cat infrastructure/postgres/init-cnpj-schema.sql | \
-    docker exec -i osint_postgres psql -U osint_admin -d osint_metadata
+bash infrastructure/postgres/run-flyway.sh migrate
 ```
 
 ### Container não para
@@ -240,8 +241,8 @@ docker rm -f $(docker ps -aq)  # Remove TODOS containers (cuidado!)
 |---------|-----------|
 | `reset-docker-from-scratch.sh` | **Script principal** - Reset completo automatizado |
 | `infrastructure/postgres/README.md` | Documentação detalhada PostgreSQL |
-| `infrastructure/postgres/init-db.sh` | Cria schemas base (executa só na 1ª vez) |
-| `infrastructure/postgres/init-cnpj-schema.sql` | Cria tabelas, indexes e views CNPJ |
+| `infrastructure/postgres/run-flyway.sh` | Executa `flyway migrate/info/validate` |
+| `infrastructure/postgres/migrations/` | Fonte de verdade do schema PostgreSQL |
 | `infrastructure/neo4j/init-cnpj-schema.cypher` | Cria constraints e indexes Neo4j |
 | `docker-compose.yml` | Configuração de todos os serviços |
 | `force-reset-databases.sh` | ⚠️ Script antigo - use o novo |
@@ -251,20 +252,20 @@ docker rm -f $(docker ps -aq)  # Remove TODOS containers (cuidado!)
 
 ## 🎓 Conceitos Importantes
 
-### Por que o init-db.sh não executa sempre?
+### Por que migramos para Flyway?
 
-O PostgreSQL Docker usa o diretório `/docker-entrypoint-initdb.d/` para scripts de inicialização, mas **eles só executam quando o diretório de dados está vazio**. Isso é intencional para evitar reinicializar um banco existente.
+O fluxo antigo baseado em scripts de inicialização do Docker só funcionava automaticamente quando o diretório de dados estava vazio. Flyway elimina essa diferença: o mesmo comando aplica schema em banco vazio e em banco existente.
 
 ### Qual a ordem correta de inicialização?
 
-1. **Schemas** (`init-db.sh`): Cria namespaces vazios
-2. **Tabelas** (`init-cnpj-schema.sql`): Cria estrutura de dados
+1. **Migrations versionadas** (`infrastructure/postgres/migrations/`): Criam e evoluem a estrutura de dados
+2. **Flyway** (`infrastructure/postgres/run-flyway.sh migrate`): Aplica o que falta no banco
 3. **Dados** (DAGs do Airflow): Popula com dados reais
 
 ### Por que múltiplos scripts?
 
-- **init-db.sh**: Genérico para todos módulos (CNPJ, sanctions, contracts)
-- **init-cnpj-schema.sql**: Específico do módulo CNPJ (tabelas + views)
+- **Flyway**: Fonte única de verdade para CNPJ, FINEP e schemas auxiliares
+- **Migrations**: Arquivos versionados e incrementais, sem bootstrap paralelo
 - Modularidade permite adicionar novos módulos sem quebrar existentes
 
 ---

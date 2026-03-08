@@ -7,10 +7,6 @@
 -- empresas inovadoras via opção de compra (equity). A Finep aporta
 -- capital e tem direito de exercer opção de compra ou desinvestir.
 -- Métricas de retorno (TIR, MOI) tornam esta aba única.
---
--- Usage:
---   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata \
---     < infrastructure/postgres/init-finep-investimento-schema.sql
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS finep.projetos_investimento (
@@ -104,5 +100,3 @@ CREATE INDEX IF NOT EXISTS idx_finep_pi_manifest_id
 -- ── Permissões ─────────────────────────────────────────────────────────────
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
-
-\echo '✓ finep.projetos_investimento criada com sucesso'

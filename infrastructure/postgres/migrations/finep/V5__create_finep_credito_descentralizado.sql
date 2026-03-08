@@ -7,10 +7,6 @@
 -- a uma empresa (proponente) feita através de um agente financeiro
 -- credenciado (banco). O campo 'contrato' identifica o convênio-quadro
 -- FINEP ↔ Agente Financeiro — não identifica a operação individual.
---
--- Usage:
---   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata \
---     < infrastructure/postgres/init-finep-credito-descentralizado-schema.sql
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS finep.projetos_credito_descentralizado (
@@ -101,5 +97,3 @@ CREATE INDEX IF NOT EXISTS idx_finep_pcd_manifest_id
 -- ── Permissões ─────────────────────────────────────────────────────────────
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
-
-\echo '✓ finep.projetos_credito_descentralizado criada com sucesso'

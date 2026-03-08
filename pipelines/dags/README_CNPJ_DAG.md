@@ -1,10 +1,10 @@
-# CNPJ Ingestion DAG
+# CNPJ Ingestion DAGs
 
-Airflow DAG for ingesting Brazilian CNPJ (Cadastro Nacional da Pessoa Jurídica) data from Receita Federal into PostgreSQL and Neo4j.
+Airflow DAGs for ingesting Brazilian CNPJ (Cadastro Nacional da Pessoa Jurídica) data from Receita Federal into PostgreSQL and Neo4j.
 
 ## Overview
 
-This DAG implements a high-performance ETL pipeline for CNPJ data processing:
+This pipeline implements a high-performance ETL pipeline for CNPJ data processing:
 
 - **Extract**: Unzips downloaded CNPJ files from Receita Federal
 - **Transform**: Cleans and validates data using DuckDB pure SQL (10-100x faster than Python)
@@ -32,7 +32,59 @@ This DAG implements a high-performance ETL pipeline for CNPJ data processing:
 │ PostgreSQL  │   Neo4j     │
 │  (cnpj.*) │  (Graphs)   │
 └─────────────┴─────────────┘
+
+Airflow DAG chain (typical run):
+
+- `cnpj_download` (scheduled) → downloads ZIPs and updates `cnpj.download_manifest`
+- `cnpj_transform` (manual or triggered) → extract + DuckDB SQL transform to Parquet
+- `cnpj_load_postgres` (triggered) → bulk load to PostgreSQL
+- `cnpj_matview_refresh` (triggered) → refresh `cnpj.mv_company_search`
+- `cnpj_load_neo4j` (triggered) → load graph entities to Neo4j
 ```
+
+## Download DAGs
+
+### `cnpj_download`
+
+Monitora o repositório da Receita Federal (WebDAV) e baixa automaticamente novos meses quando disponíveis.
+
+- **Schedule:** mensal, dia 2 às 02:00 (cron: `0 2 2 * *`)
+- **Data dir (raw ZIPs):** `/opt/airflow/data/cnpj/raw/{YYYY-MM}/`
+- **Manifest:** atualiza a tabela `cnpj.download_manifest` ao final do fluxo
+
+**Optional parameter:**
+
+- `reference_month` (format `YYYY-MM`, e.g., `2026-02`)
+  - default: `auto` (baixa o último mês disponível no servidor, somente se ainda não existir no `cnpj.download_manifest`)
+  - when set: baixa/verifica somente o mês informado
+
+**Tasks:**
+
+- `check_new_months` → detecta meses novos (preferencialmente via `cnpj.download_manifest`, com fallback para filesystem)
+- `download_new_months` → baixa os arquivos do(s) mês(es) novo(s)
+- `verify_downloads` → verifica se o mês está completo (todos os ZIPs esperados)
+- `repair_downloads` → tenta rebaixar arquivos faltantes / com size mismatch
+- `update_manifest` → executa `pipelines/scripts/cnpj/populate_manifest.py` para registrar os ZIPs no Postgres
+- `generate_report` → imprime sumário (tamanho total, meses disponíveis, último mês)
+
+**Manual trigger examples:**
+
+```bash
+# Auto mode (default): download latest month if absent in manifest
+airflow dags trigger cnpj_download
+
+# Force download a specific month
+airflow dags trigger cnpj_download \
+  --conf '{"reference_month": "2026-02"}'
+```
+
+### `cnpj_download_full_sync`
+
+Full sync manual (útil no setup inicial ou recuperação). Baixa todos os meses e depois:
+
+- `verify_after_sync` → valida integridade
+- `update_manifest_after_sync` → popula `cnpj.download_manifest`
+- `report_after_sync` → sumário + `df -h` do volume
 
 ## Task Groups
 
@@ -45,7 +97,7 @@ Processes 10 Empresas files (Empresas0.zip - Empresas9.zip) containing:
 - Company size
 
 **Output Tables:**
-- PostgreSQL: `cnpj.empresas`
+- PostgreSQL: `cnpj.empresa`
 - Neo4j: `:Empresa` nodes
 
 ### 2. `process_estabelecimentos_group`
@@ -58,7 +110,7 @@ Processes 10 Estabelecimentos files containing:
 - Contact information
 
 **Output Tables:**
-- PostgreSQL: `cnpj.estabelecimentos`
+- PostgreSQL: `cnpj.estabelecimento`
 - Neo4j: `:Estabelecimento` nodes with `[:PERTENCE_A]` relationships to `:Empresa`
 
 ### 3. `process_socios_group` (Future)
@@ -98,14 +150,14 @@ Set in Airflow connections or environment:
 # PostgreSQL
 POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
-POSTGRES_DB=osint_platform
-POSTGRES_USER=osint_user
-POSTGRES_PASSWORD=osint_password
+POSTGRES_DB=osint_metadata
+POSTGRES_USER=osint_admin
+POSTGRES_PASSWORD=osint_secure_password
 
 # Neo4j
 NEO4J_URI=bolt://neo4j:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=osint_password
+NEO4J_PASSWORD=osint_graph_password
 ```
 
 ### Directory Structure:
@@ -135,23 +187,23 @@ NEO4J_PASSWORD=osint_password
 
 ### Trigger Manually:
 ```bash
-# Process default month (2024-02)
-airflow dags trigger cnpj_ingestion
+# Download & update manifest (scheduled monthly, but can be triggered)
+airflow dags trigger cnpj_download
 
-# Process specific month
-airflow dags trigger cnpj_ingestion \
-  --conf '{"reference_month": "2024-03"}'
+# Transform (extract + DuckDB SQL → Parquet). This will trigger the downstream DAGs.
+airflow dags trigger cnpj_transform \
+  --conf '{"reference_month": "2026-02"}'
 
-# Process only Empresas
-airflow dags trigger cnpj_ingestion \
-  --conf '{"process_estabelecimentos": false}'
+# Transform only Empresas
+airflow dags trigger cnpj_transform \
+  --conf '{"process_estabelecimentos": false, "process_socios": false, "process_simples": false, "process_references": false}'
 ```
 
 ### Backfill Historical Data:
 ```bash
 # Process all months from 2022-08 to 2025-06
 for month in 2022-08 2022-09 2022-10 ... 2025-06; do
-  airflow dags trigger cnpj_ingestion \
+  airflow dags trigger cnpj_transform \
     --conf "{\"reference_month\": \"$month\"}"
   sleep 300  # Wait 5 minutes between runs
 done
@@ -160,14 +212,14 @@ done
 ### Monitor Progress:
 ```bash
 # Watch DAG runs
-airflow dags list-runs -d cnpj_ingestion
+airflow dags list-runs -d cnpj_transform
 
 # View task logs
-airflow tasks logs cnpj_ingestion process_empresas_group.transform_empresas_duckdb EXECUTION_DATE
+airflow tasks logs cnpj_transform transform_empresas_group.process_empresas_file EXECUTION_DATE
 
 # Check database
-psql -h localhost -U osint_user -d osint_platform \
-  -c "SELECT reference_month, COUNT(*) FROM cnpj.empresas GROUP BY reference_month"
+psql -h localhost -U osint_admin -d osint_metadata \
+  -c "SELECT reference_month, COUNT(*) FROM cnpj.empresa GROUP BY reference_month"
 ```
 
 ## SQL Cleaners
@@ -191,43 +243,22 @@ The DAG uses pure SQL for transformation (defined in `cleaners_sql.py`):
 
 ### PostgreSQL:
 
-```sql
--- Empresas table
-CREATE TABLE cnpj.empresas (
-    cnpj_basico VARCHAR(8) PRIMARY KEY,
-    razao_social TEXT,
-    natureza_juridica INTEGER,
-    qualificacao_responsavel INTEGER,
-    capital_social DECIMAL(15,2),
-    porte_empresa VARCHAR(2),
-    ente_federativo_responsavel TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    reference_month VARCHAR(7)
-);
+The authoritative schema is managed by Flyway migrations (see `infrastructure/postgres/migrations/cnpj/`).
 
--- Estabelecimentos table
-CREATE TABLE cnpj.estabelecimentos (
-    cnpj_basico VARCHAR(8),
-    cnpj_ordem VARCHAR(4),
-    cnpj_dv VARCHAR(2),
-    cnpj_completo VARCHAR(14) GENERATED ALWAYS AS (cnpj_basico || cnpj_ordem || cnpj_dv) STORED,
-    nome_fantasia TEXT,
-    situacao_cadastral INTEGER,
-    data_situacao_cadastral DATE,
-    municipio TEXT,
-    uf VARCHAR(2),
-    -- ... 20+ more columns
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    reference_month VARCHAR(7),
-    PRIMARY KEY (cnpj_basico, cnpj_ordem, cnpj_dv),
-    FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresas(cnpj_basico)
-);
+Main tables (physical names):
 
--- Indexes for performance
-CREATE INDEX idx_empresas_razao_social ON cnpj.empresas USING GIN (to_tsvector('portuguese', razao_social));
-CREATE INDEX idx_estabelecimentos_municipio ON cnpj.estabelecimentos(municipio);
-CREATE INDEX idx_estabelecimentos_uf ON cnpj.estabelecimentos(uf);
-```
+- `cnpj.empresa`
+- `cnpj.estabelecimento`
+- `cnpj.socio`
+- `cnpj.simples_nacional`
+
+Download tracking:
+
+- `cnpj.download_manifest`
+
+Search MatView:
+
+- `cnpj.mv_company_search`
 
 ### Neo4j:
 

@@ -59,7 +59,7 @@ def ensure_pg_trgm():
 @task
 def ensure_mv_exists():
     """
-    A estrutura da MatView é sempre criada pelo init-cnpj-schema.sql (WITH NO DATA).
+    A estrutura da MatView é criada pela migration Flyway do schema CNPJ (WITH NO DATA).
     Esta task apenas popula ou atualiza os dados:
     - Se vazia (primeira carga): REFRESH sem CONCURRENTLY.
     - Se já populada: REFRESH CONCURRENTLY (não bloqueia leituras).

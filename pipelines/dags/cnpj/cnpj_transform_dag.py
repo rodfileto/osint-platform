@@ -87,7 +87,6 @@ with DAG(
     branch = BranchPythonOperator(
         task_id='choose_execution_mode',
         python_callable=choose_execution_mode,
-        provide_context=True
     )
     
     empresas = transform_empresas_group()

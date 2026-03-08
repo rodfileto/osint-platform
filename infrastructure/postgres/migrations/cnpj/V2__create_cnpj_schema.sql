@@ -1,10 +1,49 @@
 -- PostgreSQL CNPJ Schema Initialization
--- Run this after the main init-db.sh to set up CNPJ-specific tables
--- Usage: psql -U osint_admin -d osint_metadata -f init-cnpj-schema.sql
+-- Flyway migration: CNPJ base schema
 
 -- =====================================================
 -- CNPJ Schema Tables
 -- =====================================================
+
+-- =====================================================
+-- Lookup / reference tables (must exist before FKs)
+-- =====================================================
+
+-- CNAE table (economic activity codes)
+CREATE TABLE IF NOT EXISTS cnpj.cnae (
+    cnae_fiscal VARCHAR(7) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- Motivo Situacao Cadastral table (reason for registration status)
+CREATE TABLE IF NOT EXISTS cnpj.motivo_situacao_cadastral (
+    codigo VARCHAR(2) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- MUNICIPIO table (municipality codes)
+CREATE TABLE IF NOT EXISTS cnpj.municipio (
+    codigo VARCHAR(4) PRIMARY KEY,
+    nome TEXT NOT NULL
+);
+
+-- Natureza Juridica table (legal nature codes)
+CREATE TABLE IF NOT EXISTS cnpj.natureza_juridica (
+    codigo INTEGER PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
+
+-- Pais table (country codes)
+CREATE TABLE IF NOT EXISTS cnpj.pais (
+    codigo VARCHAR(3) PRIMARY KEY,
+    nome TEXT NOT NULL
+);
+
+-- Qualificações table (partner qualifications)
+CREATE TABLE IF NOT EXISTS cnpj.qualificacao_socio (
+    codigo VARCHAR(2) PRIMARY KEY,
+    descricao TEXT NOT NULL
+);
 
 -- Download Manifest Table (tracks downloaded files and processing status)
 CREATE TABLE IF NOT EXISTS cnpj.download_manifest (
@@ -141,6 +180,7 @@ CREATE TABLE IF NOT EXISTS cnpj.socio (
     faixa_etaria                    INTEGER,
     reference_month                 VARCHAR(7)   NOT NULL,
     created_at                      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+    updated_at                      TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (cnpj_basico) REFERENCES cnpj.empresa(cnpj_basico) ON DELETE CASCADE,
     FOREIGN KEY (qualificacao_socio) REFERENCES cnpj.qualificacao_socio(codigo) ON DELETE SET NULL,
     FOREIGN KEY (pais) REFERENCES cnpj.pais(codigo) ON DELETE SET NULL,
@@ -154,41 +194,47 @@ COMMENT ON COLUMN cnpj.socio.pais IS 'NULL = Brasil; código da tabela cnpj.pais
 COMMENT ON COLUMN cnpj.socio.faixa_etaria IS '0=não informado, 1=<=20, 2=21-30, ..., 9=>80';
 COMMENT ON COLUMN cnpj.socio.reference_month IS 'Snapshot de origem YYYY-MM; carga via DELETE+INSERT por mês';
 
--- CNAE table (economic activity codes)
-CREATE TABLE IF NOT EXISTS cnpj.cnae (
-    cnae_fiscal VARCHAR(7) PRIMARY KEY,
-    descricao TEXT NOT NULL
-);
+-- =====================================================
+-- updated_at triggers (simple and idempotent)
+-- =====================================================
 
--- Motivo Situacao Cadastral table (reason for registration status)
-CREATE TABLE IF NOT EXISTS cnpj.motivo_situacao_cadastral (
-    codigo VARCHAR(2) PRIMARY KEY,
-    descricao TEXT NOT NULL
-);
+CREATE OR REPLACE FUNCTION cnpj.update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
--- MUNICIPIO table (municipality codes)
-CREATE TABLE IF NOT EXISTS cnpj.municipio (
-    codigo VARCHAR(4) PRIMARY KEY,
-    nome TEXT NOT NULL
-    );
+DROP TRIGGER IF EXISTS update_download_manifest_updated_at ON cnpj.download_manifest;
+CREATE TRIGGER update_download_manifest_updated_at
+    BEFORE UPDATE ON cnpj.download_manifest
+    FOR EACH ROW
+    EXECUTE FUNCTION cnpj.update_updated_at_column();
 
--- Natureza Juridica table (legal nature codes)
-CREATE TABLE IF NOT EXISTS cnpj.natureza_juridica (
-    codigo INTEGER PRIMARY KEY,
-    descricao TEXT NOT NULL
-);
+DROP TRIGGER IF EXISTS update_empresa_updated_at ON cnpj.empresa;
+CREATE TRIGGER update_empresa_updated_at
+    BEFORE UPDATE ON cnpj.empresa
+    FOR EACH ROW
+    EXECUTE FUNCTION cnpj.update_updated_at_column();
 
--- Pais table (country codes)
-CREATE TABLE IF NOT EXISTS cnpj.pais (
-    codigo VARCHAR(3) PRIMARY KEY,
-    nome TEXT NOT NULL
-);
+DROP TRIGGER IF EXISTS update_estabelecimento_updated_at ON cnpj.estabelecimento;
+CREATE TRIGGER update_estabelecimento_updated_at
+    BEFORE UPDATE ON cnpj.estabelecimento
+    FOR EACH ROW
+    EXECUTE FUNCTION cnpj.update_updated_at_column();
 
--- Qualificações table (partner qualifications)
-CREATE TABLE IF NOT EXISTS cnpj.qualificacao_socio (
-    codigo VARCHAR(2) PRIMARY KEY,
-    descricao TEXT NOT NULL
-);
+DROP TRIGGER IF EXISTS update_simples_nacional_updated_at ON cnpj.simples_nacional;
+CREATE TRIGGER update_simples_nacional_updated_at
+    BEFORE UPDATE ON cnpj.simples_nacional
+    FOR EACH ROW
+    EXECUTE FUNCTION cnpj.update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_socio_updated_at ON cnpj.socio;
+CREATE TRIGGER update_socio_updated_at
+    BEFORE UPDATE ON cnpj.socio
+    FOR EACH ROW
+    EXECUTE FUNCTION cnpj.update_updated_at_column();
 
 -- Indexes for performance
 
@@ -367,5 +413,3 @@ CREATE INDEX IF NOT EXISTS idx_mv_situacao
 -- Grant table permissions
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA cnpj TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA cnpj TO osint_admin;
-
-\echo '✓ CNPJ tables, indexes, and materialized view structure created successfully'

@@ -28,6 +28,8 @@ x-airflow-common:
     &airflow-common-depends-on
     postgres:
       condition: service_healthy
+    flyway:
+      condition: service_completed_successfully
     
 services:
   # --- Data Layer ---
@@ -80,9 +82,6 @@ services:
       PGTZ: America/Sao_Paulo
     volumes:
       - ${POSTGRES_DATA_HOST_PATH:-/srv/osint/postgres/data}:/var/lib/postgresql/data
-      - ./infrastructure/postgres/init-db.sh:/docker-entrypoint-initdb.d/01-init-db.sh
-      - ./infrastructure/postgres/cnpj:/docker-entrypoint-initdb.d/cnpj
-      - ./infrastructure/postgres/finep:/docker-entrypoint-initdb.d/finep
       - ${POSTGRES_FAST_SSD_HOST_PATH:-/srv/osint/postgres/ssd_tablespace}:/var/lib/postgresql/ssd_tablespace  # SSD for MatViews & Indexes
     ports:
       - "5432:5432"
@@ -169,6 +168,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
       neo4j:
         condition: service_started
 
@@ -245,6 +246,29 @@ services:
       - bash
       - -c
       - airflow
+
+  flyway:
+    image: flyway/flyway:11-alpine
+    container_name: osint_flyway
+    command: migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
+      FLYWAY_DEFAULT_SCHEMA: public
+      FLYWAY_TABLE: flyway_schema_history
+      FLYWAY_SCHEMAS: cnpj,finep,airflow,naturalization,sanctions,contracts
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep
+      FLYWAY_VALIDATE_MIGRATION_NAMING: "true"
+      FLYWAY_CLEAN_DISABLED: "true"
+      FLYWAY_CONNECT_RETRIES: "60"
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./infrastructure/postgres/migrations:/flyway/sql
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   postgres_data:

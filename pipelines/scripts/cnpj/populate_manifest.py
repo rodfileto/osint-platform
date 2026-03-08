@@ -27,6 +27,8 @@ DB_CONFIG = {
 
 DATA_DIR = Path(os.getenv('CNPJ_DATA_DIR', '/opt/airflow/data/cnpj/raw'))
 
+MANIFEST_SOURCE = os.getenv("CNPJ_MANIFEST_SOURCE", "local").strip().lower()
+
 # File type patterns
 FILE_TYPE_PATTERNS = {
     r'^Empresas\d+\.zip$': 'empresas',
@@ -91,6 +93,103 @@ def scan_downloaded_files():
         
         logger.info(f"  Found {len(zip_files)} files")
     
+    return files_data
+
+
+def _get_minio_s3_client():
+    import boto3
+    from botocore.client import Config
+
+    endpoint_url = os.getenv("MINIO_ENDPOINT_URL", os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
+    access_key = os.getenv("MINIO_ROOT_USER", os.getenv("MINIO_ACCESS_KEY"))
+    secret_key = os.getenv("MINIO_ROOT_PASSWORD", os.getenv("MINIO_SECRET_KEY"))
+
+    if not access_key or not secret_key:
+        raise RuntimeError(
+            "MinIO credentials not set. Expected MINIO_ROOT_USER/MINIO_ROOT_PASSWORD (or MINIO_ACCESS_KEY/MINIO_SECRET_KEY)."
+        )
+
+    session = boto3.session.Session()
+    return session.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=os.getenv("MINIO_REGION", "us-east-1"),
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def scan_minio_files():
+    """Scan MinIO bucket/prefix and collect ZIP metadata.
+
+    Expected key layout:
+      cnpj/raw/<YYYY-MM>/<filename>.zip
+    """
+    bucket = os.getenv("MINIO_BUCKET_RAW", "osint-raw")
+    base_prefix = os.getenv("MINIO_PREFIX_CNPJ_RAW", "cnpj/raw")
+    prefix = base_prefix.rstrip("/") + "/"
+
+    logger.info(f"Scanning MinIO source: bucket={bucket} prefix={prefix}")
+
+    s3 = _get_minio_s3_client()
+    files_data = []
+
+    continuation_token = None
+    while True:
+        kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+        if continuation_token:
+            kwargs["ContinuationToken"] = continuation_token
+
+        resp = s3.list_objects_v2(**kwargs)
+        for obj in resp.get("Contents", []) or []:
+            key = obj.get("Key") or ""
+            if not key.lower().endswith(".zip"):
+                continue
+
+            rel = key[len(prefix):]
+            # rel should be <YYYY-MM>/<filename>.zip
+            parts = rel.split("/", 1)
+            if len(parts) != 2:
+                continue
+
+            reference_month, filename = parts
+            if not re.match(r"^\d{4}-\d{2}$", reference_month):
+                continue
+
+            file_type = get_file_type(filename)
+            size_bytes = int(obj.get("Size") or 0)
+            last_modified = obj.get("LastModified")
+            if last_modified is None:
+                download_date = datetime.utcnow()
+            else:
+                # boto3 returns timezone-aware datetime
+                download_date = last_modified
+
+            files_data.append(
+                {
+                    "reference_month": reference_month,
+                    "file_name": filename,
+                    "file_type": file_type,
+                    "file_size_bytes": size_bytes,
+                    "download_date": download_date,
+                    "processing_status": "downloaded",
+                }
+            )
+
+        if resp.get("IsTruncated"):
+            continuation_token = resp.get("NextContinuationToken")
+            continue
+        break
+
+    # Log summary by month
+    months = {}
+    for f in files_data:
+        m = f["reference_month"]
+        months[m] = months.get(m, 0) + 1
+    for m in sorted(months.keys()):
+        logger.info(f"  MinIO month {m}: {months[m]} files")
+
     return files_data
 
 
@@ -190,7 +289,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     logger.info("Scanning downloaded files...")
-    files_data = scan_downloaded_files()
+    if MANIFEST_SOURCE == "minio":
+        files_data = scan_minio_files()
+    else:
+        files_data = scan_downloaded_files()
     
     logger.info(f"Found {len(files_data)} files across {len(set(f['reference_month'] for f in files_data))} months")
     

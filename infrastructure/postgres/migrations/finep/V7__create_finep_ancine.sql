@@ -9,10 +9,6 @@
 --   - Sem: Prazo Execução Original, CNPJ Executor, Resumo Publicável
 --   - Instrumento fixo: 'Audiovisual'
 --   - Período histórico: 2009–2013
---
--- Usage:
---   docker exec -i osint_postgres psql -U osint_admin -d osint_metadata \
---     < infrastructure/postgres/init-finep-ancine-schema.sql
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS finep.projetos_ancine (
@@ -111,5 +107,3 @@ CREATE INDEX IF NOT EXISTS idx_finep_pa_manifest_id
 -- ── Permissões ─────────────────────────────────────────────────────────────
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
-
-\echo '✓ finep.projetos_ancine criada com sucesso'

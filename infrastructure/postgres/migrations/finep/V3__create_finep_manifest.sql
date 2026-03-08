@@ -2,15 +2,7 @@
 -- FINEP Schema Initialization
 -- Financiadora de Estudos e Projetos — dados de contratações
 -- e liberações financeiras publicados em xlsx aberto.
---
--- Usage:
---   psql -U osint_admin -d osint_metadata -f init-finep-schema.sql
 -- ============================================================
-
--- =====================================================
--- Criar schema dedicado
--- =====================================================
-CREATE SCHEMA IF NOT EXISTS finep;
 
 -- =====================================================
 -- Tabela de manifesto de downloads
@@ -144,5 +136,3 @@ COMMENT ON VIEW finep.change_history IS
 GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA finep TO osint_admin;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA finep TO osint_admin;
 GRANT USAGE ON SCHEMA finep TO osint_admin;
-
-\echo '✓ Schema finep criado com sucesso'

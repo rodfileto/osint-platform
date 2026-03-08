@@ -150,8 +150,8 @@ AIRFLOW credentials configured
 ## 8. Infrastructure Files
 
 ✅ **Database Initialization Scripts:**
-- `infrastructure/postgres/init-db.sh` (961 bytes)
-- `infrastructure/postgres/init-cnpj-schema.sql` (7.1 KB)
+- `infrastructure/postgres/run-flyway.sh`
+- `infrastructure/postgres/migrations/`
 - `infrastructure/neo4j/init-cnpj-schema.cypher` (2.9 KB)
 
 ✅ **Docker Configuration:**

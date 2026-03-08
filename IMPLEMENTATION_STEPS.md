@@ -108,7 +108,7 @@ SET max_parallel_workers_per_gather = 0;
 - Estrutura de diretórios (`backend`, `frontend`, `pipelines`, `infrastructure`)
 - `docker-compose.yml` com PostgreSQL, Neo4j, Redis, MinIO e Airflow
 - `.env` com defaults seguros
-- Script `init-db.sh` para inicialização do PostgreSQL
+- Flyway para inicialização e evolução do schema PostgreSQL
 - Bind mounts parametrizados para `/srv/osint`, `/mnt/data10tb` e `/mnt/data2tb`
 - Healthcheck do `airflow-scheduler` ajustado para `airflow jobs check --job-type SchedulerJob --local`
 

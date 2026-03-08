@@ -84,7 +84,7 @@ build_estabelecimentos_query() # CSV → Parquet
 ## 🐘 Database Configuration
 
 ### 5. **PostgreSQL Schema**
-📄 [infrastructure/postgres/init-cnpj-schema.sql](infrastructure/postgres/init-cnpj-schema.sql)
+📄 [infrastructure/postgres/migrations/cnpj/V2__create_cnpj_schema.sql](infrastructure/postgres/migrations/cnpj/V2__create_cnpj_schema.sql)
 - Creates `cnpj.empresas` table
 - Creates `cnpj.estabelecimentos` table
 - Performance indexes (GIN for full-text search)
@@ -256,8 +256,8 @@ Parquet:    ~5 GB/month (compressed, -70%)
 
 4. **🗄️ Initialize Databases**
    ```bash
-   # PostgreSQL (automatic via init-db.sh)
-   docker-compose exec postgres psql -U osint_user -d osint_platform -f /docker-entrypoint-initdb.d/init-cnpj-schema.sql
+   # PostgreSQL (Flyway)
+   bash infrastructure/postgres/run-flyway.sh migrate
    
    # Neo4j (run cypher script)
    docker-compose exec neo4j cypher-shell -u neo4j -p osint_password < infrastructure/neo4j/init-cnpj-schema.cypher
