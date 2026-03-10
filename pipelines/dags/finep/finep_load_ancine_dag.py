@@ -1,4 +1,4 @@
-    """
+"""
 FINEP Load Projetos Ancine DAG
 
 Lê a aba Projetos_Ancine do Contratacao.xlsx mais recente

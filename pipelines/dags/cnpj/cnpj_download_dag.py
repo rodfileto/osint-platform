@@ -11,80 +11,16 @@ The official data is typically released on the 1st of each month.
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
-from airflow.utils.task_group import TaskGroup
 import logging
 import re
 import sys
-from pathlib import Path
 
 # Add scripts directory to Python path
 sys.path.insert(0, '/opt/airflow/scripts/cnpj')
 
-from downloader import CNPJDownloader, download_latest_month, sync_all_months
+from downloader import CNPJDownloader, sync_all_months_to_minio
 
 logger = logging.getLogger(__name__)
-
-
-def _get_minio_s3_client():
-    import os
-    import boto3
-    from botocore.client import Config
-
-    endpoint_url = os.getenv("MINIO_ENDPOINT_URL", os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
-    access_key = os.getenv("MINIO_ROOT_USER", os.getenv("MINIO_ACCESS_KEY"))
-    secret_key = os.getenv("MINIO_ROOT_PASSWORD", os.getenv("MINIO_SECRET_KEY"))
-
-    if not access_key or not secret_key:
-        raise RuntimeError(
-            "MinIO credentials not set. Expected MINIO_ROOT_USER/MINIO_ROOT_PASSWORD (or MINIO_ACCESS_KEY/MINIO_SECRET_KEY)."
-        )
-
-    session = boto3.session.Session()
-    return session.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=os.getenv("MINIO_REGION", "us-east-1"),
-        config=Config(signature_version="s3v4"),
-    )
-
-
-def _ensure_bucket_exists(s3, bucket: str) -> None:
-    from botocore.exceptions import ClientError
-
-    try:
-        s3.head_bucket(Bucket=bucket)
-        return
-    except ClientError as e:
-        code = (e.response or {}).get("Error", {}).get("Code")
-        if code not in {"404", "NoSuchBucket", "NotFound"}:
-            raise
-
-    s3.create_bucket(Bucket=bucket)
-
-
-def _upload_file_if_needed(s3, bucket: str, key: str, file_path: Path) -> bool:
-    """Upload file to S3 if object missing or size differs.
-
-    Returns True if upload performed, False if skipped.
-    """
-    from botocore.exceptions import ClientError
-
-    local_size = file_path.stat().st_size
-    try:
-        head = s3.head_object(Bucket=bucket, Key=key)
-        remote_size = head.get("ContentLength")
-        if remote_size == local_size:
-            return False
-    except ClientError as e:
-        code = (e.response or {}).get("Error", {}).get("Code")
-        if code not in {"404", "NoSuchKey", "NotFound"}:
-            raise
-
-    s3.upload_file(str(file_path), bucket, key)
-    return True
 
 
 def _get_requested_reference_month(context) -> str | None:
@@ -111,29 +47,6 @@ def _get_requested_reference_month(context) -> str | None:
         raise ValueError(f"Invalid reference_month '{value}'. Expected format YYYY-MM (e.g., 2026-02).")
 
     return value
-
-
-def _is_month_present_in_manifest(reference_month: str) -> bool:
-    """Return True if any row exists for the given month in cnpj.download_manifest."""
-    import os
-    import psycopg2
-
-    conn = psycopg2.connect(
-        host=os.getenv('POSTGRES_HOST', 'postgres'),
-        port=os.getenv('POSTGRES_PORT', '5432'),
-        dbname=os.getenv('POSTGRES_DB', 'osint_metadata'),
-        user=os.getenv('POSTGRES_USER', 'osint_admin'),
-        password=os.getenv('POSTGRES_PASSWORD', 'osint_secure_password'),
-    )
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM cnpj.download_manifest WHERE reference_month = %s LIMIT 1",
-                (reference_month,),
-            )
-            return cur.fetchone() is not None
-    finally:
-        conn.close()
 
 
 def populate_download_manifest(**context):
@@ -228,193 +141,6 @@ def generate_report_from_manifest(**context):
     finally:
         conn.close()
 
-
-def cleanup_local_zips(**context):
-    """Delete local ZIPs after successful MinIO upload.
-
-    Deletes only the months processed in this run (or the requested month).
-    """
-    requested_month = _get_requested_reference_month(context)
-    if requested_month:
-        months = [requested_month]
-    else:
-        ti = context.get("task_instance")
-        months_from_xcom = ti.xcom_pull(task_ids="check_new_months", key="new_months") if ti else None
-        if months_from_xcom is None:
-            # Task executed without upstream context (e.g., manual test)
-            base_dir = Path(DATA_DIR)
-            if base_dir.exists():
-                local_months = sorted(
-                    p.name
-                    for p in base_dir.iterdir()
-                    if p.is_dir() and re.match(r"^\d{4}-\d{2}$", p.name)
-                )
-            else:
-                local_months = []
-            months = [local_months[-1]] if local_months else []
-        else:
-            months = months_from_xcom
-
-    if not months:
-        logger.info("No months to cleanup")
-        return {"deleted": 0, "months": []}
-
-    deleted = 0
-    for month in months:
-        month_dir = Path(DATA_DIR) / month
-        if not month_dir.exists():
-            continue
-        for zip_path in month_dir.glob("*.zip"):
-            try:
-                zip_path.unlink()
-                deleted += 1
-            except Exception as e:
-                logger.warning(f"Failed to delete {zip_path}: {e}")
-
-        # Remove month directory if empty
-        try:
-            if month_dir.exists() and not any(month_dir.iterdir()):
-                month_dir.rmdir()
-        except Exception:
-            pass
-
-    logger.info(f"Cleanup complete. deleted={deleted} months={months}")
-    return {"deleted": deleted, "months": months}
-
-
-def cleanup_all_local_zips(**context):
-    """Delete all local CNPJ ZIPs (for full sync)."""
-    base_dir = Path(DATA_DIR)
-    if not base_dir.exists():
-        return {"deleted": 0}
-
-    deleted = 0
-    for month_dir in base_dir.iterdir():
-        if not month_dir.is_dir() or not re.match(r"^\d{4}-\d{2}$", month_dir.name):
-            continue
-        for zip_path in month_dir.glob("*.zip"):
-            try:
-                zip_path.unlink()
-                deleted += 1
-            except Exception as e:
-                logger.warning(f"Failed to delete {zip_path}: {e}")
-        try:
-            if not any(month_dir.iterdir()):
-                month_dir.rmdir()
-        except Exception:
-            pass
-
-    logger.info(f"Full cleanup complete. deleted={deleted}")
-    return {"deleted": deleted}
-
-
-def upload_downloads_to_minio(**context):
-    """Upload downloaded ZIPs to MinIO bucket `osint-raw`.
-
-    Layout:
-      s3://osint-raw/cnpj/raw/<YYYY-MM>/<filename>.zip
-    """
-    import os
-
-    bucket = os.getenv("MINIO_BUCKET_RAW", "osint-raw")
-    base_prefix = os.getenv("MINIO_PREFIX_CNPJ_RAW", "cnpj/raw")
-
-    requested_month = _get_requested_reference_month(context)
-    if requested_month:
-        months = [requested_month]
-    else:
-        ti = context.get("task_instance")
-        months_from_xcom = ti.xcom_pull(task_ids="check_new_months", key="new_months") if ti else None
-        if months_from_xcom is None:
-            # Task executed without upstream context (e.g., `airflow tasks test`).
-            base_dir = Path(DATA_DIR)
-            if base_dir.exists():
-                local_months = sorted(
-                    p.name
-                    for p in base_dir.iterdir()
-                    if p.is_dir() and re.match(r"^\d{4}-\d{2}$", p.name)
-                )
-            else:
-                local_months = []
-
-            months = [local_months[-1]] if local_months else []
-            if months:
-                logger.info(f"No XCom months found; falling back to latest local month for upload: {months[0]}")
-        else:
-            # Normal DAG run path: respect upstream discovery (including empty list).
-            months = months_from_xcom
-
-    if not months:
-        logger.info("No months to upload to MinIO")
-        return {"uploaded": 0, "skipped": 0, "months": []}
-
-    s3 = _get_minio_s3_client()
-    _ensure_bucket_exists(s3, bucket)
-
-    uploaded = 0
-    skipped = 0
-    for month in months:
-        month_dir = Path(DATA_DIR) / month
-        if not month_dir.exists():
-            logger.warning(f"Month directory does not exist locally, skipping upload: {month_dir}")
-            continue
-
-        zip_files = sorted(month_dir.glob("*.zip"))
-        if not zip_files:
-            logger.warning(f"No ZIP files found for month {month} under {month_dir}")
-            continue
-
-        for zip_path in zip_files:
-            key = f"{base_prefix}/{month}/{zip_path.name}"
-            did_upload = _upload_file_if_needed(s3, bucket, key, zip_path)
-            if did_upload:
-                uploaded += 1
-            else:
-                skipped += 1
-
-    logger.info(f"MinIO upload complete. uploaded={uploaded} skipped={skipped} bucket={bucket} prefix={base_prefix}")
-    return {"uploaded": uploaded, "skipped": skipped, "months": months, "bucket": bucket, "prefix": base_prefix}
-
-
-def upload_all_local_months_to_minio(**context):
-    """Upload all locally present months to MinIO (for full sync)."""
-    import os
-
-    bucket = os.getenv("MINIO_BUCKET_RAW", "osint-raw")
-    base_prefix = os.getenv("MINIO_PREFIX_CNPJ_RAW", "cnpj/raw")
-
-    base_dir = Path(DATA_DIR)
-    months = []
-    if base_dir.exists():
-        months = sorted(
-            p.name
-            for p in base_dir.iterdir()
-            if p.is_dir() and re.match(r"^\d{4}-\d{2}$", p.name)
-        )
-
-    if not months:
-        logger.info("No local months found to upload")
-        return {"uploaded": 0, "skipped": 0, "months": []}
-
-    s3 = _get_minio_s3_client()
-    _ensure_bucket_exists(s3, bucket)
-
-    uploaded = 0
-    skipped = 0
-    for month in months:
-        month_dir = base_dir / month
-        zip_files = sorted(month_dir.glob("*.zip"))
-        for zip_path in zip_files:
-            key = f"{base_prefix}/{month}/{zip_path.name}"
-            did_upload = _upload_file_if_needed(s3, bucket, key, zip_path)
-            if did_upload:
-                uploaded += 1
-            else:
-                skipped += 1
-
-    logger.info(f"MinIO upload (full sync) complete. uploaded={uploaded} skipped={skipped} bucket={bucket}")
-    return {"uploaded": uploaded, "skipped": skipped, "months": months, "bucket": bucket, "prefix": base_prefix}
-
 # Default DAG arguments
 default_args = {
     'owner': 'osint-platform',
@@ -425,10 +151,6 @@ default_args = {
     'retries': 3,
     'retry_delay': timedelta(minutes=30),
 }
-
-# DAG Configuration
-DATA_DIR = '/opt/airflow/data/cnpj/raw'
-
 
 def check_new_months(**context):
     """
@@ -442,7 +164,7 @@ def check_new_months(**context):
         new_months = [requested_month]
         logger.info(f"reference_month override set: {requested_month}")
     else:
-        downloader = CNPJDownloader(output_dir=DATA_DIR)
+        downloader = CNPJDownloader()
         available_months = downloader.list_available_months()
         if not available_months:
             logger.warning("No months available on remote server")
@@ -450,17 +172,22 @@ def check_new_months(**context):
         else:
             latest_month = available_months[-1]
             try:
-                in_manifest = _is_month_present_in_manifest(latest_month)
+                status = downloader.get_month_status_in_minio(latest_month)
             except Exception as e:
-                logger.warning(f"Failed to query manifest for {latest_month}: {e}. Falling back to filesystem check.")
-                month_dir = Path(DATA_DIR) / latest_month
-                in_manifest = month_dir.exists() and any(month_dir.glob('*.zip'))
+                logger.warning(f"Failed to inspect MinIO status for {latest_month}: {e}")
+                status = {'total_files': 0, 'missing_files': [], 'complete': False}
 
-            if in_manifest:
-                logger.info(f"Latest available month already present in manifest: {latest_month}")
+            if status['total_files'] == 0:
+                logger.warning(f"Latest month {latest_month} returned no files from remote source")
+                new_months = []
+            elif status['complete']:
+                logger.info(f"Latest available month already complete in MinIO: {latest_month}")
                 new_months = []
             else:
-                logger.info(f"Latest available month not in manifest — will download: {latest_month}")
+                logger.info(
+                    f"Latest available month incomplete in MinIO: {latest_month}. "
+                    f"Missing {len(status['missing_files'])}/{status['total_files']} files: {status['missing_files']}"
+                )
                 new_months = [latest_month]
     
     logger.info(f"Found {len(new_months)} new months: {new_months}")
@@ -478,15 +205,15 @@ def download_specific_month(month: str, **context):
     Args:
         month: Month string in format 'YYYY-MM'
     """
-    downloader = CNPJDownloader(output_dir=DATA_DIR)
+    downloader = CNPJDownloader()
     
-    logger.info(f"Downloading month: {month}")
-    downloaded_files = downloader.download_month(month, force=False)
+    logger.info(f"Streaming month directly to MinIO: {month}")
+    uploaded_files = downloader.download_month_to_minio(month, force=False)
     
-    logger.info(f"Downloaded {len(downloaded_files)} files for {month}")
+    logger.info(f"Uploaded {len(uploaded_files)} files to MinIO for {month}")
     
     # Verify completion
-    status = downloader.get_month_status(month)
+    status = downloader.get_month_status_in_minio(month)
     if not status['complete']:
         raise ValueError(
             f"Month {month} incomplete: "
@@ -496,8 +223,8 @@ def download_specific_month(month: str, **context):
     
     return {
         'month': month,
-        'files_downloaded': len(downloaded_files),
-        'total_size_mb': sum(f.stat().st_size for f in downloaded_files) / (1024 * 1024)
+        'files_uploaded': len(uploaded_files),
+        'files_missing_after_upload': len(status['missing_files']),
     }
 
 
@@ -515,24 +242,24 @@ def download_new_months_task(**context):
     
     logger.info(f"Downloading {len(new_months)} new months: {new_months}")
     
-    downloader = CNPJDownloader(output_dir=DATA_DIR)
+    downloader = CNPJDownloader()
     results = []
     
     for month in new_months:
         try:
-            downloaded_files = downloader.download_month(month, force=False)
+            uploaded_files = downloader.download_month_to_minio(month, force=False)
             
             # Verify completion
-            status = downloader.get_month_status(month)
+            status = downloader.get_month_status_in_minio(month)
             
             results.append({
                 'month': month,
                 'success': status['complete'],
-                'files': len(downloaded_files),
+                'files': len(uploaded_files),
                 'missing': status['missing_files']
             })
             
-            logger.info(f"Month {month}: Downloaded {len(downloaded_files)} files")
+            logger.info(f"Month {month}: Uploaded {len(uploaded_files)} files to MinIO")
             
         except Exception as e:
             logger.error(f"Failed to download month {month}: {e}")
@@ -547,9 +274,9 @@ def download_new_months_task(**context):
 
 def verify_all_months(**context):
     """
-    Verify integrity of all downloaded months.
+    Verify integrity of all downloaded months stored in MinIO.
     """
-    downloader = CNPJDownloader(output_dir=DATA_DIR)
+    downloader = CNPJDownloader()
 
     requested_month = _get_requested_reference_month(context)
     if requested_month:
@@ -565,21 +292,12 @@ def verify_all_months(**context):
                 context['task_instance'].xcom_push(key='incomplete_months', value=[])
                 return []
         else:
-            # Fallback: verify months present locally on disk.
-            base_dir = Path(DATA_DIR)
-            if base_dir.exists():
-                months = sorted(
-                    p.name
-                    for p in base_dir.iterdir()
-                    if p.is_dir() and re.match(r"^\d{4}-\d{2}$", p.name)
-                )
-            else:
-                months = []
+            months = downloader.list_available_months()
     
     incomplete_months = []
     
     for month in months:
-        status = downloader.get_month_status(month)
+        status = downloader.get_month_status_in_minio(month)
         
         if not status['complete']:
             incomplete_months.append({
@@ -616,7 +334,7 @@ def repair_incomplete_months(**context):
     
     logger.info(f"Repairing {len(incomplete_months)} incomplete months")
     
-    downloader = CNPJDownloader(output_dir=DATA_DIR)
+    downloader = CNPJDownloader()
     results = []
     
     for month_info in incomplete_months:
@@ -625,16 +343,16 @@ def repair_incomplete_months(**context):
         try:
             logger.info(f"Repairing month {month}: Missing {len(month_info['missing'])} files")
             
-            # Download the month (will skip existing files with correct size)
-            downloaded_files = downloader.download_month(month, force=False)
+            # Re-stream only missing or mismatched files to MinIO
+            uploaded_files = downloader.download_month_to_minio(month, force=False)
             
             # Verify again
-            status = downloader.get_month_status(month)
+            status = downloader.get_month_status_in_minio(month)
             
             results.append({
                 'month': month,
                 'success': status['complete'],
-                'files_repaired': len(downloaded_files)
+                'files_repaired': len(uploaded_files)
             })
             
             if status['complete']:
@@ -657,7 +375,7 @@ def repair_incomplete_months(**context):
 with DAG(
     'cnpj_download',
     default_args=default_args,
-    description='Download new CNPJ data from Receita Federal',
+    description='Download new CNPJ data directly from Receita Federal to MinIO',
     schedule_interval='0 2 2 * *',  # Monthly on the 2nd at 2 AM
     catchup=False,
     max_active_runs=1,
@@ -680,7 +398,7 @@ with DAG(
     download_new_months = PythonOperator(
         task_id='download_new_months',
         python_callable=download_new_months_task,
-        execution_timeout=timedelta(hours=4),  # Large downloads can take time
+        execution_timeout=timedelta(hours=4),
     )
     
     # Task 3: Verify all downloads
@@ -697,39 +415,26 @@ with DAG(
     )
     
     # Task 5: Update download manifest in database
-    upload_to_minio = PythonOperator(
-        task_id='upload_to_minio',
-        python_callable=upload_downloads_to_minio,
-        execution_timeout=timedelta(hours=2),
-    )
-
-    # Task 6: Update download manifest in database
     update_manifest = PythonOperator(
         task_id='update_manifest',
         python_callable=populate_download_manifest,
     )
     
-    # Task 7: Generate summary report
+    # Task 6: Generate summary report
     generate_report = PythonOperator(
         task_id='generate_report',
         python_callable=generate_report_from_manifest,
     )
-
-    cleanup_local = PythonOperator(
-        task_id='cleanup_local_zips',
-        python_callable=cleanup_local_zips,
-        execution_timeout=timedelta(minutes=30),
-    )
     
     # Define task dependencies
-    check_new_months_task >> download_new_months >> verify_downloads >> repair_downloads >> upload_to_minio >> update_manifest >> generate_report >> cleanup_local
+    check_new_months_task >> download_new_months >> verify_downloads >> repair_downloads >> update_manifest >> generate_report
 
 
 # Separate DAG for manual full sync (useful for initial setup or recovery)
 with DAG(
     'cnpj_download_full_sync',
     default_args=default_args,
-    description='Full sync of all CNPJ data (manual trigger only)',
+    description='Full sync of all CNPJ data directly to MinIO (manual trigger only)',
     schedule_interval=None,  # Manual trigger only
     catchup=False,
     max_active_runs=1,
@@ -738,9 +443,9 @@ with DAG(
     
     full_sync_task = PythonOperator(
         task_id='full_sync',
-        python_callable=sync_all_months,
-        op_kwargs={'output_dir': DATA_DIR, 'skip_existing': True},
-        execution_timeout=timedelta(hours=12),  # Very long timeout for full sync
+        python_callable=sync_all_months_to_minio,
+        op_kwargs={'skip_existing': True},
+        execution_timeout=timedelta(hours=12),
     )
     
     verify_after_sync = PythonOperator(
@@ -753,32 +458,9 @@ with DAG(
         python_callable=populate_download_manifest,
     )
 
-    upload_to_minio_after_sync = PythonOperator(
-        task_id='upload_to_minio_after_sync',
-        python_callable=upload_all_local_months_to_minio,
-        execution_timeout=timedelta(hours=12),
-    )
-    
-    report_after_sync = BashOperator(
+    report_after_sync = PythonOperator(
         task_id='report_after_sync',
-        bash_command="""
-        echo "=== CNPJ Full Sync Complete ==="
-        echo "Date: $(date)"
-        echo ""
-        echo "Total size: $(du -sh {{ params.data_dir }} | cut -f1)"
-        echo "Total ZIP files: $(find {{ params.data_dir }} -name '*.zip' | wc -l)"
-        echo "Total months: $(ls -d {{ params.data_dir }}/*/ | wc -l)"
-        echo ""
-        echo "Disk usage:"
-        df -h {{ params.data_dir }}
-        """,
-        params={'data_dir': DATA_DIR},
-    )
-
-    cleanup_local_after_sync = PythonOperator(
-        task_id='cleanup_local_zips_after_sync',
-        python_callable=cleanup_all_local_zips,
-        execution_timeout=timedelta(hours=2),
+        python_callable=generate_report_from_manifest,
     )
     
-    full_sync_task >> verify_after_sync >> upload_to_minio_after_sync >> update_manifest_after_sync >> report_after_sync >> cleanup_local_after_sync
+    full_sync_task >> verify_after_sync >> update_manifest_after_sync >> report_after_sync

@@ -27,8 +27,8 @@ def empresas_cleaning_template() -> str:
         -- Razão social (uppercase, trimmed)
         UPPER(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', ''))) as razao_social,
         
-        -- Natureza jurídica (integer)
-        COALESCE(
+        -- Natureza jurídica (nullable integer FK)
+        NULLIF(
             TRY_CAST(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')) AS INTEGER),
             0
         ) as natureza_juridica,
@@ -286,7 +286,7 @@ def socios_cleaning_template() -> str:
         3  cpf_cnpj_socio           VARCHAR(14) — mascarado pela RF
         4  qualificacao_socio       VARCHAR(2)  (zero-padded, e.g. '05', '22', '50')
         5  data_entrada_sociedade   DATE (YYYYMMDD)
-        6  pais                     INTEGER (código)
+        6  pais                     VARCHAR(3) (código, zero-padded)
         7  representante_legal      VARCHAR(14) — CPF mascarado
         8  nome_do_representante    TEXT
         9  qualificacao_representante_legal  VARCHAR(2)  (NULL if '00'/empty)
@@ -309,7 +309,7 @@ def socios_cleaning_template() -> str:
             ELSE NULL
         END AS cpf_cnpj_socio,
 
-        LPAD(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), 2, '0') AS qualificacao_socio,
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), 2, '0'), '00') AS qualificacao_socio,
 
         CASE
             WHEN TRIM(CAST(column5 AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
@@ -318,7 +318,7 @@ def socios_cleaning_template() -> str:
             ELSE NULL
         END AS data_entrada_sociedade,
 
-        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', '')) AS INTEGER), 0) AS pais,
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', '')), 3, '0'), '000') AS pais,
 
         CASE
             WHEN LENGTH(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', ''))) > 0
@@ -375,9 +375,9 @@ def simples_cleaning_template() -> str:
 
     Schema (7 columns, semicolon-delimited, no header):
         0  cnpj_basico          VARCHAR(8)
-        1  opcao_simples        VARCHAR(1)  'S'/'N'
-        2  data_opcao_simples   DATE (YYYYMMDD; '00000000' = NULL)
-        3  data_exclusao_simples DATE
+        1  optante_simples_nacional  BOOLEAN ('S'/'N' -> true/false)
+        2  data_optante_simples_nacional DATE (YYYYMMDD; '00000000' = NULL)
+        3  data_exclusao_simples_nacional DATE
         4  opcao_mei            VARCHAR(1)  'S'/'N'
         5  data_opcao_mei       DATE
         6  data_exclusao_mei    DATE
@@ -393,11 +393,19 @@ def simples_cleaning_template() -> str:
     return f"""SELECT
         LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') AS cnpj_basico,
 
-        NULLIF(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')), '') AS opcao_simples,
-        {_date_expr('column2')} AS data_opcao_simples,
-        {_date_expr('column3')} AS data_exclusao_simples,
+        CASE UPPER(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')))
+            WHEN 'S' THEN TRUE
+            WHEN 'N' THEN FALSE
+            ELSE NULL
+        END AS optante_simples_nacional,
+        {_date_expr('column2')} AS data_optante_simples_nacional,
+        {_date_expr('column3')} AS data_exclusao_simples_nacional,
 
-        NULLIF(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), '') AS opcao_mei,
+        CASE UPPER(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')))
+            WHEN 'S' THEN TRUE
+            WHEN 'N' THEN FALSE
+            ELSE NULL
+        END AS opcao_mei,
         {_date_expr('column5')} AS data_opcao_mei,
         {_date_expr('column6')} AS data_exclusao_mei"""
 
@@ -459,22 +467,28 @@ def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str
     lpad2_refs   = {'qualificacoes', 'motivos'}    # zero-padded 2-char codes
     lpad3_refs   = {'paises'}                       # zero-padded 3-char codes
     lpad4_refs   = {'municipios'}                   # zero-padded 4-char codes
+
+    # cnpj.cnae uses 'cnae_fiscal' as PK column name (not 'codigo')
+    pk_alias = 'cnae_fiscal' if ref_type == 'cnaes' else 'codigo'
+    # cnpj.municipio and cnpj.pais use 'nome' for the description column (not 'descricao')
+    desc_alias = 'nome' if ref_type in ('municipios', 'paises') else 'descricao'
+
     if ref_type in varchar_refs:
-        codigo_expr = "TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS codigo"
+        codigo_expr = f"TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS {pk_alias}"
     elif ref_type in lpad2_refs:
-        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 2, '0') AS codigo"
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 2, '0') AS {pk_alias}"
     elif ref_type in lpad3_refs:
-        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 3, '0') AS codigo"
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 3, '0') AS {pk_alias}"
     elif ref_type in lpad4_refs:
-        codigo_expr = "LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 4, '0') AS codigo"
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 4, '0') AS {pk_alias}"
     else:
-        codigo_expr = "TRY_CAST(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS INTEGER) AS codigo"
+        codigo_expr = f"TRY_CAST(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS INTEGER) AS {pk_alias}"
 
     return f"""
     COPY (
         SELECT
             {codigo_expr},
-            TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS descricao
+            TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS {desc_alias}
         FROM read_csv('{csv_path}',
             delim=';',
             header=false,

@@ -1,15 +1,16 @@
 """
 CNPJ Materialized View DAG
 
-Cria ou atualiza a materialized view cnpj.mv_company_search no tablespace fast_ssd (SSD).
+Popula ou atualiza as materialized views cnpj.mv_company_search (ativas) e
+cnpj.mv_company_search_inactive (inativas). Estrutura e índices são criados
+pelas migrations Flyway (WITH NO DATA); esta DAG apenas gerencia os dados.
 
 Fluxo:
     start
-      → ensure_pg_trgm         # habilita extensão se ausente
-      → ensure_mv_exists        # cria MatView se não existir, senão faz REFRESH CONCURRENTLY
-      → ensure_indexes          # cria índices no SSD se ausentes
-      → analyze_mv              # ANALYZE para atualizar estatísticas do planner
-    end
+      → ensure_pg_trgm   # garante extensão pg_trgm (idempotente)
+      → ensure_mv_exists # REFRESH inicial (sem CONCURRENTLY) ou REFRESH CONCURRENTLY
+      → analyze_mv       # ANALYZE para atualizar estatísticas do planner
+    end → branch_neo4j
 
 Trigger: manual ou via TriggerDagRunOperator ao fim da cnpj_load_postgres.
 """
@@ -59,17 +60,32 @@ def ensure_pg_trgm():
 @task
 def ensure_mv_exists():
     """
-    A estrutura da MatView é criada pela migration Flyway do schema CNPJ (WITH NO DATA).
-    Esta task apenas popula ou atualiza os dados:
-    - Se vazia (primeira carga): REFRESH sem CONCURRENTLY.
-    - Se já populada: REFRESH CONCURRENTLY (não bloqueia leituras).
+    A estrutura da MatView e seus índices são criados pelas migrations Flyway (WITH NO DATA).
+    Esta task apenas popula ou atualiza os dados para ambas MVs (ativa e inativa):
+    - Se vazia (primeira carga): REFRESH sem CONCURRENTLY (índices ainda sem dados).
+    - Se já populada: REFRESH CONCURRENTLY (índice único já populado; não bloqueia leituras).
     """
     conn = _get_pg_conn()
     conn.autocommit = True
 
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM cnpj.mv_company_search LIMIT 1;")
-        row_count = cur.fetchone()[0]
+        # Verifica se as MVs já foram populadas consultando o catálogo do Postgres
+        cur.execute("""
+            SELECT relname, relispopulated 
+            FROM pg_class 
+            WHERE relname IN ('mv_company_search', 'mv_company_search_inactive') 
+              AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'cnpj');
+        """)
+        results = cur.fetchall()
+        
+        is_active_populated = False
+        is_inactive_populated = False
+        
+        for row in results:
+            if row[0] == 'mv_company_search':
+                is_active_populated = row[1]
+            elif row[0] == 'mv_company_search_inactive':
+                is_inactive_populated = row[1]
 
     conn.close()
 
@@ -77,54 +93,27 @@ def ensure_mv_exists():
     conn2.autocommit = True
     with conn2.cursor() as cur:
         cur.execute("SET max_parallel_workers_per_gather = 0;")
-        if row_count == 0:
-            logger.info("MatView vazia — executando REFRESH inicial (pode levar 20-40 min)...")
+        
+        # ACTIVE
+        if not is_active_populated:
+            logger.info("MatView ativa não populada — executando REFRESH inicial (pode levar 20-40 min)...")
             cur.execute("REFRESH MATERIALIZED VIEW cnpj.mv_company_search;")
-            logger.info("REFRESH inicial concluído.")
+            logger.info("REFRESH inicial ativa concluído.")
         else:
-            logger.info(f"MatView tem {row_count:,} registros — executando REFRESH CONCURRENTLY...")
+            logger.info("MatView ativa populada — executando REFRESH CONCURRENTLY (não bloqueia leituras)...")
             cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY cnpj.mv_company_search;")
-            logger.info("REFRESH CONCURRENTLY concluído.")
+            logger.info("REFRESH CONCURRENTLY ativa concluído.")
+            
+        # INACTIVE
+        if not is_inactive_populated:
+            logger.info("MatView inativa não populada — executando REFRESH inicial (pode levar 20-40 min)...")
+            cur.execute("REFRESH MATERIALIZED VIEW cnpj.mv_company_search_inactive;")
+            logger.info("REFRESH inicial inativa concluído.")
+        else:
+            logger.info("MatView inativa populada — executando REFRESH CONCURRENTLY (não bloqueia leituras)...")
+            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY cnpj.mv_company_search_inactive;")
+            logger.info("REFRESH CONCURRENTLY inativa concluído.")
     conn2.close()
-
-
-@task
-def ensure_indexes():
-    """
-    Cria os índices no tablespace fast_ssd se ainda não existirem.
-    Usa CREATE INDEX IF NOT EXISTS para ser idempotente.
-    """
-    indexes = [
-        (
-            "idx_mv_cnpj14",
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_cnpj14 "
-            "ON cnpj.mv_company_search(cnpj_14) TABLESPACE fast_ssd;",
-        ),
-        (
-            "idx_mv_razao_social_trgm",
-            "CREATE INDEX IF NOT EXISTS idx_mv_razao_social_trgm "
-            "ON cnpj.mv_company_search USING gin (razao_social gin_trgm_ops) TABLESPACE fast_ssd;",
-        ),
-        (
-            "idx_mv_nome_fantasia_trgm",
-            "CREATE INDEX IF NOT EXISTS idx_mv_nome_fantasia_trgm "
-            "ON cnpj.mv_company_search USING gin (nome_fantasia gin_trgm_ops) TABLESPACE fast_ssd;",
-        ),
-        (
-            "idx_mv_uf_municipio",
-            "CREATE INDEX IF NOT EXISTS idx_mv_uf_municipio "
-            "ON cnpj.mv_company_search(uf, municipio) TABLESPACE fast_ssd;",
-        ),
-    ]
-
-    conn = _get_pg_conn()
-    conn.autocommit = True
-    with conn.cursor() as cur:
-        for idx_name, ddl in indexes:
-            logger.info(f"Garantindo índice {idx_name}...")
-            cur.execute(ddl)
-            logger.info(f"  {idx_name} OK")
-    conn.close()
 
 
 @task
@@ -134,14 +123,26 @@ def analyze_mv():
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("ANALYZE cnpj.mv_company_search;")
-        # Coleta tamanho final para log
+        
         cur.execute("""
             SELECT
                 pg_size_pretty(pg_total_relation_size('cnpj.mv_company_search')) AS total_size,
                 (SELECT COUNT(*) FROM cnpj.mv_company_search) AS row_count
         """)
         row = cur.fetchone()
-        logger.info(f"MatView pronta — tamanho: {row[0]}, registros: {row[1]:,}")
+        if row:
+            logger.info(f"MatView ativa pronta — tamanho: {row[0]}, registros: {row[1]:,}")
+
+        cur.execute("ANALYZE cnpj.mv_company_search_inactive;")
+        
+        cur.execute("""
+            SELECT
+                pg_size_pretty(pg_total_relation_size('cnpj.mv_company_search_inactive')) AS total_size,
+                (SELECT COUNT(*) FROM cnpj.mv_company_search_inactive) AS row_count
+        """)
+        row_inact = cur.fetchone()
+        if row_inact:
+            logger.info(f"MatView inativa pronta — tamanho: {row_inact[0]}, registros: {row_inact[1]:,}")
     conn.close()
 
 
@@ -156,13 +157,13 @@ default_args = {
     'email_on_retry': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=2),
-    'execution_timeout': timedelta(hours=3),
+    'execution_timeout': None,  # REFRESH de 135M rows pode levar várias horas
 }
 
 with DAG(
     dag_id='cnpj_matview_refresh',
     default_args=default_args,
-    description='Cria ou atualiza a materialized view cnpj.mv_company_search no SSD',
+    description='Popula ou atualiza as materialized views cnpj.mv_company_search (ativas/inativas)',
     schedule_interval=None,   # trigger manual ou via TriggerDagRunOperator
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -171,6 +172,7 @@ with DAG(
     tags=['cnpj', 'postgres', 'matview', 'search'],
     params={
         'reference_month': DEFAULT_REFERENCE_MONTH,
+        'trigger_neo4j': True,  # Permite pular a carga do Neo4j se quiser apenas testar o Postgres
     },
 ) as dag:
 
@@ -179,10 +181,19 @@ with DAG(
 
     t_trgm    = ensure_pg_trgm()
     t_mv      = ensure_mv_exists()
-    t_indexes = ensure_indexes()
     t_analyze = analyze_mv()
 
-    # Encadeia automaticamente com o próximo passo do pipeline
+    @task.branch
+    def check_trigger_neo4j(**context):
+        params = context.get('params', {})
+        if params.get('trigger_neo4j', True):
+            return 'trigger_load_neo4j'
+        return 'skip_neo4j_trigger'
+
+    branch_neo4j = check_trigger_neo4j()
+    skip_trigger = EmptyOperator(task_id='skip_neo4j_trigger')
+
+    # Encadeia automaticamente com o próximo passo do pipeline (se habilitado)
     trigger_neo4j = TriggerDagRunOperator(
         task_id='trigger_load_neo4j',
         trigger_dag_id='cnpj_load_neo4j',
@@ -197,4 +208,6 @@ with DAG(
         execution_timeout=None,  # neo4j pode levar ~4h
     )
 
-    start >> t_trgm >> t_mv >> t_indexes >> t_analyze >> end >> trigger_neo4j
+    start >> t_trgm >> t_mv >> t_analyze >> end >> branch_neo4j
+    branch_neo4j >> trigger_neo4j
+    branch_neo4j >> skip_trigger

@@ -48,11 +48,11 @@ services:
       - "work_mem=64MB"                    # per-sort/hash operation (was 4MB)
       - "-c"
       - "maintenance_work_mem=2GB"          # VACUUM, CREATE INDEX (was 64MB)
-      # === Disk I/O (HDD - spinning disk) ===
+      # === Disk I/O (SSD) ===
       - "-c"
-      - "random_page_cost=3.0"             # HDD penalty (was 4.0, SSD=1.1)
+      - "random_page_cost=1.1"             # SSD (was 4.0 for HDD)
       - "-c"
-      - "effective_io_concurrency=2"        # HDD (was 1, SSD=200)
+      - "effective_io_concurrency=200"      # SSD (was 2 for HDD)
       # === Parallelism (8-core i7-9700K) ===
       - "-c"
       - "max_worker_processes=8"
@@ -82,7 +82,6 @@ services:
       PGTZ: America/Sao_Paulo
     volumes:
       - ${POSTGRES_DATA_HOST_PATH:-/srv/osint/postgres/data}:/var/lib/postgresql/data
-      - ${POSTGRES_FAST_SSD_HOST_PATH:-/srv/osint/postgres/ssd_tablespace}:/var/lib/postgresql/ssd_tablespace  # SSD for MatViews & Indexes
     ports:
       - "5432:5432"
     shm_size: '17g'                        # deve ser >= shared_buffers (16GB)

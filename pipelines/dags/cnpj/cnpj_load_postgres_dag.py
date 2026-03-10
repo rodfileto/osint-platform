@@ -43,6 +43,7 @@ with DAG(
                                # Aux reference tables (cnaes, municipios, paises…) are always loaded first by load_ref_tables
         'force_reprocess': False,  # Re-run already processed files (UPSERT mode)
         'max_files': 0,  # 0 = sem limite; >0 = limita parquet files por entidade (útil para testes)
+        'trigger_neo4j': True, # Passado para o matview para opcionalmente não rodar o load pro Neo4J
     },
 ) as dag:
     
@@ -64,6 +65,7 @@ with DAG(
         trigger_dag_id='cnpj_matview_refresh',
         conf={
             'reference_month': '{{ params.reference_month }}',
+            'trigger_neo4j': '{{ params.trigger_neo4j }}',
         },
         wait_for_completion=True,  # aguarda matview antes de marcar success
         poke_interval=30,

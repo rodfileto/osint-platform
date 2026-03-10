@@ -133,6 +133,38 @@ def mark_loaded_postgres(
         conn.close()
 
 
+def mark_loaded_postgres_by_parquet_path(
+    parquet_path: str,
+    rows_loaded: int
+) -> None:
+    """
+    Mark a file as loaded to PostgreSQL in the manifest, looking up by parquet_path.
+
+    Args:
+        parquet_path: Full path to the parquet file (as stored in manifest.parquet_path)
+        rows_loaded: Number of rows loaded to PostgreSQL
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE cnpj.download_manifest
+                SET loaded_postgres_at = %s,
+                    rows_loaded_postgres = %s,
+                    updated_at = %s
+                WHERE parquet_path = %s
+            """, (datetime.now(), rows_loaded, datetime.now(), parquet_path))
+            rows_affected = cur.rowcount
+            conn.commit()
+            if rows_affected > 0:
+                from pathlib import Path as _Path
+                logger.info(f"Marked {_Path(parquet_path).name} as loaded to PostgreSQL: {rows_loaded:,} rows")
+            else:
+                logger.warning(f"No manifest entry found for parquet_path={parquet_path}")
+    finally:
+        conn.close()
+
+
 def mark_loaded_neo4j(
     reference_month: str,
     file_name: str,

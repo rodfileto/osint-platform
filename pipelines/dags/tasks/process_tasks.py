@@ -18,14 +18,15 @@ from .transform_tasks import (
     transform_reference_duckdb,
 )
 from .load_tasks import load_to_postgresql, load_to_neo4j
+from .config import (
+    BASE_PATH,
+    RAW_PATH,
+    STAGING_PATH,
+    PROCESSED_PATH,
+    TEMP_SSD_PATH,
+)
 
 logger = logging.getLogger(__name__)
-
-# Environment configuration
-BASE_PATH = Path("/opt/airflow/data/cnpj")
-RAW_PATH = BASE_PATH / "raw"
-STAGING_PATH = BASE_PATH / "staging"
-PROCESSED_PATH = BASE_PATH / "processed"
 
 # ---------------------------------------------------------------------------
 # Entity loading order — respects FK dependency graph
@@ -99,14 +100,14 @@ def process_empresas_file(reference_month: str, file_name: str, **context) -> di
         staging_dir = STAGING_PATH / reference_month / f"empresas_{file_num}"
         parquet_file = PROCESSED_PATH / reference_month / f"empresas_{file_num}.parquet"
         
-        # Check if ZIP file exists
-        if not zip_file.exists():
-            logger.warning(f"{file_name} not found for {reference_month}")
-            return None
-        
         # Extract (if not already done)
         if not is_file_processed(reference_month, file_name, 'extracted'):
-            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            extract_info = extract_zip_file.function(
+                output_dir=str(staging_dir),
+                zip_path=str(zip_file),
+                reference_month=reference_month,
+                file_name=file_name,
+            )
             csv_path = extract_info["extracted_files"][0]
             mark_extracted(reference_month, file_name, csv_path)
         else:
@@ -178,13 +179,14 @@ def process_estabelecimentos_file(reference_month: str, file_name: str, **contex
         staging_dir = STAGING_PATH / reference_month / f"estabelecimentos_{file_num}"
         parquet_file = PROCESSED_PATH / reference_month / f"estabelecimentos_{file_num}.parquet"
         
-        if not zip_file.exists():
-            logger.warning(f"{file_name} not found for {reference_month}")
-            return None
-        
         # Extract (if not already done)
         if not is_file_processed(reference_month, file_name, 'extracted'):
-            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            extract_info = extract_zip_file.function(
+                output_dir=str(staging_dir),
+                zip_path=str(zip_file),
+                reference_month=reference_month,
+                file_name=file_name,
+            )
             csv_path = extract_info["extracted_files"][0]
             mark_extracted(reference_month, file_name, csv_path)
         else:
@@ -619,12 +621,13 @@ def process_socios_file(reference_month: str, file_name: str, **context) -> dict
         staging_dir = STAGING_PATH / reference_month / f"socios_{file_num}"
         parquet_file = PROCESSED_PATH / reference_month / f"socios_{file_num}.parquet"
 
-        if not zip_file.exists():
-            logger.warning(f"{file_name} not found for {reference_month}")
-            return None
-
         if not is_file_processed(reference_month, file_name, 'extracted'):
-            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            extract_info = extract_zip_file.function(
+                output_dir=str(staging_dir),
+                zip_path=str(zip_file),
+                reference_month=reference_month,
+                file_name=file_name,
+            )
             csv_path = extract_info["extracted_files"][0]
             mark_extracted(reference_month, file_name, csv_path)
         else:
@@ -723,19 +726,24 @@ def process_simples_file(reference_month: str, **context) -> dict:
 
     try:
         zip_file = RAW_PATH / reference_month / file_name
-        staging_dir = STAGING_PATH / reference_month / 'simples'
+        # NOTE: Extract phase creates 'simples_' (with underscore but no number) due to empty file_num
+        staging_dir = STAGING_PATH / reference_month / 'simples_'
         parquet_file = PROCESSED_PATH / reference_month / 'simples.parquet'
 
-        if not zip_file.exists():
-            logger.warning(f"{file_name} not found for {reference_month}")
-            return None
-
         if not is_file_processed(reference_month, file_name, 'extracted'):
-            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            extract_info = extract_zip_file.function(
+                output_dir=str(staging_dir),
+                zip_path=str(zip_file),
+                reference_month=reference_month,
+                file_name=file_name,
+            )
             csv_path = extract_info['extracted_files'][0]
             mark_extracted(reference_month, file_name, csv_path)
         else:
-            csv_files = [f for f in staging_dir.glob('*') if f.is_file()]
+            # Search recursively since CSV may be in subdirectory
+            csv_files = [f for f in staging_dir.rglob('*') if f.is_file() and f.suffix.upper() in ['.CSV', '.SIMPLES']]
+            if not csv_files:
+                csv_files = [f for f in staging_dir.rglob('*') if f.is_file()]
             csv_path = str(csv_files[0]) if csv_files else None
 
         if not csv_path:
@@ -813,19 +821,25 @@ def process_reference_file(reference_month: str, zip_stem: str, **context) -> di
 
     try:
         zip_file = RAW_PATH / reference_month / file_name
-        staging_dir = STAGING_PATH / reference_month / ref_type
+        # NOTE: Extract phase creates 'references_<ZipStem>' directories (e.g., 'references_Cnaes')
+        # because all reference files have file_type='references' in extract phase
+        staging_dir = STAGING_PATH / reference_month / f"references_{zip_stem}"
         parquet_file = PROCESSED_PATH / reference_month / parquet_name
 
-        if not zip_file.exists():
-            logger.warning(f"{file_name} not found for {reference_month}")
-            return None
-
         if not is_file_processed(reference_month, file_name, 'extracted'):
-            extract_info = extract_zip_file.function(str(zip_file), str(staging_dir))
+            extract_info = extract_zip_file.function(
+                output_dir=str(staging_dir),
+                zip_path=str(zip_file),
+                reference_month=reference_month,
+                file_name=file_name,
+            )
             csv_path = extract_info['extracted_files'][0]
             mark_extracted(reference_month, file_name, csv_path)
         else:
-            csv_files = [f for f in staging_dir.glob('*') if f.is_file()]
+            # Search recursively for CSV files since exact name may vary
+            csv_files = [f for f in staging_dir.rglob('*') if f.is_file() and f.suffix.upper() == '.CSV']
+            if not csv_files:
+                csv_files = [f for f in staging_dir.rglob('*') if f.is_file()]
             csv_path = str(csv_files[0]) if csv_files else None
 
         if not csv_path:

@@ -26,7 +26,7 @@ Cada fonte de dados (CNPJ, Sanções, Contratos) tem seu próprio pipeline indep
 
 - Localização: `/pipelines/{fonte}/`
 - Ferramentas: **DuckDB** (transformações bulk), **Python**, **Apache Airflow** (orquestração)
-- Fluxo padrão: `Download → Transform (Parquet) → Load PostgreSQL → MatView Refresh → Load Neo4j`
+- Fluxo padrão: `Receita Federal → MinIO (raw ZIP) → Extract/Transform (Parquet) → Load PostgreSQL → MatView Refresh → Load Neo4j`
 - DAGs encadeadas via `TriggerDagRunOperator` — cada DAG aciona a próxima ao terminar
 - Outputs: tabelas limpas no PostgreSQL, nós/arestas no Neo4j, Parquet como intermediário
 - Dumps mensais são **full snapshots** — apenas o mês mais recente é processado
@@ -83,6 +83,9 @@ HDD 2 TB (/mnt/data2tb)     →  backups e retenção operacional
 - Serviço local para arquivos raw/processados, logs arquivados e backups
 - Data dir: `/mnt/data10tb/osint/minio`
 - Buckets iniciais planejados: `osint-raw`, `osint-processed`, `osint-airflow-logs`, `osint-backups`
+- No pipeline CNPJ, os ZIPs raw são tratados como source of truth em `osint-raw/cnpj/raw/<YYYY-MM>/...`
+- A DAG `cnpj_download` faz streaming direto de Receita Federal para MinIO; o host local não é mais uma camada durável de raw ZIPs
+- A DAG `cnpj_transform` baixa sob demanda do MinIO apenas como etapa temporária de extração para staging
 
 ---
 

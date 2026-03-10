@@ -8,11 +8,24 @@ from pathlib import Path
 
 # Environment configuration
 BASE_PATH = Path("/opt/airflow/data/cnpj")
-RAW_PATH = BASE_PATH / "raw"
-STAGING_PATH = BASE_PATH / "staging"
-PROCESSED_PATH = BASE_PATH / "processed"
+RAW_PATH = BASE_PATH / "raw"  # Local ZIP cache (deprecated; use MinIO)
+TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD (/srv/osint)
+
+# OPTIMIZATION: Stage CSVs on fast SSD instead of slow HDD
+# Unzipped CSVs are temporary and benefit from fast I/O during DuckDB transformation
+STAGING_PATH = TEMP_SSD_PATH / "cnpj_staging"  # Fast SSD for CSV extraction
+
+# OPTIMIZATION: Parquet files on SSD for fast PostgreSQL loading
+# Parquet files are the active working dataset that gets loaded into PostgreSQL/Neo4j
+# Reading from SSD is 10-100x faster than HDD for bulk loads (135M+ rows)
+# Parquet files are already compressed (ZSTD), so they're space-efficient on SSD
+PROCESSED_PATH = TEMP_SSD_PATH / "cnpj_processed"  # Fast SSD for Parquet (active dataset)
+
+# Optional: Archive path on HDD for long-term cold storage (if needed later)
+ARCHIVE_PATH = BASE_PATH / "archive"  # HDD for long-term archival (not currently used)
+
+# Legacy temp path (now replaced by TEMP_SSD_PATH for most operations)
 TEMP_PATH = BASE_PATH / "temp"
-TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD
 
 # Default month to process (can be overridden via DAG params)
 DEFAULT_REFERENCE_MONTH = "2026-02"

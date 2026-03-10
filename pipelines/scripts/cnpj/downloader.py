@@ -20,7 +20,57 @@ import requests
 from requests.auth import HTTPBasicAuth
 from tqdm import tqdm
 import psycopg2
-from psycopg2.extras import execute_values
+
+
+def _get_minio_s3_client():
+    import boto3
+    from botocore.client import Config
+
+    endpoint_url = os.getenv("MINIO_ENDPOINT_URL", os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
+    access_key = os.getenv("MINIO_ROOT_USER", os.getenv("MINIO_ACCESS_KEY"))
+    secret_key = os.getenv("MINIO_ROOT_PASSWORD", os.getenv("MINIO_SECRET_KEY"))
+
+    if not access_key or not secret_key:
+        raise RuntimeError(
+            "MinIO credentials not set. Expected MINIO_ROOT_USER/MINIO_ROOT_PASSWORD "
+            "(or MINIO_ACCESS_KEY/MINIO_SECRET_KEY)."
+        )
+
+    session = boto3.session.Session()
+    return session.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=os.getenv("MINIO_REGION", "us-east-1"),
+        config=Config(signature_version="s3v4"),
+    )
+
+
+def _ensure_bucket_exists(s3, bucket: str) -> None:
+    from botocore.exceptions import ClientError
+
+    try:
+        s3.head_bucket(Bucket=bucket)
+        return
+    except ClientError as e:
+        code = (e.response or {}).get("Error", {}).get("Code")
+        if code not in {"404", "NoSuchBucket", "NotFound"}:
+            raise
+
+    s3.create_bucket(Bucket=bucket)
+
+
+class _ProgressStream:
+    def __init__(self, raw_stream, progress_bar=None):
+        self._raw_stream = raw_stream
+        self._progress_bar = progress_bar
+
+    def read(self, size=-1):
+        chunk = self._raw_stream.read(size)
+        if chunk and self._progress_bar is not None:
+            self._progress_bar.update(len(chunk))
+        return chunk
 
 
 # Configuration
@@ -82,6 +132,52 @@ class CNPJDownloader:
         
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _get_minio_bucket_and_prefix() -> tuple[str, str]:
+        bucket = os.getenv("MINIO_BUCKET_RAW", "osint-raw")
+        prefix = os.getenv("MINIO_PREFIX_CNPJ_RAW", "cnpj/raw").rstrip("/")
+        return bucket, prefix
+
+    def _build_minio_key(self, month: str, filename: str) -> str:
+        bucket, prefix = self._get_minio_bucket_and_prefix()
+        _ = bucket
+        return f"{prefix}/{month}/{filename}"
+
+    def list_files_in_minio_month(self, month: str) -> Dict[str, Dict[str, any]]:
+        """List ZIP objects for a month stored in MinIO keyed by filename."""
+        bucket, prefix = self._get_minio_bucket_and_prefix()
+        s3 = _get_minio_s3_client()
+
+        month_prefix = f"{prefix}/{month}/"
+        files = {}
+        continuation_token = None
+
+        while True:
+            kwargs = {"Bucket": bucket, "Prefix": month_prefix, "MaxKeys": 1000}
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+
+            response = s3.list_objects_v2(**kwargs)
+            for obj in response.get("Contents", []) or []:
+                key = obj.get("Key") or ""
+                if not key.lower().endswith(".zip"):
+                    continue
+                filename = key.rsplit("/", 1)[-1]
+                files[filename] = {
+                    "name": filename,
+                    "key": key,
+                    "size": int(obj.get("Size") or 0),
+                    "last_modified": obj.get("LastModified"),
+                    "month": month,
+                }
+
+            if response.get("IsTruncated"):
+                continuation_token = response.get("NextContinuationToken")
+                continue
+            break
+
+        return files
         
     def list_available_months(self) -> List[str]:
         """
@@ -273,6 +369,96 @@ class CNPJDownloader:
             if output_path.exists():
                 output_path.unlink()
             raise
+
+    def download_file_to_minio(
+        self,
+        file_info: Dict[str, any],
+        force: bool = False,
+        show_progress: bool = True,
+    ) -> Dict[str, any]:
+        """Stream a single Receita ZIP directly to MinIO without writing to local disk."""
+        from botocore.exceptions import ClientError
+
+        month = file_info['month']
+        filename = file_info['name']
+        url = file_info['url']
+        expected_size = int(file_info['size'])
+
+        bucket, _ = self._get_minio_bucket_and_prefix()
+        key = self._build_minio_key(month, filename)
+
+        s3 = _get_minio_s3_client()
+        _ensure_bucket_exists(s3, bucket)
+
+        if not force:
+            try:
+                head = s3.head_object(Bucket=bucket, Key=key)
+                remote_size = int(head.get('ContentLength') or 0)
+                if remote_size == expected_size:
+                    logger.info(f"Object already exists and matches size: s3://{bucket}/{key}")
+                    return {
+                        'month': month,
+                        'file_name': filename,
+                        'bucket': bucket,
+                        'key': key,
+                        'size': remote_size,
+                        'skipped': True,
+                    }
+                logger.warning(
+                    f"Object exists but size mismatch: {remote_size} vs {expected_size}. Re-uploading {filename}"
+                )
+            except ClientError as e:
+                code = (e.response or {}).get('Error', {}).get('Code')
+                if code not in {'404', 'NoSuchKey', 'NotFound'}:
+                    raise
+
+        try:
+            response = self.session.get(url, stream=True)
+            response.raise_for_status()
+            response.raw.decode_content = True
+
+            progress_bar = None
+            if show_progress and expected_size > 0:
+                progress_bar = tqdm(
+                    total=expected_size,
+                    unit='B',
+                    unit_scale=True,
+                    desc=filename,
+                    ncols=100,
+                )
+
+            try:
+                body = _ProgressStream(response.raw, progress_bar)
+                s3.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=body,
+                    ContentLength=expected_size,
+                )
+            finally:
+                if progress_bar is not None:
+                    progress_bar.close()
+                response.close()
+
+            head = s3.head_object(Bucket=bucket, Key=key)
+            uploaded_size = int(head.get('ContentLength') or 0)
+            if uploaded_size != expected_size:
+                raise ValueError(
+                    f"Uploaded object size ({uploaded_size}) doesn't match expected size ({expected_size}) for {filename}"
+                )
+
+            logger.info(f"Successfully uploaded to MinIO: s3://{bucket}/{key}")
+            return {
+                'month': month,
+                'file_name': filename,
+                'bucket': bucket,
+                'key': key,
+                'size': uploaded_size,
+                'skipped': False,
+            }
+        except Exception as e:
+            logger.error(f"Failed to upload {filename} to MinIO: {e}")
+            raise
     
     def download_month(
         self,
@@ -318,6 +504,36 @@ class CNPJDownloader:
                 # Continue with next file
         
         return downloaded_paths
+
+    def download_month_to_minio(
+        self,
+        month: str,
+        file_types: Optional[List[str]] = None,
+        force: bool = False,
+    ) -> List[Dict[str, any]]:
+        """Download all month files directly from Receita to MinIO."""
+        logger.info(f"Streaming files directly to MinIO for month: {month}")
+
+        files = self.list_files_in_month(month)
+
+        if file_types is not None:
+            patterns = [EXPECTED_FILES.get(ft, ft) for ft in file_types]
+            files = [
+                f for f in files
+                if any(re.match(pattern, f['name'], re.IGNORECASE) for pattern in patterns)
+            ]
+
+        logger.info(f"Found {len(files)} files to stream to MinIO")
+
+        uploaded_objects = []
+        for file_info in files:
+            try:
+                result = self.download_file_to_minio(file_info, force=force)
+                uploaded_objects.append(result)
+            except Exception as e:
+                logger.error(f"Failed to stream {file_info['name']} to MinIO: {e}")
+
+        return uploaded_objects
     
     def find_new_months(self) -> List[str]:
         """
@@ -410,6 +626,33 @@ class CNPJDownloader:
             'complete': len(missing_files) == 0
         }
 
+    def get_month_status_in_minio(self, month: str) -> Dict[str, any]:
+        """Check month completeness comparing Receita source against MinIO objects."""
+        server_files = self.list_files_in_month(month)
+        server_file_dict = {f['name']: f for f in server_files}
+        minio_files = self.list_files_in_minio_month(month)
+
+        minio_file_names = set(minio_files.keys())
+        missing_files = set(server_file_dict.keys()) - minio_file_names
+
+        size_mismatch_files = []
+        for filename, object_info in minio_files.items():
+            if filename in server_file_dict:
+                remote_size = int(object_info['size'])
+                expected_size = int(server_file_dict[filename]['size'])
+                if remote_size != expected_size:
+                    size_mismatch_files.append(filename)
+                    missing_files.add(filename)
+
+        return {
+            'month': month,
+            'total_files': len(server_files),
+            'downloaded_files': len(minio_file_names) - len(size_mismatch_files),
+            'missing_files': sorted(missing_files),
+            'size_mismatch_files': sorted(size_mismatch_files),
+            'complete': len(missing_files) == 0,
+        }
+
 
 def download_latest_month(output_dir: str = "/opt/airflow/data/cnpj/raw") -> str:
     """
@@ -434,6 +677,20 @@ def download_latest_month(output_dir: str = "/opt/airflow/data/cnpj/raw") -> str
     # Download it
     downloader.download_month(latest_month)
     
+    return latest_month
+
+
+def download_latest_month_to_minio() -> str:
+    """Download the latest available month directly from Receita to MinIO."""
+    downloader = CNPJDownloader()
+
+    months = downloader.list_available_months()
+    if not months:
+        raise ValueError("No months available on server")
+
+    latest_month = months[-1]
+    logger.info(f"Latest available month: {latest_month}")
+    downloader.download_month_to_minio(latest_month)
     return latest_month
 
 
@@ -482,6 +739,37 @@ def sync_all_months(
     return downloaded_months
 
 
+def sync_all_months_to_minio(skip_existing: bool = True) -> List[str]:
+    """Sync all available months directly from Receita to MinIO."""
+    downloader = CNPJDownloader()
+
+    months = downloader.list_available_months()
+    logger.info(f"Found {len(months)} months on server: {months[0]} to {months[-1]}")
+
+    synced_months = []
+
+    for month in months:
+        status = downloader.get_month_status_in_minio(month)
+
+        if status['complete'] and skip_existing:
+            logger.info(f"Month {month} already complete in MinIO, skipping")
+            continue
+
+        if not status['complete']:
+            logger.info(
+                f"Month {month}: {status['downloaded_files']}/{status['total_files']} files in MinIO. "
+                f"Missing: {len(status['missing_files'])}"
+            )
+
+        try:
+            downloader.download_month_to_minio(month, force=not skip_existing)
+            synced_months.append(month)
+        except Exception as e:
+            logger.error(f"Failed to sync month {month} to MinIO: {e}")
+
+    return synced_months
+
+
 if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(
@@ -508,7 +796,7 @@ if __name__ == "__main__":
             months = downloader.list_available_months()
             
             for month in months:
-                status = downloader.get_month_status(month)
+                status = downloader.get_month_status_in_minio(month)
                 complete_mark = "✓" if status['complete'] else "✗"
                 print(
                     f"{complete_mark} {month}: "
@@ -525,15 +813,15 @@ if __name__ == "__main__":
             
             month = sys.argv[2]
             downloader = CNPJDownloader()
-            downloader.download_month(month)
+            downloader.download_month_to_minio(month)
         
         elif command == "sync":
             # Sync all months
-            sync_all_months()
+            sync_all_months_to_minio()
         
         elif command == "latest":
             # Download latest month
-            download_latest_month()
+            download_latest_month_to_minio()
         
         else:
             print("Unknown command. Available: list, status, download, sync, latest")

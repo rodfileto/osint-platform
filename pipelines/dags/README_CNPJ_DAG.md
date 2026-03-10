@@ -6,7 +6,8 @@ Airflow DAGs for ingesting Brazilian CNPJ (Cadastro Nacional da Pessoa Jurídica
 
 This pipeline implements a high-performance ETL pipeline for CNPJ data processing:
 
-- **Extract**: Unzips downloaded CNPJ files from Receita Federal
+- **Download**: Streams raw ZIPs from Receita Federal directly to MinIO
+- **Extract**: Unzips CNPJ files from MinIO to staging
 - **Transform**: Cleans and validates data using DuckDB pure SQL (10-100x faster than Python)
 - **Load**: Inserts into PostgreSQL (relational) and Neo4j (graph)
 
@@ -14,9 +15,14 @@ This pipeline implements a high-performance ETL pipeline for CNPJ data processin
 
 ```
 ┌─────────────┐
-│  Raw ZIPs   │  /data/cnpj/raw/{YYYY-MM}/
+│ Receita Fed │
 └──────┬──────┘
-       │ Extract (parallel)
+  │ Direct stream
+  ▼
+┌─────────────┐
+│ MinIO raw   │  osint-raw/cnpj/raw/{YYYY-MM}/
+└──────┬──────┘
+  │ Extract (parallel, temporary local staging)
        ▼
 ┌─────────────┐
 │ Staging CSVs│  /data/cnpj/staging/{YYYY-MM}/
@@ -35,7 +41,7 @@ This pipeline implements a high-performance ETL pipeline for CNPJ data processin
 
 Airflow DAG chain (typical run):
 
-- `cnpj_download` (scheduled) → downloads ZIPs and updates `cnpj.download_manifest`
+- `cnpj_download` (scheduled) → streams ZIPs to MinIO and updates `cnpj.download_manifest`
 - `cnpj_transform` (manual or triggered) → extract + DuckDB SQL transform to Parquet
 - `cnpj_load_postgres` (triggered) → bulk load to PostgreSQL
 - `cnpj_matview_refresh` (triggered) → refresh `cnpj.mv_company_search`
@@ -49,8 +55,8 @@ Airflow DAG chain (typical run):
 Monitora o repositório da Receita Federal (WebDAV) e baixa automaticamente novos meses quando disponíveis.
 
 - **Schedule:** mensal, dia 2 às 02:00 (cron: `0 2 2 * *`)
-- **Data dir (raw ZIPs):** `/opt/airflow/data/cnpj/raw/{YYYY-MM}/`
-- **Manifest:** atualiza a tabela `cnpj.download_manifest` ao final do fluxo
+- **Raw source of truth:** `s3://osint-raw/cnpj/raw/{YYYY-MM}/` no MinIO
+- **Manifest:** atualiza a tabela `cnpj.download_manifest` ao final do fluxo a partir do MinIO
 
 **Optional parameter:**
 
@@ -60,10 +66,10 @@ Monitora o repositório da Receita Federal (WebDAV) e baixa automaticamente novo
 
 **Tasks:**
 
-- `check_new_months` → detecta meses novos (preferencialmente via `cnpj.download_manifest`, com fallback para filesystem)
-- `download_new_months` → baixa os arquivos do(s) mês(es) novo(s)
-- `verify_downloads` → verifica se o mês está completo (todos os ZIPs esperados)
-- `repair_downloads` → tenta rebaixar arquivos faltantes / com size mismatch
+- `check_new_months` → detecta meses novos ou incompletos comparando Receita Federal com os objetos no MinIO
+- `download_new_months` → faz streaming dos ZIPs do(s) mês(es) para o MinIO
+- `verify_downloads` → verifica se o mês está completo no MinIO (todos os ZIPs esperados)
+- `repair_downloads` → tenta reenviar ao MinIO apenas os arquivos faltantes / com size mismatch
 - `update_manifest` → executa `pipelines/scripts/cnpj/populate_manifest.py` para registrar os ZIPs no Postgres
 - `generate_report` → imprime sumário (tamanho total, meses disponíveis, último mês)
 
@@ -80,11 +86,11 @@ airflow dags trigger cnpj_download \
 
 ### `cnpj_download_full_sync`
 
-Full sync manual (útil no setup inicial ou recuperação). Baixa todos os meses e depois:
+Full sync manual (útil no setup inicial ou recuperação). Faz sync de todos os meses diretamente para o MinIO e depois:
 
 - `verify_after_sync` → valida integridade
 - `update_manifest_after_sync` → popula `cnpj.download_manifest`
-- `report_after_sync` → sumário + `df -h` do volume
+- `report_after_sync` → sumário do manifest
 
 ## Task Groups
 
@@ -128,7 +134,7 @@ Will process partner/shareholder data and create relationships.
 **Total for 10 files (parallel)**: ~2-3 minutes
 
 ### Storage:
-- Raw ZIP: ~300 MB (Empresas0) → 6 GB (Estabelecimentos0)
+- Raw ZIP em MinIO: ~300 MB (Empresas0) → 6 GB (Estabelecimentos0)
 - Extracted CSV: ~900 MB → 18 GB
 - Parquet (compressed): ~250 MB → 5 GB (70% reduction)
 
@@ -164,11 +170,6 @@ NEO4J_PASSWORD=osint_graph_password
 ```
 /opt/airflow/
 ├── data/cnpj/
-│   ├── raw/           # Downloaded ZIP files (by month)
-│   │   └── 2024-02/
-│   │       ├── Empresas0.zip
-│   │       ├── Empresas1.zip
-│   │       └── ...
 │   ├── staging/       # Extracted CSVs (temporary)
 │   │   └── 2024-02/
 │   │       ├── empresas_0/
@@ -181,6 +182,16 @@ NEO4J_PASSWORD=osint_graph_password
     ├── __init__.py
     ├── cleaners.py         # Python cleaners (for reference)
     └── cleaners_sql.py     # SQL templates (used in DAG)
+```
+
+MinIO raw layout:
+```
+osint-raw/
+└── cnpj/raw/
+  └── 2024-02/
+    ├── Empresas0.zip
+    ├── Empresas1.zip
+    └── ...
 ```
 
 ## Usage

@@ -14,6 +14,13 @@ from airflow.decorators import task
 
 logger = logging.getLogger(__name__)
 
+# Reference (lookup) tables: no reference_month column in schema.
+# Loaded via plain INSERT once; force_reprocess triggers ON CONFLICT DO UPDATE.
+REFERENCE_TABLES = frozenset({
+    "cnae", "motivo_situacao_cadastral", "municipio",
+    "natureza_juridica", "pais", "qualificacao_socio",
+})
+
 
 @task
 def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = "cnpj", reference_month: str = "2024-02", **context) -> dict:
@@ -222,16 +229,22 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
         # Clean up temp table
         duck_conn.execute("DROP TABLE missing_empresas")
     
-    # Verifica uma vez se reference_month já foi carregado (evita duplicate key em re-runs)
+    # Verifica uma vez se dados já foram carregados (evita duplicate key em re-runs)
     if not force_upsert:
-        already_loaded = duck_conn.execute(f"""
-            SELECT COUNT(*) FROM pg_db.{schema}.{table_name}
-            WHERE reference_month = '{reference_month}'
-            LIMIT 1
-        """).fetchone()[0]
+        if table_name in REFERENCE_TABLES:
+            # Reference tables have no reference_month column — skip if any rows exist
+            already_loaded = duck_conn.execute(f"""
+                SELECT COUNT(*) FROM pg_db.{schema}.{table_name} LIMIT 1
+            """).fetchone()[0]
+        else:
+            already_loaded = duck_conn.execute(f"""
+                SELECT COUNT(*) FROM pg_db.{schema}.{table_name}
+                WHERE reference_month = '{reference_month}'
+                LIMIT 1
+            """).fetchone()[0]
         if already_loaded > 0:
             logger.info(
-                f"Skipping {table_name} — reference_month {reference_month} já carregado "
+                f"Skipping {table_name} — already loaded "
                 f"({already_loaded:,} rows). Use force_reprocess=True para recarregar."
             )
             duck_conn.execute("DETACH pg_db")
@@ -275,6 +288,14 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
             # Determine target table (staging if UPSERT, final if INSERT)
             target_table = f"{schema}.{table_name}_staging" if force_upsert else f"{schema}.{table_name}"
             target_db_ref = f"pg_db.{target_table}"
+
+            # Reference tables have no reference_month column in the schema
+            if table_name in REFERENCE_TABLES:
+                insert_suffix = ""
+                select_suffix = ""
+            else:
+                insert_suffix = ", reference_month"
+                select_suffix = f", '{reference_month}'"
             
             # For large files, show progress by processing in batches
             if row_count > 1_000_000:
@@ -282,8 +303,8 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                 for offset in range(0, row_count, batch_size):
                     batch_start = time.time()
                     duck_conn.execute(f"""
-                        INSERT INTO {target_db_ref} ({col_names}, reference_month)
-                        SELECT {col_names}, '{reference_month}'
+                        INSERT INTO {target_db_ref} ({col_names}{insert_suffix})
+                        SELECT {col_names}{select_suffix}
                         FROM '{parquet_file}'
                         LIMIT {batch_size} OFFSET {offset}
                     """)
@@ -292,15 +313,24 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     logger.info(f"    Progress: {rows_done:,}/{row_count:,} rows ({rows_done*100//row_count}%) - {batch_duration:.1f}s")
             else:
                 duck_conn.execute(f"""
-                    INSERT INTO {target_db_ref} ({col_names}, reference_month)
-                    SELECT {col_names}, '{reference_month}'
+                    INSERT INTO {target_db_ref} ({col_names}{insert_suffix})
+                    SELECT {col_names}{select_suffix}
                     FROM '{parquet_file}'
                 """)
             
             file_duration = time.time() - file_start
             total_rows += row_count
             logger.info(f"    Loaded {row_count:,} rows in {file_duration:.1f}s")
-    
+
+            # Update download manifest to record postgres load
+            try:
+                import sys as _sys
+                _sys.path.insert(0, '/opt/airflow/scripts/cnpj')
+                from manifest_tracker import mark_loaded_postgres_by_parquet_path
+                mark_loaded_postgres_by_parquet_path(parquet_file, row_count)
+            except Exception as _me:
+                logger.warning(f"Manifest update failed for {file_name}: {_me}")
+
     except Exception as e:
         logger.error(f"PostgreSQL load failed: {e}")
         raise
@@ -353,9 +383,11 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
                     conflict_clause = "cnpj_basico"
                 elif table_name == "estabelecimento":
                     conflict_clause = "cnpj_basico, cnpj_ordem, cnpj_dv"
-                elif table_name == "simples":
+                elif table_name == "simples_nacional":
                     conflict_clause = "cnpj_basico"
-                elif table_name in ("cnae", "motivo_situacao_cadastral", "municipio",
+                elif table_name == "cnae":
+                    conflict_clause = "cnae_fiscal"
+                elif table_name in ("motivo_situacao_cadastral", "municipio",
                                     "natureza_juridica", "pais", "qualificacao_socio"):
                     conflict_clause = "codigo"
                 elif table_name == "socio":
@@ -431,7 +463,7 @@ def load_to_postgresql(parquet_files: list[str], table_name: str, schema: str = 
     return {
         "table": f"{schema}.{table_name}",
         "files_loaded": len(parquet_files),
-        "total_rows": total_rows,
+        "row_count": total_rows,
         "duration_seconds": duration,
         "throughput_rows_per_sec": throughput
     }
