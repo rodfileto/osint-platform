@@ -33,7 +33,7 @@ def ensure_neo4j_indexes(**context) -> dict:
         # ===== CONSTRAINTS =====
         "CREATE CONSTRAINT empresa_cnpj_basico IF NOT EXISTS FOR (e:Empresa) REQUIRE e.cnpj_basico IS UNIQUE",
         "CREATE CONSTRAINT pessoa_id IF NOT EXISTS FOR (p:Pessoa) REQUIRE p.pessoa_id IS UNIQUE",
-        
+
         # ===== EMPRESA INDEXES =====
         "CREATE INDEX empresa_razao_social IF NOT EXISTS FOR (e:Empresa) ON (e.razao_social)",
         "CREATE INDEX empresa_porte IF NOT EXISTS FOR (e:Empresa) ON (e.porte_empresa)",
@@ -41,21 +41,23 @@ def ensure_neo4j_indexes(**context) -> dict:
         "CREATE INDEX empresa_created_at IF NOT EXISTS FOR (e:Empresa) ON (e.created_at)",
         "CREATE INDEX empresa_updated_at IF NOT EXISTS FOR (e:Empresa) ON (e.updated_at)",
         "CREATE FULLTEXT INDEX empresa_names IF NOT EXISTS FOR (e:Empresa) ON EACH [e.razao_social]",
-        
+
         # ===== PESSOA INDEXES =====
         "CREATE INDEX pessoa_cpf_cnpj IF NOT EXISTS FOR (p:Pessoa) ON (p.cpf_cnpj_socio)",
         "CREATE INDEX pessoa_identificador IF NOT EXISTS FOR (p:Pessoa) ON (p.identificador_socio)",
         "CREATE INDEX pessoa_faixa_etaria IF NOT EXISTS FOR (p:Pessoa) ON (p.faixa_etaria)",
         "CREATE FULLTEXT INDEX pessoa_names IF NOT EXISTS FOR (p:Pessoa) ON EACH [p.nome]",
-        
+
         # ===== RELATIONSHIP INDEXES =====
         "CREATE INDEX rel_socio_de_month IF NOT EXISTS FOR ()-[r:SOCIO_DE]-() ON (r.reference_month)",
         "CREATE INDEX rel_socio_de_entrada IF NOT EXISTS FOR ()-[r:SOCIO_DE]-() ON (r.data_entrada_sociedade)",
         "CREATE INDEX rel_socio_de_qualificacao IF NOT EXISTS FOR ()-[r:SOCIO_DE]-() ON (r.qualificacao_socio)",
     ]
-    
+
     created_count = 0
-    
+    total_indexes = 0
+    total_constraints = 0
+
     try:
         with driver.session() as session:
             for stmt in statements:
@@ -68,16 +70,16 @@ def ensure_neo4j_indexes(**context) -> dict:
                 except Exception as e:
                     # Log but don't fail — some indexes may already exist
                     logger.warning(f"  ⚠ {stmt[:50]}... → {e}")
-        
-        # Get final count of indexes/constraints
-        result = session.run("SHOW INDEXES YIELD name RETURN count(name) as total")
-        total_indexes = result.single()["total"]
-        
-        result = session.run("SHOW CONSTRAINTS YIELD name RETURN count(name) as total")
-        total_constraints = result.single()["total"]
-        
+
+            # Get final count of indexes/constraints (inside session scope)
+            result = session.run("SHOW INDEXES YIELD name RETURN count(name) as total")
+            total_indexes = result.single()["total"]
+
+            result = session.run("SHOW CONSTRAINTS YIELD name RETURN count(name) as total")
+            total_constraints = result.single()["total"]
+
         logger.info(f"✓ Schema ready: {total_constraints} constraints, {total_indexes} indexes")
-        
+
     except Exception as e:
         logger.error(f"Failed to create indexes: {e}")
         raise

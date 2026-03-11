@@ -32,39 +32,6 @@ FOR (e:Empresa) ON (e.updated_at);
 
 
 // =====================================================
-// Estabelecimento Node (Establishment/Location)
-// =====================================================
-
-// Constraint: Unique complete CNPJ (14 digits)
-CREATE CONSTRAINT estabelecimento_cnpj IF NOT EXISTS
-FOR (est:Estabelecimento) REQUIRE est.cnpj IS UNIQUE;
-
-// Indexes for geographic and status queries
-CREATE INDEX estabelecimento_municipio IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.municipio);
-
-CREATE INDEX estabelecimento_uf IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.uf);
-
-CREATE INDEX estabelecimento_situacao IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.situacao_cadastral);
-
-CREATE INDEX estabelecimento_cnae IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.cnae_fiscal_principal);
-
-// Full-text search on trade names
-CREATE FULLTEXT INDEX estabelecimento_names IF NOT EXISTS
-FOR (est:Estabelecimento) ON EACH [est.nome_fantasia];
-
-// Indexes for timestamp-based queries
-CREATE INDEX estabelecimento_created_at IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.created_at);
-
-CREATE INDEX estabelecimento_updated_at IF NOT EXISTS
-FOR (est:Estabelecimento) ON (est.updated_at);
-
-
-// =====================================================
 // Pessoa Node (Partner/Shareholder — Hybrid Model)
 // =====================================================
 
@@ -93,11 +60,7 @@ FOR (p:Pessoa) ON EACH [p.nome];
 // Relationships
 // =====================================================
 
-// Index on PERTENCE_A relationship for traversal performance
-CREATE INDEX rel_pertence_a IF NOT EXISTS
-FOR ()-[r:PERTENCE_A]-() ON (r.created_at);
-
-// Composite index on SOCIO_DE for temporal and snapshot queries
+// Indexes on SOCIO_DE for temporal and snapshot queries
 CREATE INDEX rel_socio_de_month IF NOT EXISTS
 FOR ()-[r:SOCIO_DE]-() ON (r.reference_month);
 
@@ -114,15 +77,6 @@ FOR ()-[r:SOCIO_DE]-() ON (r.qualificacao_socio);
 
 // Find company by CNPJ básico
 // MATCH (e:Empresa {cnpj_basico: "12345678"}) RETURN e;
-
-// Find all establishments of a company
-// MATCH (est:Estabelecimento)-[:PERTENCE_A]->(e:Empresa {cnpj_basico: "12345678"})
-// RETURN est;
-
-// Find companies in a city
-// MATCH (est:Estabelecimento {municipio: "SÃO PAULO"})-[:PERTENCE_A]->(e:Empresa)
-// RETURN DISTINCT e, COUNT(est) as num_estabelecimentos
-// ORDER BY num_estabelecimentos DESC;
 
 // Full-text search for partners
 // CALL db.index.fulltext.queryNodes("pessoa_names", "JOAO~")
@@ -142,7 +96,4 @@ FOR ()-[r:SOCIO_DE]-() ON (r.qualificacao_socio);
 // RETURN p.nome AS holding, e.razao_social AS empresa, r.qualificacao_socio
 // LIMIT 100;
 
-// Geographic distribution of establishments
-// MATCH (est:Estabelecimento)
-// RETURN est.uf as estado, COUNT(*) as total
-// ORDER BY total DESC;
+
