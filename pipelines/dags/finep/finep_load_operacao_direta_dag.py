@@ -24,7 +24,9 @@ from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
 
-sys.path.insert(0, "/opt/airflow/scripts/finep")
+import os
+
+sys.path.insert(0, os.path.join(os.environ.get("AIRFLOW_HOME", "/opt/airflow"), "scripts/finep"))
 
 logger = logging.getLogger(__name__)
 

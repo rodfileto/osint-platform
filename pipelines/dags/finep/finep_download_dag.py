@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,10 +46,12 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
-# ── Adiciona o diretório de scripts ao path do Airflow worker ──────────────
-sys.path.insert(0, "/opt/airflow/scripts/finep")
+import os
 
-from downloader import (
+# ── Adiciona o diretório de scripts ao path do Airflow worker ──────────────
+sys.path.insert(0, os.path.join(os.environ.get("AIRFLOW_HOME", "/opt/airflow"), "scripts"))
+
+from finep.downloader import (
     FINEP_DATASETS,
     collect_dataset,
     has_remote_changed,
@@ -58,7 +61,42 @@ from downloader import (
 logger = logging.getLogger(__name__)
 
 # ── Constantes ─────────────────────────────────────────────────────────────
-OUTPUT_DIR = Path("/opt/airflow/data/finep")
+AIRFLOW_HOME = Path(os.environ.get("AIRFLOW_HOME", "/opt/airflow"))
+# IMPORTANT: inside Airflow container, use container paths only.
+PRIMARY_OUTPUT_DIR = Path(os.environ.get("FINEP_OUTPUT_DIR", str(AIRFLOW_HOME / "data/finep")))
+FALLBACK_OUTPUT_DIR = Path(
+    os.environ.get("FINEP_OUTPUT_FALLBACK_DIR", str(AIRFLOW_HOME / "temp_ssd/finep"))
+)
+
+
+def _resolve_output_dir(dataset_type: str) -> Path:
+    """
+    Resolve diretório de saída gravável para o download.
+
+    Tenta o volume principal (`/opt/airflow/data/finep`) e, em caso de
+    permissão negada, cai para `/opt/airflow/temp_ssd/finep`.
+    """
+    for candidate in (PRIMARY_OUTPUT_DIR, FALLBACK_OUTPUT_DIR):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=candidate, delete=True):
+                pass
+            if candidate != PRIMARY_OUTPUT_DIR:
+                logger.warning(
+                    f"[{dataset_type}] Diretório principal indisponível. "
+                    f"Usando fallback: {candidate}"
+                )
+            return candidate
+        except PermissionError as exc:
+            logger.warning(
+                f"[{dataset_type}] Sem permissão em {candidate}: {exc}. "
+                "Tentando próximo diretório."
+            )
+
+    raise PermissionError(
+        "Nenhum diretório de saída gravável para FINEP. "
+        f"Testados: {PRIMARY_OUTPUT_DIR} e {FALLBACK_OUTPUT_DIR}."
+    )
 
 # ── Default args ────────────────────────────────────────────────────────────
 default_args = {
@@ -119,10 +157,11 @@ def _download_and_register(dataset_type: str, url: str, **context) -> dict:
     Retorna dict com resultado que é armazenado em XCom.
     """
     force = context["dag_run"].conf.get("force", False)
+    output_dir = _resolve_output_dir(dataset_type)
     result = collect_dataset(
         dataset_type=dataset_type,
         url=url,
-        output_dir=OUTPUT_DIR,
+        output_dir=output_dir,
         force=force,
     )
     logger.info(f"[{dataset_type}] Resultado: {result}")
@@ -244,7 +283,7 @@ with DAG(
     trigger_load_operacao_direta = TriggerDagRunOperator(
         task_id="trigger_load_operacao_direta",
         trigger_dag_id="finep_load_operacao_direta",
-        wait_for_completion=False,
+        wait_for_completion=True,
         reset_dag_run=True,
         trigger_rule=TriggerRule.ALL_DONE,
     )
@@ -252,7 +291,7 @@ with DAG(
     trigger_load_credito = TriggerDagRunOperator(
         task_id="trigger_load_credito_descentralizado",
         trigger_dag_id="finep_load_credito_descentralizado",
-        wait_for_completion=False,
+        wait_for_completion=True,
         reset_dag_run=True,
         trigger_rule=TriggerRule.ALL_DONE,
     )
@@ -268,7 +307,7 @@ with DAG(
     trigger_load_ancine = TriggerDagRunOperator(
         task_id="trigger_load_ancine",
         trigger_dag_id="finep_load_ancine",
-        wait_for_completion=False,
+        wait_for_completion=True,
         reset_dag_run=True,
         trigger_rule=TriggerRule.ALL_DONE,
     )
@@ -301,17 +340,11 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
     )
 
-    report_task >> [
-        # Contratacao.xlsx
-        trigger_load_operacao_direta,
-        trigger_load_credito,
-        trigger_load_investimento,
-        trigger_load_ancine,
-        # Liberacao.xlsx
-        trigger_load_lib_operacao_direta,
-        trigger_load_lib_credito,
-        trigger_load_lib_ancine,
-    ]
+    # Sequence chains: Load Contratações first, then their respective Liberações
+    report_task >> trigger_load_operacao_direta >> trigger_load_lib_operacao_direta
+    report_task >> trigger_load_credito >> trigger_load_lib_credito
+    report_task >> trigger_load_ancine >> trigger_load_lib_ancine
+    report_task >> trigger_load_investimento
 
 
 # ============================================================================
@@ -329,8 +362,9 @@ with DAG(
 ) as dag_force:
 
     def _force_collect_all(**context) -> list:
-        from downloader import collect_all
-        results = collect_all(output_dir=OUTPUT_DIR, force=True)
+        from finep.downloader import collect_all
+        output_dir = _resolve_output_dir("force")
+        results = collect_all(output_dir=output_dir, force=True)
         for r in results:
             logger.info(r)
         return results

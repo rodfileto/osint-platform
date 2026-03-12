@@ -1,11 +1,16 @@
 from django.db.models import Q
 from rest_framework import viewsets, mixins
-from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError, NotFound, APIException
 import unicodedata
 
-from .models import MvCompanySearch, Empresa
-from .serializers import MvCompanySearchSerializer, EmpresaDetailSerializer
+from .models import MvCompanySearch, MvCompanySearchInactive, Empresa
+from .serializers import (
+    MvCompanySearchSerializer,
+    EmpresaDetailSerializer,
+    CompanyNetworkResponseSerializer,
+)
+from .graph_service import CompanyNetworkService
 
 
 def _strip_accents(text: str) -> str:
@@ -31,20 +36,20 @@ class CnpjSearchViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
         ?municipio=<nome> filtra por município (case-insensitive)
         ?cnae=<código>    filtra por CNAE fiscal principal (match exato, ex: 4713004)
     
-    Nota: Busca apenas empresas ATIVAS (situacao_cadastral=2) via mv_company_search.
-          Para buscar empresas inativas, seria necessária MatView adicional.
+    Escopo:
+        ?scope=active    usa mv_company_search (padrão)
+        ?scope=inactive  usa mv_company_search_inactive
     """
 
     serializer_class = MvCompanySearchSerializer
     lookup_field = 'cnpj_14'
 
-    def get_queryset(self):
-        qs = MvCompanySearch.objects.all()
-
-        q = self.request.query_params.get('q', '').strip()
-        uf = self.request.query_params.get('uf', '').strip().upper()
-        municipio = self.request.query_params.get('municipio', '').strip()
-        cnae = self.request.query_params.get('cnae', '').strip()
+    def _apply_filters(self, qs):
+        """Apply common search filters to active/inactive querysets."""
+        q = self.request.GET.get('q', '').strip()
+        uf = self.request.GET.get('uf', '').strip().upper()
+        municipio = self.request.GET.get('municipio', '').strip()
+        cnae = self.request.GET.get('cnae', '').strip()
 
         if q:
             # Remove formatação do CNPJ (pontos, barras, traços e espaços)
@@ -73,14 +78,37 @@ class CnpjSearchViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
             qs = qs.filter(uf=uf)
 
         if municipio:
-            qs = qs.filter(municipio__icontains=municipio)
+            qs = qs.filter(municipio_nome__icontains=municipio)
 
         if cnae:
-            # CNAE é IntegerField — match exato
+            # CNAE é CharField na matview
             if cnae.isdigit():
-                qs = qs.filter(cnae_fiscal_principal=int(cnae))
+                qs = qs.filter(cnae_fiscal_principal=cnae)
 
         return qs.order_by('razao_social')
+
+    def get_queryset(self):
+        scope = self.request.GET.get('scope', 'active').strip().lower()
+        if scope == 'inactive':
+            qs = MvCompanySearchInactive.objects.all()
+        else:
+            qs = MvCompanySearch.objects.all()
+
+        return self._apply_filters(qs)
+
+
+class CnpjSearchInactiveViewSet(CnpjSearchViewSet):
+    """
+    ViewSet dedicado para busca de empresas inativas.
+
+    Endpoints:
+        GET /api/cnpj/search-inactive/
+        GET /api/cnpj/search-inactive/{cnpj_14}/
+    """
+
+    def get_queryset(self):
+        qs = MvCompanySearchInactive.objects.all()
+        return self._apply_filters(qs)
 
 
 class EmpresaViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
@@ -108,3 +136,38 @@ class EmpresaViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
         # Don't use prefetch_related - Estabelecimento has composite PK without id field
         # The serializer will handle fetching estabelecimentos
         return Empresa.objects.all()
+
+
+class CompanyNetworkViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """
+    ViewSet para visualizar rede societária de uma empresa no Neo4j.
+
+    Endpoints:
+        GET /api/cnpj/network/{cnpj_basico}/
+    """
+
+    lookup_field = 'cnpj_basico'
+    serializer_class = CompanyNetworkResponseSerializer
+    network_service = CompanyNetworkService()
+
+    def get_queryset(self):
+        return Empresa.objects.all()
+
+    def retrieve(self, request, *args, **kwargs):
+        cnpj_basico = kwargs.get(self.lookup_field, '').strip()
+
+        if not (cnpj_basico.isdigit() and len(cnpj_basico) == 8):
+            raise ValidationError({
+                'cnpj_basico': 'Informe um CNPJ básico válido com 8 dígitos numéricos.'
+            })
+
+        try:
+            payload = self.network_service.get_company_network(cnpj_basico)
+        except RuntimeError as exc:
+            raise APIException('Falha ao consultar rede no Neo4j.') from exc
+
+        if payload is None:
+            raise NotFound('Empresa não encontrada na base Neo4j para o CNPJ informado.')
+
+        serializer = self.get_serializer(payload)
+        return Response(serializer.data)

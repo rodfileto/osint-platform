@@ -7,8 +7,8 @@ from django.db import models
 
 class CNAE(models.Model):
     """Economic activity codes"""
-    codigo = models.CharField(max_length=7, primary_key=True)
-    descricao = models.CharField(max_length=255)
+    codigo = models.CharField(max_length=7, primary_key=True, db_column='cnae_fiscal')
+    descricao = models.TextField()
 
     class Meta:
         db_table = '"cnpj"."cnae"'
@@ -21,8 +21,8 @@ class CNAE(models.Model):
 
 class MotivoSituacaoCadastral(models.Model):
     """Registration status reason codes"""
-    codigo = models.IntegerField(primary_key=True)
-    descricao = models.CharField(max_length=255)
+    codigo = models.CharField(max_length=2, primary_key=True)
+    descricao = models.TextField()
 
     class Meta:
         db_table = '"cnpj"."motivo_situacao_cadastral"'
@@ -35,8 +35,8 @@ class MotivoSituacaoCadastral(models.Model):
 
 class Municipio(models.Model):
     """Municipality codes"""
-    codigo = models.IntegerField(primary_key=True)
-    descricao = models.CharField(max_length=255)
+    codigo = models.CharField(max_length=4, primary_key=True)
+    descricao = models.TextField(db_column='nome')
 
     class Meta:
         db_table = '"cnpj"."municipio"'
@@ -50,7 +50,7 @@ class Municipio(models.Model):
 class NaturezaJuridica(models.Model):
     """Legal nature codes"""
     codigo = models.IntegerField(primary_key=True)
-    descricao = models.CharField(max_length=255)
+    descricao = models.TextField()
 
     class Meta:
         db_table = '"cnpj"."natureza_juridica"'
@@ -63,8 +63,8 @@ class NaturezaJuridica(models.Model):
 
 class Pais(models.Model):
     """Country codes"""
-    codigo = models.IntegerField(primary_key=True)
-    descricao = models.CharField(max_length=255)
+    codigo = models.CharField(max_length=3, primary_key=True)
+    descricao = models.TextField(db_column='nome')
 
     class Meta:
         db_table = '"cnpj"."pais"'
@@ -77,8 +77,8 @@ class Pais(models.Model):
 
 class QualificacaoSocio(models.Model):
     """Partner qualification codes"""
-    codigo = models.IntegerField(primary_key=True)
-    descricao = models.CharField(max_length=255)
+    codigo = models.CharField(max_length=2, primary_key=True)
+    descricao = models.TextField()
 
     class Meta:
         db_table = '"cnpj"."qualificacao_socio"'
@@ -107,35 +107,37 @@ class Empresa(models.Model):
         primary_key=True,
         help_text='Base CNPJ number (first 8 digits)'
     )
-    razao_social = models.CharField(
-        max_length=255,
-        null=True,
-        blank=True,
+    razao_social = models.TextField(
         help_text='Company legal name'
     )
     natureza_juridica = models.IntegerField(
         null=True,
         help_text='Legal nature code'
     )
-    qualificacao_responsavel = models.IntegerField(
+    qualificacao_responsavel = models.CharField(
+        max_length=2,
         null=True,
         help_text='Responsible person qualification code'
     )
     capital_social = models.DecimalField(
         max_digits=15,
         decimal_places=2,
+        default=0.0,
         help_text='Registered capital'
     )
     porte_empresa = models.CharField(
         max_length=2,
-        null=True,
         choices=PorteEmpresa.choices,
+        default=PorteEmpresa.NAO_INFORMADO,
         help_text='Company size code'
     )
-    ente_federativo_responsavel = models.CharField(
-        max_length=255,
+    ente_federativo_responsavel = models.TextField(
         null=True,
         help_text='Responsible federal entity'
+    )
+    reference_month = models.CharField(
+        max_length=7,
+        help_text='Snapshot reference month (YYYY-MM)'
     )
 
     class Meta:
@@ -158,18 +160,19 @@ class Estabelecimento(models.Model):
         MATRIZ = 1, 'Matriz'
         FILIAL = 2, 'Filial'
 
-    class SituacaoCadastral(models.IntegerChoices):
-        NULA = 1, 'Nula'
-        ATIVA = 2, 'Ativa'
-        SUSPENSA = 3, 'Suspensa'
-        INAPTA = 4, 'Inapta'
-        BAIXADA = 8, 'Baixada'
+    class SituacaoCadastral(models.TextChoices):
+        NULA = '01', 'Nula'
+        ATIVA = '02', 'Ativa'
+        SUSPENSA = '03', 'Suspensa'
+        INAPTA = '04', 'Inapta'
+        BAIXADA = '08', 'Baixada'
 
     empresa = models.ForeignKey(
         Empresa,
         on_delete=models.CASCADE,
         related_name='estabelecimentos',
-        db_column='cnpj_basico'
+        db_column='cnpj_basico',
+        db_constraint=False,
     )
 
     # CNPJ components
@@ -184,37 +187,38 @@ class Estabelecimento(models.Model):
 
     # Identification
     identificador_matriz_filial = models.IntegerField(
+        null=True,
         choices=MatrizFilial.choices,
         help_text='Headquarters or branch identifier'
     )
-    nome_fantasia = models.CharField(
-        max_length=255,
+    nome_fantasia = models.TextField(
         null=True,
         blank=True,
         help_text='Trade name'
     )
 
     # Status
-    situacao_cadastral = models.IntegerField(
+    situacao_cadastral = models.CharField(
+        max_length=2,
         choices=SituacaoCadastral.choices,
         null=True,
         help_text='Registration status'
     )
-    data_situacao_cadastral = models.IntegerField(
+    data_situacao_cadastral = models.DateField(
         null=True,
-        help_text='Status event date (YYYYMMDD)'
+        help_text='Status event date'
     )
     motivo_situacao_cadastral = models.ForeignKey(
         MotivoSituacaoCadastral,
         on_delete=models.SET_NULL,
         null=True,
         db_column='motivo_situacao_cadastral',
+        db_constraint=False,
         help_text='Status reason code'
     )
 
     # International
-    nome_cidade_exterior = models.CharField(
-        max_length=255,
+    nome_cidade_exterior = models.TextField(
         null=True,
         blank=True,
         help_text='Foreign city name'
@@ -223,14 +227,15 @@ class Estabelecimento(models.Model):
         Pais,
         on_delete=models.SET_NULL,
         null=True,
-        db_column='pais',
+        db_column='codigo_pais',
+        db_constraint=False,
         help_text='Country code'
     )
 
     # Activity
-    data_inicio_atividade = models.IntegerField(
+    data_inicio_atividade = models.DateField(
         null=True,
-        help_text='Activity start date (YYYYMMDD)'
+        help_text='Activity start date'
     )
     cnae_fiscal_principal = models.ForeignKey(
         CNAE,
@@ -238,6 +243,7 @@ class Estabelecimento(models.Model):
         null=True,
         related_name='estabelecimentos_principal',
         db_column='cnae_fiscal_principal',
+        db_constraint=False,
         help_text='Main economic activity code'
     )
     cnae_fiscal_secundaria = models.TextField(
@@ -247,29 +253,24 @@ class Estabelecimento(models.Model):
     )
 
     # Address
-    tipo_logradouro = models.CharField(
-        max_length=255,
+    tipo_logradouro = models.TextField(
         null=True,
         help_text='Street type description'
     )
-    logradouro = models.CharField(
-        max_length=255,
+    logradouro = models.TextField(
         null=True,
         help_text='Street name'
     )
-    numero = models.CharField(
-        max_length=255,
+    numero = models.TextField(
         null=True,
         help_text='Street number'
     )
-    complemento = models.CharField(
-        max_length=255,
+    complemento = models.TextField(
         null=True,
         blank=True,
         help_text='Address complement'
     )
-    bairro = models.CharField(
-        max_length=255,
+    bairro = models.TextField(
         null=True,
         help_text='Neighborhood'
     )
@@ -287,47 +288,67 @@ class Estabelecimento(models.Model):
         Municipio,
         on_delete=models.SET_NULL,
         null=True,
-        db_column='municipio',
+        db_column='codigo_municipio',
+        db_constraint=False,
         help_text='Municipality code'
     )
 
-    # Contact - stored as combined DDD+Phone in database
+    # Contact
     ddd_telefone_1 = models.CharField(
-        max_length=20,
+        max_length=4,
         null=True,
         blank=True,
-        help_text='Primary phone (DDD + number combined)'
+        db_column='ddd_1',
+        help_text='Primary phone DDD'
+    )
+    telefone_1 = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Primary phone number'
     )
     ddd_telefone_2 = models.CharField(
-        max_length=20,
+        max_length=4,
         null=True,
         blank=True,
-        help_text='Secondary phone (DDD + number combined)'
+        db_column='ddd_2',
+        help_text='Secondary phone DDD'
+    )
+    telefone_2 = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Secondary phone number'
     )
     ddd_fax = models.CharField(
-        max_length=20,
+        max_length=4,
         null=True,
         blank=True,
-        help_text='Fax (DDD + number combined)'
+        help_text='Fax DDD'
     )
-    correio_eletronico = models.CharField(
-        max_length=255,
+    fax = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Fax number'
+    )
+    correio_eletronico = models.TextField(
         null=True,
         blank=True,
         help_text='Email address'
     )
 
     # Special situation
-    situacao_especial = models.CharField(
-        max_length=255,
+    situacao_especial = models.TextField(
         null=True,
         blank=True,
         help_text='Special situation description'
     )
-    data_situacao_especial = models.IntegerField(
+    data_situacao_especial = models.DateField(
         null=True,
         blank=True,
-        help_text='Special situation date (YYYYMMDD)'
+        help_text='Special situation date'
+    )
+    reference_month = models.CharField(
+        max_length=7,
+        help_text='Snapshot reference month (YYYY-MM)'
     )
 
     class Meta:
@@ -359,46 +380,45 @@ class Estabelecimento(models.Model):
     @property
     def telefone_1_completo(self):
         """Returns formatted primary phone number"""
-        if self.ddd_telefone_1 and len(self.ddd_telefone_1) >= 10:
-            # Format: (XX) XXXXX-XXXX or (XX) XXXX-XXXX
-            phone = self.ddd_telefone_1.strip()
-            ddd = phone[:2]
-            if len(phone) == 11:
-                return f"({ddd}) {phone[2:7]}-{phone[7:]}"
-            elif len(phone) == 10:
-                return f"({ddd}) {phone[2:6]}-{phone[6:]}"
-            return phone
+        if self.ddd_telefone_1 and self.telefone_1 is not None:
+            numero = str(self.telefone_1)
+            if len(numero) == 9:
+                return f"({self.ddd_telefone_1}) {numero[:5]}-{numero[5:]}"
+            if len(numero) == 8:
+                return f"({self.ddd_telefone_1}) {numero[:4]}-{numero[4:]}"
+            return f"({self.ddd_telefone_1}) {numero}"
         return None
 
     @property
     def telefone_2_completo(self):
         """Returns formatted secondary phone number"""
-        if self.ddd_telefone_2 and len(self.ddd_telefone_2) >= 10:
-            phone = self.ddd_telefone_2.strip()
-            ddd = phone[:2]
-            if len(phone) == 11:
-                return f"({ddd}) {phone[2:7]}-{phone[7:]}"
-            elif len(phone) == 10:
-                return f"({ddd}) {phone[2:6]}-{phone[6:]}"
-            return phone
+        if self.ddd_telefone_2 and self.telefone_2 is not None:
+            numero = str(self.telefone_2)
+            if len(numero) == 9:
+                return f"({self.ddd_telefone_2}) {numero[:5]}-{numero[5:]}"
+            if len(numero) == 8:
+                return f"({self.ddd_telefone_2}) {numero[:4]}-{numero[4:]}"
+            return f"({self.ddd_telefone_2}) {numero}"
         return None
 
 
 class Socio(models.Model):
     """Partner/shareholder information"""
+
+    id = models.BigAutoField(primary_key=True)
     
     empresa = models.ForeignKey(
         Empresa,
         on_delete=models.CASCADE,
         related_name='socios',
-        db_column='cnpj_basico'
+        db_column='cnpj_basico',
+        db_constraint=False,
     )
     identificador_socio = models.IntegerField(
         null=True,
         help_text='Partner type identifier'
     )
-    nome_socio_razao_social = models.CharField(
-        max_length=255,
+    nome_socio_razao_social = models.TextField(
         null=True,
         help_text='Partner name or company name'
     )
@@ -412,17 +432,19 @@ class Socio(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         db_column='qualificacao_socio',
+        db_constraint=False,
         help_text='Partner qualification code'
     )
-    data_entrada_sociedade = models.IntegerField(
+    data_entrada_sociedade = models.DateField(
         null=True,
-        help_text='Date joined company (YYYYMMDD)'
+        help_text='Date joined company'
     )
     pais = models.ForeignKey(
         Pais,
         on_delete=models.SET_NULL,
         null=True,
         db_column='pais',
+        db_constraint=False,
         help_text='Country code'
     )
     representante_legal = models.CharField(
@@ -430,8 +452,7 @@ class Socio(models.Model):
         null=True,
         help_text='Legal representative CPF'
     )
-    nome_do_representante = models.CharField(
-        max_length=255,
+    nome_do_representante = models.TextField(
         null=True,
         help_text='Legal representative name'
     )
@@ -441,15 +462,21 @@ class Socio(models.Model):
         null=True,
         related_name='representantes',
         db_column='qualificacao_representante_legal',
+        db_constraint=False,
         help_text='Representative qualification code'
     )
     faixa_etaria = models.IntegerField(
         null=True,
         help_text='Age range code'
     )
+    reference_month = models.CharField(
+        max_length=7,
+        help_text='Snapshot reference month (YYYY-MM)'
+    )
 
     class Meta:
         db_table = '"cnpj"."socio"'
+        managed = False
         verbose_name = 'Sócio'
         verbose_name_plural = 'Sócios'
         indexes = [
@@ -469,37 +496,44 @@ class Simples(models.Model):
         on_delete=models.CASCADE,
         primary_key=True,
         db_column='cnpj_basico',
-        related_name='simples'
+        related_name='simples',
+        db_constraint=False,
     )
-    opcao_simples = models.CharField(
-        max_length=1,
+    opcao_simples = models.BooleanField(
+        db_column='optante_simples_nacional',
         null=True,
-        help_text='Simples Nacional option (S/N)'
+        help_text='Simples Nacional option'
     )
-    data_opcao_simples = models.IntegerField(
+    data_opcao_simples = models.DateField(
+        db_column='data_optante_simples_nacional',
         null=True,
-        help_text='Simples Nacional option date (YYYYMMDD)'
+        help_text='Simples Nacional option date'
     )
-    data_exclusao_simples = models.IntegerField(
+    data_exclusao_simples = models.DateField(
+        db_column='data_exclusao_simples_nacional',
         null=True,
-        help_text='Simples Nacional exclusion date (YYYYMMDD)'
+        help_text='Simples Nacional exclusion date'
     )
-    opcao_mei = models.CharField(
-        max_length=1,
+    opcao_mei = models.BooleanField(
         null=True,
-        help_text='MEI option (S/N)'
+        help_text='MEI option'
     )
-    data_opcao_mei = models.IntegerField(
+    data_opcao_mei = models.DateField(
         null=True,
-        help_text='MEI option date (YYYYMMDD)'
+        help_text='MEI option date'
     )
-    data_exclusao_mei = models.IntegerField(
+    data_exclusao_mei = models.DateField(
         null=True,
-        help_text='MEI exclusion date (YYYYMMDD)'
+        help_text='MEI exclusion date'
+    )
+    reference_month = models.CharField(
+        max_length=7,
+        help_text='Snapshot reference month (YYYY-MM)'
     )
 
     class Meta:
-        db_table = '"cnpj"."simples"'
+        db_table = '"cnpj"."simples_nacional"'
+        managed = False
         verbose_name = 'Simples Nacional'
         verbose_name_plural = 'Simples Nacional'
 
@@ -532,19 +566,58 @@ class MvCompanySearch(models.Model):
     cnpj_dv = models.CharField(max_length=2)
     razao_social = models.TextField()
     nome_fantasia = models.TextField(null=True, blank=True)
-    situacao_cadastral = models.IntegerField(null=True)
-    municipio = models.TextField(null=True, blank=True)
+    situacao_cadastral = models.CharField(max_length=2, null=True, blank=True)
+    codigo_municipio = models.CharField(max_length=4, null=True, blank=True)
+    municipio_nome = models.TextField(null=True, blank=True)
     uf = models.CharField(max_length=2, null=True, blank=True)
-    cnae_fiscal_principal = models.IntegerField(null=True)
+    cnae_fiscal_principal = models.CharField(max_length=7, null=True, blank=True)
+    cnae_descricao = models.TextField(null=True, blank=True)
     porte_empresa = models.CharField(max_length=2, null=True, blank=True)
     natureza_juridica = models.IntegerField(null=True)
+    natureza_juridica_descricao = models.TextField(null=True, blank=True)
     capital_social = models.DecimalField(max_digits=15, decimal_places=2, null=True)
+    data_inicio_atividade = models.DateField(null=True)
+    correio_eletronico = models.TextField(null=True, blank=True)
+    reference_month = models.CharField(max_length=7, null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = '"cnpj"."mv_company_search"'
         verbose_name = 'Empresa (busca)'
         verbose_name_plural = 'Empresas (busca)'
+
+    def __str__(self):
+        return f"{self.cnpj_14} - {self.razao_social}"
+
+
+class MvCompanySearchInactive(models.Model):
+    """Modelo não-gerenciado para cnpj.mv_company_search_inactive."""
+
+    cnpj_14 = models.CharField(max_length=14, primary_key=True)
+    cnpj_basico = models.CharField(max_length=8)
+    cnpj_ordem = models.CharField(max_length=4)
+    cnpj_dv = models.CharField(max_length=2)
+    razao_social = models.TextField()
+    nome_fantasia = models.TextField(null=True, blank=True)
+    situacao_cadastral = models.CharField(max_length=2, null=True, blank=True)
+    codigo_municipio = models.CharField(max_length=4, null=True, blank=True)
+    municipio_nome = models.TextField(null=True, blank=True)
+    uf = models.CharField(max_length=2, null=True, blank=True)
+    cnae_fiscal_principal = models.CharField(max_length=7, null=True, blank=True)
+    cnae_descricao = models.TextField(null=True, blank=True)
+    porte_empresa = models.CharField(max_length=2, null=True, blank=True)
+    natureza_juridica = models.IntegerField(null=True)
+    natureza_juridica_descricao = models.TextField(null=True, blank=True)
+    capital_social = models.DecimalField(max_digits=15, decimal_places=2, null=True)
+    data_inicio_atividade = models.DateField(null=True)
+    correio_eletronico = models.TextField(null=True, blank=True)
+    reference_month = models.CharField(max_length=7, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = '"cnpj"."mv_company_search_inactive"'
+        verbose_name = 'Empresa (busca inativa)'
+        verbose_name_plural = 'Empresas (busca inativas)'
 
     def __str__(self):
         return f"{self.cnpj_14} - {self.razao_social}"

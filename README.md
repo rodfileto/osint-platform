@@ -18,6 +18,25 @@ Plataforma de inteligência OSINT multi-engine para análise de dados públicos 
 - 32 GB+ RAM (64 GB recomendado para dataset completo)
 - 150 GB+ de espaço em disco
 
+## Ambiente Python (dev)
+
+Para evitar conflito entre dependências do Django (`backend`) e Airflow/ETL (`pipelines`), use ambientes separados:
+
+- `backend/.venv`
+- `pipelines/.venv`
+
+Bootstrap rápido:
+
+```bash
+chmod +x ./setup-python-envs.sh
+./setup-python-envs.sh
+```
+
+No VS Code, selecione o interpretador conforme o contexto:
+
+- Backend: `backend/.venv/bin/python`
+- Pipelines: `pipelines/.venv/bin/python`
+
 ## Quick Start
 
 ```bash

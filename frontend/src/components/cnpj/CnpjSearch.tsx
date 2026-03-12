@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useCallback, useRef } from "react";
+import Link from "next/link";
 import ComponentCard from "@/components/common/ComponentCard";
 import Input from "@/components/form/input/InputField";
 import Button from "@/components/ui/button/Button";
@@ -23,10 +24,12 @@ interface CnpjResult {
   cnpj_basico: string;
   razao_social: string;
   nome_fantasia: string | null;
-  situacao_cadastral: number;
-  municipio: string | null;
+  situacao_cadastral: string;
+  codigo_municipio: string | null;
+  municipio_nome: string | null;
   uf: string | null;
-  cnae_fiscal_principal: number | null;
+  cnae_fiscal_principal: string | null;
+  cnae_descricao: string | null;
   porte_empresa: string | null;
   natureza_juridica: number | null;
   capital_social: string | null;
@@ -167,7 +170,7 @@ export default function CnpjSearch() {
                 <Table className="table-auto">
                   <TableHeader>
                     <TableRow className="border-b border-gray-100 dark:border-gray-800">
-                      {["CNPJ", "Razão Social / Fantasia", "UF", "CNAE", "Porte", "Capital"].map(
+                      {["CNPJ", "Razão Social / Fantasia", "UF", "CNAE", "Porte", "Capital", "Ações"].map(
                         (h) => (
                           <TableCell
                             key={h}
@@ -211,7 +214,7 @@ export default function CnpjSearch() {
 
                         {/* CNAE */}
                         <TableCell className="px-4 py-3 text-sm font-mono text-gray-600 dark:text-gray-400 whitespace-nowrap">
-                          {r.cnae_fiscal_principal ?? "—"}
+                          {r.cnae_descricao || r.cnae_fiscal_principal || "—"}
                         </TableCell>
 
                         {/* Porte */}
@@ -240,6 +243,16 @@ export default function CnpjSearch() {
                         {/* Capital */}
                         <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap text-right">
                           {formatCapital(r.capital_social)}
+                        </TableCell>
+
+                        {/* Ações */}
+                        <TableCell className="px-4 py-3 whitespace-nowrap">
+                          <Link
+                            href={`/cnpj/${r.cnpj_basico}`}
+                            className="inline-flex items-center justify-center font-medium gap-2 rounded-lg transition px-4 py-3 text-sm bg-white text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-white/[0.03] dark:hover:text-gray-300"
+                          >
+                            Ver detalhes
+                          </Link>
                         </TableCell>
                       </TableRow>
                     ))}
