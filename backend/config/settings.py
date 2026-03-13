@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'rest_framework',
     # Project apps
     'cnpj',
+    'finep',
 ]
 
 MIDDLEWARE = [
@@ -159,4 +160,5 @@ REST_FRAMEWORK = {
 NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://neo4j:7687')
 NEO4J_USER = os.environ.get('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.environ.get('NEO4J_PASSWORD', 'neo4j')
+NEO4J_MAX_NETWORK_DEPTH = int(os.environ.get('NEO4J_MAX_NETWORK_DEPTH', '3'))
 NEO4J_MAX_NETWORK_EDGES = int(os.environ.get('NEO4J_MAX_NETWORK_EDGES', '200'))

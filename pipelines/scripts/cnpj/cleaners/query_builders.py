@@ -494,6 +494,7 @@ def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str
             header=false,
             names=['column0','column1'],
             all_varchar=true,
+            encoding='latin-1',
             ignore_errors=true
         )
         WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) > 0

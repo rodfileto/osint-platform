@@ -1,4 +1,5 @@
 from django.db.models import Q
+from django.conf import settings
 from rest_framework import viewsets, mixins
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, NotFound, APIException
@@ -155,14 +156,27 @@ class CompanyNetworkViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):
 
     def retrieve(self, request, *args, **kwargs):
         cnpj_basico = kwargs.get(self.lookup_field, '').strip()
+        depth_raw = request.GET.get('depth', '1').strip()
 
         if not (cnpj_basico.isdigit() and len(cnpj_basico) == 8):
             raise ValidationError({
                 'cnpj_basico': 'Informe um CNPJ básico válido com 8 dígitos numéricos.'
             })
 
+        if not depth_raw.isdigit():
+            raise ValidationError({
+                'depth': 'Informe uma profundidade válida com valor inteiro positivo.'
+            })
+
+        depth = int(depth_raw)
+        max_depth = max(1, settings.NEO4J_MAX_NETWORK_DEPTH)
+        if depth < 1 or depth > max_depth:
+            raise ValidationError({
+                'depth': f'Informe uma profundidade entre 1 e {max_depth}.'
+            })
+
         try:
-            payload = self.network_service.get_company_network(cnpj_basico)
+            payload = self.network_service.get_company_network(cnpj_basico, depth=depth)
         except RuntimeError as exc:
             raise APIException('Falha ao consultar rede no Neo4j.') from exc
 
