@@ -32,9 +32,12 @@ As migrations versionadas ficam em:
 Comandos principais:
 
 ```bash
-./infrastructure/postgres/run-flyway.sh info
-./infrastructure/postgres/run-flyway.sh validate
-./infrastructure/postgres/run-flyway.sh migrate
+./dev/scripts/run-flyway.sh info
+./dev/scripts/run-flyway.sh validate
+./dev/scripts/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like info
+./infrastructure/postgres/run-flyway.sh --env prod-like validate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 sh ./infrastructure/postgres/run-geo-bootstrap.sh
 ```
 
@@ -57,7 +60,7 @@ docker compose up -d postgres
 
 ### 2. Aplicar migrations
 ```bash
-./infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ### 3. Verificar instalação
@@ -107,8 +110,8 @@ Esse runner garante que PostgreSQL e Flyway estejam prontos e depois executa [pi
 ### Problema: migrations falharam
 
 ```bash
-./infrastructure/postgres/run-flyway.sh info
-./infrastructure/postgres/run-flyway.sh validate
+./infrastructure/postgres/run-flyway.sh --env prod-like info
+./infrastructure/postgres/run-flyway.sh --env prod-like validate
 docker logs osint_flyway --tail 100
 ```
 
@@ -125,7 +128,7 @@ DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
 EOF
 
 # Recria com migrations
-./infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ### Problema: Container não inicia
@@ -160,7 +163,7 @@ until docker exec osint_postgres pg_isready -U osint_admin; do
 done
 
 # Recria via Flyway
-./infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ---

@@ -1,7 +1,10 @@
 from collections import defaultdict
 from decimal import Decimal
 from typing import cast
+import json
+import unicodedata
 
+from django.db import connection
 from django.db.models import Q
 from rest_framework import mixins, viewsets
 from rest_framework.response import Response
@@ -53,6 +56,16 @@ def _normalize_municipio(value):
     return normalized or None
 
 
+def _municipio_match_key(value):
+    normalized = _normalize_municipio(value)
+    if normalized is None:
+        return None
+
+    ascii_value = unicodedata.normalize('NFKD', normalized)
+    ascii_value = ''.join(character for character in ascii_value if not unicodedata.combining(character))
+    return ascii_value.upper()
+
+
 def _calculate_gini(values):
     non_negative_values = [float(value) for value in values if value is not None and float(value) >= 0]
     if not non_negative_values:
@@ -69,6 +82,14 @@ def _calculate_gini(values):
         weighted_sum += ((2 * index) - item_count - 1) * value
 
     return round(weighted_sum / (item_count * total), 6)
+
+
+def _safe_non_negative_float(value, default=0.0):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, 0.0)
 
 
 def _fill_missing_cnae_descriptions(rows):
@@ -88,6 +109,91 @@ def _fill_missing_cnae_descriptions(rows):
     return rows
 
 
+def _load_geo_municipality_lookup(records):
+    company_codes = {
+        company['codigo_municipio']
+        for record in records
+        for company in [record.get('company') or {}]
+        if company.get('codigo_municipio')
+    }
+    ufs = {
+        record.get('uf')
+        for record in records
+        if record.get('uf')
+    }
+
+    by_cnpj_code = {}
+    by_name = {}
+
+    with connection.cursor() as cursor:
+        if company_codes:
+            cursor.execute(
+                """
+                SELECT
+                    cnpj_municipality_code,
+                    municipality_ibge_code,
+                    municipality_name,
+                    state_abbrev,
+                    ST_Y(centroid::geometry) AS latitude,
+                    ST_X(centroid::geometry) AS longitude
+                FROM geo.v_cnpj_br_municipality
+                WHERE cnpj_municipality_code = ANY(%s)
+                  AND municipality_ibge_code IS NOT NULL
+                  AND centroid IS NOT NULL
+                """,
+                [list(company_codes)],
+            )
+            for code, ibge_code, municipality_name, state_abbrev, latitude, longitude in cursor.fetchall():
+                by_cnpj_code[code] = {
+                    'municipality_ibge_code': ibge_code,
+                    'municipio_nome': municipality_name,
+                    'uf': state_abbrev,
+                    'latitude': float(latitude) if latitude is not None else None,
+                    'longitude': float(longitude) if longitude is not None else None,
+                }
+
+        if ufs:
+            cursor.execute(
+                """
+                SELECT
+                    municipality_ibge_code,
+                    municipality_name,
+                    state_abbrev,
+                    ST_Y(centroid::geometry) AS latitude,
+                    ST_X(centroid::geometry) AS longitude
+                FROM geo.br_municipality
+                WHERE state_abbrev = ANY(%s)
+                  AND centroid IS NOT NULL
+                """,
+                [list(ufs)],
+            )
+            for ibge_code, municipality_name, state_abbrev, latitude, longitude in cursor.fetchall():
+                key = (state_abbrev, _municipio_match_key(municipality_name))
+                by_name[key] = {
+                    'municipality_ibge_code': ibge_code,
+                    'municipio_nome': municipality_name,
+                    'uf': state_abbrev,
+                    'latitude': float(latitude) if latitude is not None else None,
+                    'longitude': float(longitude) if longitude is not None else None,
+                }
+
+    return by_cnpj_code, by_name
+
+
+def _resolve_geo_municipality(record, by_cnpj_code, by_name):
+    company = record.get('company') or {}
+    company_code = company.get('codigo_municipio')
+    if company_code and company_code in by_cnpj_code:
+        return by_cnpj_code[company_code]
+
+    uf = record.get('uf')
+    municipio_key = _municipio_match_key(record.get('municipio_nome'))
+    if uf and municipio_key:
+        return by_name.get((uf, municipio_key))
+
+    return None
+
+
 def _company_lookup(company_cnpjs):
     if not company_cnpjs:
         return {}
@@ -99,6 +205,7 @@ def _company_lookup(company_cnpjs):
             'razao_social',
             'nome_fantasia',
             'uf',
+            'codigo_municipio',
             'municipio_nome',
             'cnae_fiscal_principal',
             'cnae_descricao',
@@ -120,6 +227,7 @@ def _company_lookup(company_cnpjs):
                 'razao_social',
                 'nome_fantasia',
                 'uf',
+                'codigo_municipio',
                 'municipio_nome',
                 'cnae_fiscal_principal',
                 'cnae_descricao',
@@ -217,6 +325,7 @@ def _collect_project_records():
 
 def _build_municipio_summary(records):
     groups = {}
+    geo_by_cnpj_code, geo_by_name = _load_geo_municipality_lookup(records)
 
     for record in records:
         municipio_nome = _normalize_municipio(record.get('municipio_nome'))
@@ -225,10 +334,15 @@ def _build_municipio_summary(records):
 
         uf = record.get('uf') or None
         group_key = (uf, municipio_nome.upper())
+        geo_municipality = _resolve_geo_municipality(record, geo_by_cnpj_code, geo_by_name)
+        resolved_name = geo_municipality['municipio_nome'] if geo_municipality else municipio_nome
         if group_key not in groups:
             groups[group_key] = {
-                'municipio_nome': municipio_nome,
-                'uf': uf,
+                'municipio_nome': resolved_name,
+                'uf': (geo_municipality['uf'] if geo_municipality else uf),
+                'municipality_ibge_code': geo_municipality['municipality_ibge_code'] if geo_municipality else None,
+                'latitude': geo_municipality['latitude'] if geo_municipality else None,
+                'longitude': geo_municipality['longitude'] if geo_municipality else None,
                 'total_empresas': set(),
                 'total_projetos': 0,
                 'total_aprovado_finep': Decimal('0.00'),
@@ -237,6 +351,12 @@ def _build_municipio_summary(records):
             }
 
         group = groups[group_key]
+        if geo_municipality and not group.get('municipality_ibge_code'):
+            group['municipio_nome'] = geo_municipality['municipio_nome']
+            group['uf'] = geo_municipality['uf']
+            group['municipality_ibge_code'] = geo_municipality['municipality_ibge_code']
+            group['latitude'] = geo_municipality['latitude']
+            group['longitude'] = geo_municipality['longitude']
         if record.get('cnpj_14'):
             cast(set[str], group['total_empresas']).add(record['cnpj_14'])
         group['total_projetos'] = cast(int, group['total_projetos']) + 1
@@ -249,6 +369,9 @@ def _build_municipio_summary(records):
         payload.append({
             'municipio_nome': row['municipio_nome'],
             'uf': row['uf'],
+            'municipality_ibge_code': row['municipality_ibge_code'],
+            'latitude': row['latitude'],
+            'longitude': row['longitude'],
             'total_empresas': len(cast(set[str], row['total_empresas'])),
             'total_projetos': cast(int, row['total_projetos']),
             'total_aprovado_finep': cast(Decimal, row['total_aprovado_finep']),
@@ -258,6 +381,72 @@ def _build_municipio_summary(records):
 
     payload.sort(key=lambda item: (item['total_aprovado_finep'], item['total_projetos']), reverse=True)
     return payload
+
+
+def _load_geo_municipality_features(municipio_summary, simplify_tolerance=0.0, uf=None):
+    numeric_tolerance = max(float(simplify_tolerance or 0.0), 0.0)
+    summary_by_code = {
+        item['municipality_ibge_code']: item
+        for item in municipio_summary
+        if item.get('municipality_ibge_code')
+    }
+
+    query = """
+        SELECT
+            municipality_ibge_code,
+            municipality_name,
+            state_abbrev,
+            ST_Y(centroid::geometry) AS latitude,
+            ST_X(centroid::geometry) AS longitude,
+            ST_AsGeoJSON(
+                ST_Transform(
+                    CASE
+                        WHEN %s > 0 THEN ST_SimplifyPreserveTopology(geom, %s)
+                        ELSE geom
+                    END,
+                    4326
+                ),
+                5
+            )::jsonb AS geometry
+        FROM geo.br_municipality
+    """
+    params = [numeric_tolerance, numeric_tolerance]
+
+    if uf:
+        query += " WHERE state_abbrev = %s"
+        params.append(uf)
+
+    query += " ORDER BY municipality_name"
+
+    features = []
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        for municipality_ibge_code, municipality_name, state_abbrev, latitude, longitude, geometry in cursor.fetchall():
+            if isinstance(geometry, str):
+                geometry = json.loads(geometry)
+            item = summary_by_code.get(municipality_ibge_code)
+            approved_value = float(item['total_aprovado_finep']) if item else 0.0
+            released_value = float(item['total_liberado']) if item else 0.0
+
+            features.append({
+                'type': 'Feature',
+                'id': municipality_ibge_code,
+                'geometry': geometry,
+                'properties': {
+                    'municipality_ibge_code': municipality_ibge_code,
+                    'municipio_nome': municipality_name,
+                    'uf': state_abbrev,
+                    'latitude': item.get('latitude') if item else (float(latitude) if latitude is not None else None),
+                    'longitude': item.get('longitude') if item else (float(longitude) if longitude is not None else None),
+                    'total_empresas': item['total_empresas'] if item else 0,
+                    'total_projetos': item['total_projetos'] if item else 0,
+                    'total_aprovado_finep': approved_value,
+                    'total_liberado': released_value,
+                    'fontes': item['fontes'] if item else [],
+                },
+            })
+
+    return features
 
 
 class FinepAnalyticsBaseViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -538,6 +727,10 @@ class FinepResumoMunicipioViewSet(FinepAnalyticsBaseViewSet):
     def list(self, request, *args, **kwargs):
         payload = _build_municipio_summary(self._base_records())
 
+        if request.GET.get('all', '').strip().lower() in {'1', 'true', 'yes'}:
+            serializer = self.get_serializer(payload, many=True)
+            return Response(serializer.data)
+
         page = self.paginate_queryset(payload)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -545,6 +738,42 @@ class FinepResumoMunicipioViewSet(FinepAnalyticsBaseViewSet):
 
         serializer = self.get_serializer(payload, many=True)
         return Response(serializer.data)
+
+
+class FinepMunicipioMapaViewSet(FinepAnalyticsBaseViewSet):
+    serializer_class = None
+
+    def list(self, request, *args, **kwargs):
+        records = self._base_records()
+        municipio_summary = _build_municipio_summary(records)
+        simplify_tolerance = _safe_non_negative_float(
+            request.GET.get('simplify_tolerance', '0.0'),
+            default=0.0,
+        )
+        features = _load_geo_municipality_features(
+            municipio_summary,
+            simplify_tolerance=simplify_tolerance,
+            uf=request.GET.get('uf', '').strip().upper() or None,
+        )
+
+        max_approved_value = max(
+            (feature['properties']['total_aprovado_finep'] for feature in features),
+            default=0.0,
+        )
+        municipalities_with_value = sum(
+            1 for feature in features if feature['properties']['total_aprovado_finep'] > 0
+        )
+
+        return Response({
+            'type': 'FeatureCollection',
+            'features': features,
+            'metadata': {
+                'feature_count': len(features),
+                'municipalities_with_value': municipalities_with_value,
+                'max_total_aprovado_finep': max_approved_value,
+                'simplify_tolerance': simplify_tolerance,
+            },
+        })
 
 
 class FinepBaseReadOnlyViewSet(viewsets.ReadOnlyModelViewSet):

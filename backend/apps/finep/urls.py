@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    FinepMunicipioMapaViewSet,
     FinepResumoGeralViewSet,
     FinepResumoCnaeViewSet,
     FinepResumoEmpresaViewSet,
@@ -29,5 +30,6 @@ router.register(r'resumo-empresa', FinepResumoEmpresaViewSet, basename='finep-re
 router.register(r'resumo-uf', FinepResumoUfViewSet, basename='finep-resumo-uf')
 router.register(r'resumo-cnae', FinepResumoCnaeViewSet, basename='finep-resumo-cnae')
 router.register(r'resumo-municipio', FinepResumoMunicipioViewSet, basename='finep-resumo-municipio')
+router.register(r'mapa-municipio', FinepMunicipioMapaViewSet, basename='finep-mapa-municipio')
 
 urlpatterns = router.urls

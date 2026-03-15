@@ -1,8 +1,9 @@
 # Guia de Reset do Docker - OSINT Platform
 
 > Atenção: este guia contém contexto histórico do fluxo antigo baseado em scripts de init do PostgreSQL.
-> O fluxo atual de schema PostgreSQL é gerenciado por Flyway. Use `bash infrastructure/postgres/run-flyway.sh migrate`
-> e consulte `infrastructure/postgres/README.md` como referência principal.
+> O fluxo atual usa compose em camadas e Flyway com runners por ambiente.
+> Use `./dev/scripts/run-flyway.sh migrate` para dev, `./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate` para prod-like,
+> e consulte `infrastructure/postgres/README.md` e `README.md` como referências principais.
 
 ## 🎯 Problema Identificado
 
@@ -58,10 +59,10 @@ O script irá:
 ### Reset Apenas PostgreSQL
 
 ```bash
-docker-compose stop postgres
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop postgres
 docker rm -f osint_postgres
-sudo rm -rf infrastructure/postgres/data/*
-docker-compose up -d postgres
+sudo rm -rf /srv/osint/postgres/data/*
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml up -d postgres
 
 # Aguarda ficar pronto
 until docker exec osint_postgres pg_isready -U osint_admin; do sleep 2; done
@@ -72,17 +73,16 @@ docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
     GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
 EOSQL
 
-bash infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ### Reset Apenas Neo4j
 
 ```bash
-docker-compose stop neo4j
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop neo4j
 docker rm -f osint_neo4j
-sudo rm -rf infrastructure/neo4j/data/*
-sudo rm -rf /home/rfileto/osint_neo4j/data/*
-docker-compose up -d neo4j
+sudo rm -rf /srv/osint/neo4j/data/*
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml up -d neo4j
 
 # Aguarda ficar pronto
 until docker exec osint_neo4j cypher-shell -u neo4j -p osint_graph_password "RETURN 1" 2>/dev/null; do sleep 2; done
@@ -103,7 +103,7 @@ DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
 EOF
 
 # Recria
-bash infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ---
@@ -159,7 +159,7 @@ open http://localhost:7474
 
 ```bash
 # Listar containers rodando
-docker-compose ps
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps
 
 # Ver logs
 docker logs osint_postgres --tail 50
@@ -218,7 +218,7 @@ DROP TABLE IF EXISTS cnpj.estabelecimento CASCADE;
 DROP TABLE IF EXISTS cnpj.empresa CASCADE;
 EOF
 
-bash infrastructure/postgres/run-flyway.sh migrate
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ### Container não para
@@ -241,7 +241,8 @@ docker rm -f $(docker ps -aq)  # Remove TODOS containers (cuidado!)
 |---------|-----------|
 | `reset-docker-from-scratch.sh` | **Script principal** - Reset completo automatizado |
 | `infrastructure/postgres/README.md` | Documentação detalhada PostgreSQL |
-| `infrastructure/postgres/run-flyway.sh` | Executa `flyway migrate/info/validate` |
+| `infrastructure/postgres/run-flyway.sh` | Executa Flyway no ambiente escolhido, com confirmação explícita para mutações em `prod-like` |
+| `dev/scripts/run-flyway.sh` | Runner Flyway do ambiente dev |
 | `infrastructure/postgres/migrations/` | Fonte de verdade do schema PostgreSQL |
 | `infrastructure/neo4j/init-cnpj-schema.cypher` | Cria constraints e indexes Neo4j |
 | `docker-compose.yml` | Configuração de todos os serviços |
@@ -259,7 +260,7 @@ O fluxo antigo baseado em scripts de inicialização do Docker só funcionava au
 ### Qual a ordem correta de inicialização?
 
 1. **Migrations versionadas** (`infrastructure/postgres/migrations/`): Criam e evoluem a estrutura de dados
-2. **Flyway** (`infrastructure/postgres/run-flyway.sh migrate`): Aplica o que falta no banco
+2. **Flyway** (`./dev/scripts/run-flyway.sh migrate` ou `./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate`): Aplica o que falta no banco
 3. **Dados** (DAGs do Airflow): Popula com dados reais
 
 ### Por que múltiplos scripts?
@@ -274,7 +275,7 @@ O fluxo antigo baseado em scripts de inicialização do Docker só funcionava au
 
 Use este checklist para garantir que tudo está funcionando:
 
-- [ ] Containers rodando: `docker-compose ps`
+- [ ] Containers rodando: `docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps`
 - [ ] PostgreSQL aceita conexões: `docker exec osint_postgres pg_isready -U osint_admin`
 - [ ] Schemas criados: `\dn` no psql deve mostrar `cnpj`, `airflow`, etc.
 - [ ] Tabelas criadas: `\dt cnpj.*` deve mostrar `empresa`, `estabelecimento`, `download_manifest`
@@ -293,7 +294,7 @@ Se após seguir este guia ainda tiver problemas:
 
 1. **Capture logs completos:**
    ```bash
-   docker-compose logs > docker-logs.txt
+    docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml logs > docker-logs.txt
    docker ps -a >> docker-logs.txt
    ```
 

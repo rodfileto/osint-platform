@@ -251,16 +251,16 @@ Parquet:    ~5 GB/month (compressed, -70%)
 3. **🐳 Start Docker Services**
    ```bash
    cd /media/mynewdrive/osint-platform
-   docker-compose up -d postgres neo4j airflow-webserver airflow-scheduler
+   ./scripts/start-prod-like.sh --apply-migrations --with-airflow
    ```
 
 4. **🗄️ Initialize Databases**
    ```bash
    # PostgreSQL (Flyway)
-   bash infrastructure/postgres/run-flyway.sh migrate
+   ./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
    
    # Neo4j (run cypher script)
-   docker-compose exec neo4j cypher-shell -u neo4j -p osint_password < infrastructure/neo4j/init-cnpj-schema.cypher
+   docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml exec neo4j cypher-shell -u neo4j -p osint_password < infrastructure/neo4j/init-cnpj-schema.cypher
    ```
 
 5. **✈️ Trigger DAG**

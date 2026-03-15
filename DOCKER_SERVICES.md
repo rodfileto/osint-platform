@@ -1,5 +1,7 @@
 # Docker Services - OSINT Platform
 
+> Operational note: this file is a quick reference. The canonical startup flow is now `./dev/scripts/start.sh` for dev and `./scripts/start-prod-like.sh --apply-migrations` for prod-like.
+
 ## Running Services
 
 | Service | Container Name | Image | Status | Ports | Access URL |
@@ -95,23 +97,29 @@
 
 ### Start/Stop Services
 ```bash
-# Start all
-/snap/bin/docker compose up -d
+# Start prod-like with explicit migration decision
+./scripts/start-prod-like.sh --apply-migrations
 
-# Stop all
-/snap/bin/docker compose down
+# Start dev
+./dev/scripts/start.sh
+
+# Stop prod-like
+/snap/bin/docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml down
+
+# Stop dev
+/snap/bin/docker compose --env-file ./dev/.env -f docker-compose.yml -f compose.dev.yml down
 
 # Restart specific service
-/snap/bin/docker compose restart backend
+/snap/bin/docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml restart backend
 ```
 
 ### Rebuild Services
 ```bash
-# Rebuild backend after code changes
-/snap/bin/docker compose up -d --build backend
+# Rebuild dev backend after code changes
+/snap/bin/docker compose --env-file ./dev/.env -f docker-compose.yml -f compose.dev.yml up -d --build backend
 
-# Rebuild all
-/snap/bin/docker compose up -d --build
+# Rebuild prod-like backend/frontend
+./scripts/start-prod-like.sh --skip-migrations
 ```
 
 ## Health Status
@@ -126,9 +134,9 @@
 
 ## Notes
 - Docker is installed via snap: `/snap/bin/docker`
-- All services are defined in `docker-compose.yml`
+- Shared services are defined in `docker-compose.yml`; environment-specific runtime differences live in `compose.dev.yml` and `compose.prod.yml`
 - Environment variables are in `.env` file
-- Persistent data is stored in Docker volumes
+- Dev environment variables are in `dev/.env`; persistent data is stored with bind mounts defined by each environment file
 
 ---
 *Last updated: February 16, 2026*

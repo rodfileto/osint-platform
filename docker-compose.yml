@@ -4,8 +4,6 @@ x-airflow-common:
     context: .
     dockerfile: infrastructure/airflow/Dockerfile
   image: osint-platform-airflow:latest
-  env_file:
-    - .env
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -15,7 +13,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
-    TZ: America/Sao_Paulo
+    TZ: ${TZ:-America/Sao_Paulo}
   volumes:
     - ./pipelines/dags:/opt/airflow/dags
     - ./pipelines/logs:/opt/airflow/logs
@@ -25,229 +23,148 @@ x-airflow-common:
     - ${AIRFLOW_TEMP_SSD_HOST_PATH:-/srv/osint/airflow/temp_ssd}:/opt/airflow/temp_ssd
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
-    &airflow-common-depends-on
     postgres:
       condition: service_healthy
     flyway:
       condition: service_completed_successfully
-    
-services:
-  # --- Data Layer ---
 
+services:
   postgres:
     image: postgis/postgis:16-3.4
-    container_name: osint_postgres
     command:
-      - "postgres"
-      # === Memory (64 GB RAM, 106 GB DB on HDD) ===
-      - "-c" 
-      - "shared_buffers=16GB"              # 25% of RAM (was 128MB)
-      - "-c"
-      - "effective_cache_size=48GB"         # 75% of RAM - query planner hint
-      - "-c"
-      - "work_mem=64MB"                    # per-sort/hash operation (was 4MB)
-      - "-c"
-      - "maintenance_work_mem=2GB"          # VACUUM, CREATE INDEX (was 64MB)
-      # === Disk I/O (SSD) ===
-      - "-c"
-      - "random_page_cost=1.1"             # SSD (was 4.0 for HDD)
-      - "-c"
-      - "effective_io_concurrency=200"      # SSD (was 2 for HDD)
-      # === Parallelism (8-core i7-9700K) ===
-      - "-c"
-      - "max_worker_processes=8"
-      - "-c"
-      - "max_parallel_workers=8"
-      - "-c"
-      - "max_parallel_workers_per_gather=4" # was 2
-      # === WAL & Checkpoints ===
-      - "-c"
-      - "wal_buffers=64MB"                 # was 4MB
-      - "-c"
-      - "min_wal_size=1GB"
-      - "-c"
-      - "max_wal_size=4GB"
-      - "-c"
-      - "checkpoint_completion_target=0.9"
-      # === Query Planning ===
-      - "-c"
-      - "default_statistics_target=200"     # better plans for large tables
-      - "-c"
-      - "huge_pages=try"
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-16GB}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-48GB}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:-64MB}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-2GB}
+      - -c
+      - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}
+      - -c
+      - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
+      - -c
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+      - -c
+      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-8}
+      - -c
+      - max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-4}
+      - -c
+      - wal_buffers=${POSTGRES_WAL_BUFFERS:-64MB}
+      - -c
+      - min_wal_size=${POSTGRES_MIN_WAL_SIZE:-1GB}
+      - -c
+      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-4GB}
+      - -c
+      - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
+      - -c
+      - default_statistics_target=${POSTGRES_DEFAULT_STATISTICS_TARGET:-200}
+      - -c
+      - huge_pages=${POSTGRES_HUGE_PAGES:-try}
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      TZ: America/Sao_Paulo
-      PGTZ: America/Sao_Paulo
+      TZ: ${TZ:-America/Sao_Paulo}
+      PGTZ: ${TZ:-America/Sao_Paulo}
     volumes:
       - ${POSTGRES_DATA_HOST_PATH:-/srv/osint/postgres/data}:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
-    shm_size: '17g'                        # deve ser >= shared_buffers (16GB)
+      - ${POSTGRES_EXPOSE_PORT:-5432}:5432
+    shm_size: ${POSTGRES_SHM_SIZE:-17g}
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 10s
-      retries: 5
-    restart: always
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   neo4j:
     image: neo4j:5-community
-    container_name: osint_neo4j
     ports:
-      - "7474:7474" # HTTP
-      - "7687:7687" # Bolt
+      - ${NEO4J_HTTP_PORT:-7474}:7474
+      - ${NEO4J_BOLT_PORT:-7687}:7687
     volumes:
-      - ${NEO4J_DATA_HOST_PATH:-/srv/osint/neo4j/data}:/data       # SSD for performance
+      - ${NEO4J_DATA_HOST_PATH:-/srv/osint/neo4j/data}:/data
       - ./infrastructure/neo4j/plugins:/plugins
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
-      NEO4J_apoc_export_file_enabled: "true"
-      NEO4J_apoc_import_file_enabled: "true"
-      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_apoc_export_file_enabled: 'true'
+      NEO4J_apoc_import_file_enabled: 'true'
+      NEO4J_apoc_import_file_use__neo4j__config: 'true'
       NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      # === Memory Tuning (5.2 GB dataset) ===
-      NEO4J_server_memory_pagecache_size: "6g"     # fit entire DB in cache (was 512MB)
-      NEO4J_server_memory_heap_initial__size: "4g"  # JVM heap
-      NEO4J_server_memory_heap_max__size: "4g"      # JVM heap max
-      NEO4J_dbms_memory_transaction_total_max: "2g" # total transaction memory
-      # === Transaction Log Retention (disk space management) ===
-      NEO4J_db_tx__log_rotation_retention__policy: "2 files"   # keep only 2 tx log files after checkpoint
-      NEO4J_db_checkpoint_interval_tx: "50"                    # checkpoint every 50 tx → ~500k nós/checkpoint → max ~520 MB de logs durante deleção
-      TZ: America/Sao_Paulo
-    restart: always
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-6g}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-4g}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-4g}
+      NEO4J_dbms_memory_transaction_total_max: ${NEO4J_TX_MEMORY:-2g}
+      NEO4J_db_tx__log_rotation_retention__policy: ${NEO4J_TX_LOG_RETENTION_POLICY:-2 files}
+      NEO4J_db_checkpoint_interval_tx: ${NEO4J_CHECKPOINT_INTERVAL_TX:-50}
+      TZ: ${TZ:-America/Sao_Paulo}
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: osint_redis
     ports:
-      - "6380:6379"  # Host:Container (avoiding conflict with system Redis on 6379)
-    volumes:
-      - ./infrastructure/redis/data:/data
+      - ${REDIS_EXPOSE_PORT:-6380}:6379
     command: redis-server --appendonly yes
+    volumes:
+      - ${REDIS_DATA_HOST_PATH:-./infrastructure/redis/data}:/data
     environment:
-      TZ: America/Sao_Paulo
+      TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: always
+    restart: unless-stopped
 
   minio:
     image: minio/minio:latest
-    container_name: osint_minio
-    command: server /data --console-address ":9001"
+    command: server /data --console-address :9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      TZ: America/Sao_Paulo
+      TZ: ${TZ:-America/Sao_Paulo}
     volumes:
-      - ${MINIO_DATA_HOST_PATH:-/media/data10tb/osint/minio}:/data
+      - ${MINIO_DATA_HOST_PATH:-/mnt/data10tb/osint/minio}:/data
     ports:
-      - "9000:9000"
-      - "9001:9001"
-    restart: always
+      - ${MINIO_API_PORT:-9000}:9000
+      - ${MINIO_CONSOLE_PORT:-9001}:9001
+    restart: unless-stopped
 
-  minio-init:
-    image: minio/mc:latest
-    container_name: osint_minio_init
+  flyway:
+    image: flyway/flyway:11-alpine
+    command: migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
+      FLYWAY_DEFAULT_SCHEMA: public
+      FLYWAY_TABLE: flyway_schema_history
+      FLYWAY_SCHEMAS: cnpj,finep,geo,airflow,naturalization,sanctions,contracts
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo
+      FLYWAY_VALIDATE_MIGRATION_NAMING: 'true'
+      FLYWAY_CLEAN_DISABLED: 'true'
+      FLYWAY_CONNECT_RETRIES: '60'
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./infrastructure/postgres/migrations:/flyway/sql:ro
     depends_on:
-      - minio
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        until mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"; do
-          sleep 2
-        done
-        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}"
-        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}"
-    restart: "no"
-
-  # --- Application Layer ---
+      postgres:
+        condition: service_healthy
+    restart: 'no'
 
   backend:
     build: ./backend
-    container_name: osint_backend
-    command: /app/entrypoint.prod.sh
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    environment:
-      TZ: America/Sao_Paulo
-      DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000}
-      MINIO_STORAGE_ENABLED: ${MINIO_STORAGE_ENABLED:-true}
-      MINIO_ENDPOINT_URL: ${MINIO_ENDPOINT_URL:-http://minio:9000}
-      MINIO_REGION: ${MINIO_REGION:-us-east-1}
-      MINIO_STORAGE_BUCKET_MEDIA: ${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}
-      MINIO_STORAGE_BUCKET_EXPORTS: ${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}
-      MINIO_MEDIA_LOCATION: ${MINIO_MEDIA_LOCATION:-media}
-      MINIO_EXPORTS_LOCATION: ${MINIO_EXPORTS_LOCATION:-exports}
-      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
-      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)\""]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    depends_on:
-      postgres:
-        condition: service_healthy
-      flyway:
-        condition: service_completed_successfully
-      neo4j:
-        condition: service_started
-      minio-init:
-        condition: service_completed_successfully
-    restart: unless-stopped
-
-  geo-bootstrap:
-    build: ./backend
-    container_name: osint_geo_bootstrap
-    command: python /workspace/pipelines/scripts/geo/load_br_geo_reference.py
-    env_file:
-      - .env
-    environment:
-      TZ: America/Sao_Paulo
-    volumes:
-      - ./:/workspace:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      flyway:
-        condition: service_completed_successfully
-    restart: "no"
 
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile.prod
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    container_name: osint_frontend
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000 >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # --- Airflow Orchestration ---
 
   airflow-webserver:
     <<: *airflow-common
@@ -255,13 +172,13 @@ services:
       - airflow
     command: webserver
     ports:
-      - "8080:8080"
+      - ${AIRFLOW_PORT:-8080}:8080
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
       timeout: 30s
       retries: 5
-    restart: always
+    restart: unless-stopped
 
   airflow-scheduler:
     <<: *airflow-common
@@ -273,7 +190,7 @@ services:
       interval: 30s
       timeout: 30s
       retries: 5
-    restart: always
+    restart: unless-stopped
 
   airflow-triggerer:
     <<: *airflow-common
@@ -285,7 +202,7 @@ services:
       interval: 30s
       timeout: 30s
       retries: 5
-    restart: always
+    restart: unless-stopped
 
   airflow-init:
     <<: *airflow-common
@@ -298,7 +215,8 @@ services:
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
-    user: "0:0"
+    user: '0:0'
+    restart: 'no'
 
   airflow-cli:
     <<: *airflow-common
@@ -307,35 +225,9 @@ services:
       - debug
     environment:
       <<: *airflow-common-env
-      CONNECTION_CHECK_MAX_COUNT: "0"
+      CONNECTION_CHECK_MAX_COUNT: '0'
     command:
       - bash
       - -c
       - airflow
-
-  flyway:
-    image: flyway/flyway:11-alpine
-    container_name: osint_flyway
-    command: migrate
-    environment:
-      FLYWAY_URL: jdbc:postgresql://postgres/${POSTGRES_DB}
-      FLYWAY_USER: ${POSTGRES_USER}
-      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
-      FLYWAY_DEFAULT_SCHEMA: public
-      FLYWAY_TABLE: flyway_schema_history
-      FLYWAY_SCHEMAS: cnpj,finep,geo,airflow,naturalization,sanctions,contracts
-      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo
-      FLYWAY_VALIDATE_MIGRATION_NAMING: "true"
-      FLYWAY_CLEAN_DISABLED: "true"
-      FLYWAY_CONNECT_RETRIES: "60"
-      TZ: America/Sao_Paulo
-    volumes:
-      - ./infrastructure/postgres/migrations:/flyway/sql
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-volumes:
-  postgres_data:
-  neo4j_data:
+    restart: 'no'

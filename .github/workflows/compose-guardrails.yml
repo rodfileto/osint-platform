@@ -1,0 +1,46 @@
+name: Compose Guardrails
+
+on:
+  push:
+    paths:
+      - '.github/workflows/compose-guardrails.yml'
+      - 'docker-compose.yml'
+      - 'compose.dev.yml'
+      - 'compose.prod.yml'
+      - 'dev/.env.example'
+      - '.env.example'
+      - 'dev/scripts/**'
+      - 'scripts/**'
+      - 'infrastructure/postgres/**'
+      - 'README.md'
+      - 'dev/README.md'
+  pull_request:
+    paths:
+      - '.github/workflows/compose-guardrails.yml'
+      - 'docker-compose.yml'
+      - 'compose.dev.yml'
+      - 'compose.prod.yml'
+      - 'dev/.env.example'
+      - '.env.example'
+      - 'dev/scripts/**'
+      - 'scripts/**'
+      - 'infrastructure/postgres/**'
+      - 'README.md'
+      - 'dev/README.md'
+
+jobs:
+  compose-guardrails:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify docker compose availability
+        run: docker compose version
+
+      - name: Verify ripgrep availability
+        run: rg --version
+
+      - name: Run compose guardrails
+        run: bash ./scripts/check-compose-guardrails.sh

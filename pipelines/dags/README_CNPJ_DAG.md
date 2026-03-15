@@ -306,8 +306,8 @@ CREATE FULLTEXT INDEX empresa_names FOR (e:Empresa) ON EACH [e.razao_social];
    - Solution: Files should be auto-detected, but if issues persist, check `ignore_errors=true` in CSV reader
 
 2. **PostgreSQL connection timeout**:
-   - Check: `docker-compose ps postgres`
-   - Verify: Connection settings in DAG match `docker-compose.yml`
+  - Check: `docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps postgres`
+  - Verify: Connection settings in DAG match `docker-compose.yml` plus `compose.prod.yml`
 
 3. **Neo4j batch too large**:
    - Reduce `batch_size` in `load_to_neo4j()` function (default: 1000)

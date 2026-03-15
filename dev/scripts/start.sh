@@ -3,8 +3,10 @@
 set -euo pipefail
 
 DEV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$DEV_DIR/.." && pwd)"
 ENV_FILE="$DEV_DIR/.env"
-COMPOSE_FILE="$DEV_DIR/docker-compose.yml"
+BASE_COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
+DEV_COMPOSE_FILE="$ROOT_DIR/compose.dev.yml"
 START_AIRFLOW=false
 
 usage() {
@@ -46,7 +48,7 @@ set -a
 set +a
 
 compose() {
-    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" "$@"
+    docker compose --env-file "$ENV_FILE" -f "$BASE_COMPOSE_FILE" -f "$DEV_COMPOSE_FILE" "$@"
 }
 
 ensure_host_dirs() {

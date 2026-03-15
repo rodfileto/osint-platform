@@ -218,8 +218,8 @@ cnpj_transform → cnpj_load_postgres → cnpj_matview_refresh → cnpj_load_neo
 ### Iniciar Ambiente
 ```bash
 cd /home/rfileto/projects/osint-platform
-docker compose up -d postgres neo4j redis minio airflow-webserver airflow-scheduler airflow-triggerer
-docker compose ps
+./scripts/start-prod-like.sh --apply-migrations --with-airflow
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps
 ```
 
 ### Reset Completo

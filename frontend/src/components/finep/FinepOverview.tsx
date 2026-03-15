@@ -4,6 +4,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
 import ComponentCard from "@/components/common/ComponentCard";
+import FinepMunicipioResourceMap from "@/components/finep/FinepMunicipioResourceMap";
+import type { FinepMunicipioMapFeatureCollection } from "@/components/finep/FinepMunicipioResourceMap";
 import Input from "@/components/form/input/InputField";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
@@ -85,6 +87,9 @@ interface FinepResumoCnae {
 interface FinepResumoMunicipio {
   municipio_nome: string;
   uf: string | null;
+  municipality_ibge_code: string | null;
+  latitude: number | null;
+  longitude: number | null;
   total_empresas: number;
   total_projetos: number;
   total_aprovado_finep: string;
@@ -210,6 +215,7 @@ export default function FinepOverview() {
   const [ufs, setUfs] = useState<PaginatedResponse<FinepResumoUf> | null>(null);
   const [cnaes, setCnaes] = useState<PaginatedResponse<FinepResumoCnae> | null>(null);
   const [municipios, setMunicipios] = useState<PaginatedResponse<FinepResumoMunicipio> | null>(null);
+  const [municipioMapData, setMunicipioMapData] = useState<FinepMunicipioMapFeatureCollection | null>(null);
 
   useEffect(() => {
     const fetchOverview = async () => {
@@ -225,12 +231,15 @@ export default function FinepOverview() {
       }
 
       try {
-        const [overviewResponse, companiesResponse, ufResponse, cnaeResponse, municipioResponse] = await Promise.all([
+        const [overviewResponse, companiesResponse, ufResponse, cnaeResponse, municipioResponse, municipioMapResponse] = await Promise.all([
           apiClient.get<FinepResumoGeral>("/api/finep/resumo-geral/", { params }),
           apiClient.get<PaginatedResponse<FinepResumoEmpresa>>("/api/finep/resumo-empresa/", { params }),
           apiClient.get<PaginatedResponse<FinepResumoUf>>("/api/finep/resumo-uf/", { params }),
           apiClient.get<PaginatedResponse<FinepResumoCnae>>("/api/finep/resumo-cnae/", { params }),
           apiClient.get<PaginatedResponse<FinepResumoMunicipio>>("/api/finep/resumo-municipio/", { params }),
+          apiClient.get<FinepMunicipioMapFeatureCollection>("/api/finep/mapa-municipio/", {
+            params: { ...params, simplify_tolerance: "0.01" },
+          }),
         ]);
 
         setOverview(overviewResponse.data);
@@ -238,6 +247,7 @@ export default function FinepOverview() {
         setUfs(ufResponse.data);
         setCnaes(cnaeResponse.data);
         setMunicipios(municipioResponse.data);
+        setMunicipioMapData(municipioMapResponse.data);
       } catch (fetchError) {
         const message =
           axios.isAxiosError(fetchError) && fetchError.response
@@ -465,6 +475,8 @@ export default function FinepOverview() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <FinepMunicipioResourceMap featureCollection={municipioMapData} loading={loading} />
+
         <ComponentCard
           title="Concentração Territorial"
           desc="Coeficiente de Gini sobre a distribuição municipal dos valores liberados no recorte atual."

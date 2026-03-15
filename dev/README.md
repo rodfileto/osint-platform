@@ -22,7 +22,7 @@ chmod +x dev/scripts/*.sh
 ./dev/scripts/start.sh
 ```
 
-`./dev/scripts/start.sh` is still the preferred entrypoint because it prepares host folders and runs the one-shot services in sequence. By default it starts only the app stack for backend and frontend work, and it no longer builds the Airflow image unless you explicitly request Airflow. Plain `docker compose up --build` from `dev/` now also triggers an automatic `dev-bootstrap` service before the backend starts, so the frontend no longer comes up against an empty CNPJ dataset.
+`./dev/scripts/start.sh` is still the preferred entrypoint because it prepares host folders and runs the one-shot services in sequence. By default it starts only the app stack for backend and frontend work, and it no longer builds the Airflow image unless you explicitly request Airflow. The stack now uses the shared root [docker-compose.yml](../docker-compose.yml) plus the dev override [compose.dev.yml](../compose.dev.yml), so Flyway and the core infrastructure wiring come from one shared source of truth.
 
 To start the Airflow UI and workers too:
 
@@ -61,8 +61,8 @@ The dev stack mounts those folders directly, so backend and frontend changes are
 If you changed dependencies or Docker build inputs, rebuild only the affected service:
 
 ```bash
-docker compose --env-file ./dev/.env -f ./dev/docker-compose.yml up -d --build backend
-docker compose --env-file ./dev/.env -f ./dev/docker-compose.yml up -d --build frontend
+docker compose --env-file ./dev/.env -f ./docker-compose.yml -f ./compose.dev.yml up -d --build backend
+docker compose --env-file ./dev/.env -f ./docker-compose.yml -f ./compose.dev.yml up -d --build frontend
 ```
 
 ### 3. Run Flyway if needed
@@ -72,13 +72,13 @@ Only do this when your change includes PostgreSQL migration files under `infrast
 Dev:
 
 ```bash
-docker compose --env-file ./dev/.env -f ./dev/docker-compose.yml up --build --abort-on-container-exit --exit-code-from flyway flyway
+./dev/scripts/run-flyway.sh migrate
 ```
 
 Prod-like:
 
 ```bash
-docker compose --env-file .env up --build --abort-on-container-exit --exit-code-from flyway flyway
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 ### 4. Build prod-like
@@ -86,14 +86,14 @@ docker compose --env-file .env up --build --abort-on-container-exit --exit-code-
 From the project root:
 
 ```bash
-docker compose --env-file .env up -d --build backend frontend
+./scripts/start-prod-like.sh --apply-migrations
 ```
 
 If `.env` does not exist yet at the project root:
 
 ```bash
 cp .env.example .env
-docker compose --env-file .env up -d --build backend frontend
+./scripts/start-prod-like.sh --apply-migrations
 ```
 
 ## Ports
@@ -119,6 +119,8 @@ If you change core PostgreSQL identity settings in `dev/.env`, such as `POSTGRES
 - The dev bootstrap also loads canonical Brazilian state and municipality boundaries into `geo.br_state` and `geo.br_municipality`, then rebuilds `geo.cnpj_br_municipality_map` and `geo.v_cnpj_br_municipality`.
 - The shared geography loader lives in `pipelines/scripts/geo/load_br_geo_reference.py`, and the dev bootstrap invokes that shared script instead of keeping a dev-only implementation.
 - The dev bootstrap runs on a lightweight Python app container and no longer depends on the Airflow image.
+- The dev environment is now an override layer on top of the shared root compose file instead of a standalone compose definition.
+- The prod-like environment now requires an explicit migration decision instead of letting backend startup imply Flyway execution.
 - Automatic bootstrap is controlled by `DEV_BOOTSTRAP_FINEP` in `dev/.env`. Leave it enabled to preserve the previous behavior of loading the full FINEP dataset on first startup.
 - Automatic geography bootstrap is controlled by `DEV_BOOTSTRAP_GEO`, `GEOBR_YEAR`, and `GEOBR_SIMPLIFIED` in `dev/.env`.
 - The FINEP bootstrap requires internet access from the Docker host because it downloads `Contratacao.xlsx` and `Liberacao.xlsx` during startup.

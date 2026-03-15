@@ -192,6 +192,24 @@
   }
 }
 
+.finep-municipio-map .leaflet-container {
+  height: 100%;
+  width: 100%;
+  font: inherit;
+}
+
+.finep-municipio-map .leaflet-tooltip {
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 20px 45px -28px rgba(15, 23, 42, 0.45);
+  color: #0f172a;
+}
+
+.dark .finep-municipio-map .leaflet-tooltip {
+  background: rgba(17, 24, 39, 0.96);
+  color: #f8fafc;
+}
+
 @utility menu-item {
   @apply relative flex items-center w-full gap-3 px-3 py-2 font-medium rounded-lg text-theme-sm;
 }

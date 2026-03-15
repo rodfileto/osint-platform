@@ -108,7 +108,7 @@ echo "🗃️  STEP 4: Aplicando migrations do PostgreSQL..."
 echo "----------------------------------------------"
 
 echo "  → Executando Flyway migrate..."
-bash infrastructure/postgres/run-flyway.sh migrate
+bash infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 
 echo "✓ Migrations PostgreSQL aplicadas"
 

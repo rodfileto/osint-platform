@@ -1,0 +1,71 @@
+x-airflow-dev-env: &airflow-dev-env
+  env_file:
+    - ./dev/.env
+
+services:
+  backend:
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - ./dev/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./backend:/app
+    ports:
+      - ${BACKEND_PORT}:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_started
+      dev-bootstrap:
+        condition: service_completed_successfully
+
+  frontend:
+    command: npm run dev -- --hostname 0.0.0.0
+    env_file:
+      - ./dev/.env
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - ${FRONTEND_PORT}:3000
+    depends_on:
+      - backend
+
+  airflow-webserver:
+    <<: *airflow-dev-env
+
+  airflow-scheduler:
+    <<: *airflow-dev-env
+
+  airflow-triggerer:
+    <<: *airflow-dev-env
+
+  airflow-init:
+    <<: *airflow-dev-env
+
+  airflow-cli:
+    <<: *airflow-dev-env
+
+  dev-bootstrap:
+    build: ./backend
+    env_file:
+      - ./dev/.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+    command: python /workspace/dev/scripts/compose_bootstrap.py
+    volumes:
+      - ./:/workspace:ro
+      - ${AIRFLOW_DATA_HOST_PATH}:/bootstrap-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      flyway:
+        condition: service_completed_successfully
+    restart: 'no'

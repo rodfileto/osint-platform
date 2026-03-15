@@ -43,8 +43,8 @@ No VS Code, selecione o interpretador conforme o contexto:
 # 1. Configurar variáveis de ambiente
 cp .env.example .env
 
-# 2. Subir stack principal (app + infra compartilhada)
-docker compose --env-file .env up -d --build
+# 2. Subir stack principal (decisão explícita sobre migrations)
+./scripts/start-prod-like.sh --apply-migrations
 ```
 
 O `Quick Start` do compose raiz sobe o stack principal do produto: frontend, backend, PostgreSQL, Neo4j, Redis, MinIO e Flyway. Airflow fica fora do startup padrão e pode ser iniciado separadamente com o profile `airflow`.
@@ -55,7 +55,7 @@ Para rodar localmente com Django em Gunicorn, frontend em build de producao, Whi
 
 ```bash
 cp .env.example .env
-docker compose --env-file .env up -d --build
+./scripts/start-prod-like.sh --apply-migrations
 ```
 
 URLs esperadas nesse modo:
@@ -70,17 +70,24 @@ Nesse modo:
 - media e exports gerados pelo backend usam MinIO via API S3
 - o ambiente dev continua isolado em `dev/`
 - Airflow fica separado do startup padrão e não sobe junto com o app
+- o startup prod-like exige decisão explícita sobre Flyway via `--apply-migrations` ou `--skip-migrations`
 
 Para subir Airflow separadamente quando precisar:
 
 ```bash
-docker compose --env-file .env --profile airflow up -d airflow-init airflow-webserver airflow-scheduler airflow-triggerer
+./scripts/start-prod-like.sh --skip-migrations --with-airflow
+```
+
+Ou, se o app já estiver de pé:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml --profile airflow up -d airflow-init airflow-webserver airflow-scheduler airflow-triggerer
 ```
 
 Para parar apenas o grupo do Airflow:
 
 ```bash
-docker compose --env-file .env stop airflow-webserver airflow-scheduler airflow-triggerer
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop airflow-webserver airflow-scheduler airflow-triggerer
 ```
 
 Para carregar ou atualizar manualmente a geografia canônica brasileira no schema `geo`:
@@ -125,6 +132,10 @@ chmod +x dev/scripts/*.sh
 ```
 
 Documentação específica: [dev/README.md](dev/README.md)
+
+O compose raiz agora define apenas a base compartilhada. As diferenças de execução ficam em [compose.prod.yml](compose.prod.yml) e [compose.dev.yml](compose.dev.yml), reduzindo drift entre dev e prod-like para serviços como Flyway e dependências de infraestrutura.
+
+Para reduzir risco operacional, o prod-like não aplica mais migrations implicitamente pelo startup do backend. O runner [scripts/start-prod-like.sh](scripts/start-prod-like.sh) exige uma decisão explícita: `--apply-migrations` ou `--skip-migrations`.
 
 ### Reset Completo do Ambiente
 

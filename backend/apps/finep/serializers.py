@@ -378,6 +378,9 @@ class FinepResumoCnaeSerializer(serializers.Serializer):
 class FinepResumoMunicipioSerializer(serializers.Serializer):
     municipio_nome = serializers.CharField()
     uf = serializers.CharField(allow_null=True)
+    municipality_ibge_code = serializers.CharField(allow_null=True)
+    latitude = serializers.FloatField(allow_null=True)
+    longitude = serializers.FloatField(allow_null=True)
     total_empresas = serializers.IntegerField()
     total_projetos = serializers.IntegerField()
     total_aprovado_finep = serializers.DecimalField(max_digits=20, decimal_places=2)

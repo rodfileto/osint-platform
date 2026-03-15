@@ -34,19 +34,25 @@ Examples:
 Run migrations:
 
 ```bash
-./infrastructure/postgres/run-flyway.sh migrate
+./dev/scripts/run-flyway.sh migrate
+# or, for the prod-like stack
+./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
 Show migration status:
 
 ```bash
-./infrastructure/postgres/run-flyway.sh info
+./dev/scripts/run-flyway.sh info
+# or
+./infrastructure/postgres/run-flyway.sh --env prod-like info
 ```
 
 Validate migration files:
 
 ```bash
-./infrastructure/postgres/run-flyway.sh validate
+./dev/scripts/run-flyway.sh validate
+# or
+./infrastructure/postgres/run-flyway.sh --env prod-like validate
 ```
 
 ## Notes

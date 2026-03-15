@@ -1,0 +1,105 @@
+x-airflow-prod-env: &airflow-prod-env
+  env_file:
+    - ./.env
+
+services:
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"; do
+          sleep 2
+        done
+        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}"
+        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}"
+    restart: 'no'
+
+  backend:
+    command: /app/entrypoint.prod.sh
+    env_file:
+      - ./.env
+    ports:
+      - ${BACKEND_PORT:-8000}:8000
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000}
+      MINIO_STORAGE_ENABLED: ${MINIO_STORAGE_ENABLED:-true}
+      MINIO_ENDPOINT_URL: ${MINIO_ENDPOINT_URL:-http://minio:9000}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_STORAGE_BUCKET_MEDIA: ${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}
+      MINIO_STORAGE_BUCKET_EXPORTS: ${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}
+      MINIO_MEDIA_LOCATION: ${MINIO_MEDIA_LOCATION:-media}
+      MINIO_EXPORTS_LOCATION: ${MINIO_EXPORTS_LOCATION:-exports}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    env_file:
+      - ./.env
+    ports:
+      - ${FRONTEND_PORT:-3000}:3000
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000 >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  geo-bootstrap:
+    build: ./backend
+    command: python /workspace/pipelines/scripts/geo/load_br_geo_reference.py
+    env_file:
+      - ./.env
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./:/workspace:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  airflow-webserver:
+    <<: *airflow-prod-env
+
+  airflow-scheduler:
+    <<: *airflow-prod-env
+
+  airflow-triggerer:
+    <<: *airflow-prod-env
+
+  airflow-init:
+    <<: *airflow-prod-env
+
+  airflow-cli:
+    <<: *airflow-prod-env
