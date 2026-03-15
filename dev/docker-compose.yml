@@ -1,0 +1,239 @@
+x-airflow-common:
+  &airflow-common
+  build:
+    context: ..
+    dockerfile: infrastructure/airflow/Dockerfile
+  image: osint-platform-airflow-dev:latest
+  env_file:
+    - .env
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
+    TZ: America/Sao_Paulo
+  volumes:
+    - ../pipelines/dags:/opt/airflow/dags
+    - ../pipelines/logs:/opt/airflow/logs
+    - ../pipelines/plugins:/opt/airflow/plugins
+    - ../pipelines/scripts:/opt/airflow/scripts
+    - ${AIRFLOW_DATA_HOST_PATH}:/opt/airflow/data
+    - ${AIRFLOW_TEMP_SSD_HOST_PATH}:/opt/airflow/temp_ssd
+  user: ${AIRFLOW_UID:-50000}:0
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: osint_dev_postgres
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM}
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=50
+      - -c
+      - max_worker_processes=4
+      - -c
+      - max_parallel_workers=4
+      - -c
+      - max_parallel_workers_per_gather=2
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - min_wal_size=256MB
+      - -c
+      - max_wal_size=1GB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - default_statistics_target=100
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ}
+      PGTZ: ${TZ}
+    volumes:
+      - ${POSTGRES_DATA_HOST_PATH}:/var/lib/postgresql/data
+    ports:
+      - ${POSTGRES_EXPOSE_PORT}:5432
+    shm_size: ${POSTGRES_SHM_SIZE}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: osint_dev_neo4j
+    ports:
+      - ${NEO4J_HTTP_PORT}:7474
+      - ${NEO4J_BOLT_PORT}:7687
+    volumes:
+      - ${NEO4J_DATA_HOST_PATH}:/data
+      - ../infrastructure/neo4j/plugins:/plugins
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
+      NEO4J_apoc_export_file_enabled: 'true'
+      NEO4J_apoc_import_file_enabled: 'true'
+      NEO4J_apoc_import_file_use__neo4j__config: 'true'
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE}
+      NEO4J_dbms_memory_transaction_total_max: ${NEO4J_TX_MEMORY}
+      TZ: ${TZ}
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: osint_dev_redis
+    ports:
+      - ${REDIS_EXPOSE_PORT}:6379
+    command: redis-server --appendonly yes
+    volumes:
+      - ./volumes/redis/data:/data
+    environment:
+      TZ: ${TZ}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: osint_dev_minio
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - ${MINIO_DATA_HOST_PATH}:/data
+    ports:
+      - ${MINIO_API_PORT}:9000
+      - ${MINIO_CONSOLE_PORT}:9001
+    restart: unless-stopped
+
+  flyway:
+    image: flyway/flyway:11-alpine
+    container_name: osint_dev_flyway
+    command: migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
+      FLYWAY_DEFAULT_SCHEMA: public
+      FLYWAY_TABLE: flyway_schema_history
+      FLYWAY_SCHEMAS: cnpj,finep,airflow,naturalization,sanctions,contracts
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep
+      FLYWAY_VALIDATE_MIGRATION_NAMING: 'true'
+      FLYWAY_CLEAN_DISABLED: 'true'
+      FLYWAY_CONNECT_RETRIES: '60'
+      TZ: ${TZ}
+    volumes:
+      - ../infrastructure/postgres/migrations:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build: ../backend
+    container_name: osint_dev_backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ../backend:/app
+    ports:
+      - ${BACKEND_PORT}:8000
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+
+  frontend:
+    build: ../frontend
+    container_name: osint_dev_frontend
+    command: npm run dev
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - ${FRONTEND_PORT}:3000
+    env_file:
+      - .env
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    depends_on:
+      - backend
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: '0:0'
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: osint_dev_airflow_webserver
+    command: webserver
+    ports:
+      - ${AIRFLOW_PORT}:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: osint_dev_airflow_scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+    restart: unless-stopped
+
+  airflow-triggerer:
+    <<: *airflow-common
+    container_name: osint_dev_airflow_triggerer
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type TriggererJob --hostname '$${HOSTNAME}'"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+    restart: unless-stopped

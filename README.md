@@ -55,6 +55,18 @@ docker-compose up -d --build
 ./pipelines/scripts/cnpj/run_pipeline.sh
 ```
 
+### Ambiente Dev com Amostra Reduzida
+
+Para subir uma réplica leve do stack completo, com portas separadas e base de amostra para CNPJ, Neo4j e FINEP:
+
+```bash
+cp dev/.env.example dev/.env
+chmod +x dev/scripts/*.sh
+./dev/scripts/start.sh
+```
+
+Documentação específica: [dev/README.md](dev/README.md)
+
 ### Reset Completo do Ambiente
 
 ```bash

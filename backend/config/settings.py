@@ -21,6 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR / 'apps'))
 
 
+def _split_csv_env(value: str | None, default: list[str]) -> list[str]:
+    if not value:
+        return default
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -137,10 +143,15 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS — permite que o frontend Next.js acesse a API Django
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+CORS_ALLOWED_ORIGINS = _split_csv_env(
+    os.environ.get('CORS_ALLOWED_ORIGINS'),
+    [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:13000',
+        'http://127.0.0.1:13000',
+    ],
+)
 CORS_ALLOW_CREDENTIALS = True
 
 # Django REST Framework
