@@ -59,7 +59,6 @@ class CompanyNetworkService:
             source_faixa_etaria: startNode(rel).faixa_etaria,
             source_porte_empresa: startNode(rel).porte_empresa,
             source_natureza_juridica: startNode(rel).natureza_juridica,
-            source_capital_social: startNode(rel).capital_social,
             target_identifier: coalesce(endNode(rel).cnpj_basico, elementId(endNode(rel))),
             target_label: coalesce(
                 endNode(rel).razao_social,
@@ -71,7 +70,6 @@ class CompanyNetworkService:
             target_cnpj_basico: endNode(rel).cnpj_basico,
             target_porte_empresa: endNode(rel).porte_empresa,
             target_natureza_juridica: endNode(rel).natureza_juridica,
-            target_capital_social: endNode(rel).capital_social,
             type: type(rel),
             qualificacao_socio: rel.qualificacao_socio,
             data_entrada_sociedade: toString(rel.data_entrada_sociedade),
@@ -119,7 +117,6 @@ class CompanyNetworkService:
                     "razao_social": empresa.get("razao_social"),
                     "porte_empresa": empresa.get("porte_empresa"),
                     "natureza_juridica": empresa.get("natureza_juridica"),
-                    "capital_social": empresa.get("capital_social"),
                     "is_core": True,
                 },
             }
@@ -141,7 +138,6 @@ class CompanyNetworkService:
                         "razao_social": rel.get("source_label") if source_kind == "empresa" else None,
                         "porte_empresa": rel.get("source_porte_empresa") if source_kind == "empresa" else None,
                         "natureza_juridica": rel.get("source_natureza_juridica") if source_kind == "empresa" else None,
-                        "capital_social": rel.get("source_capital_social") if source_kind == "empresa" else None,
                         "cpf_cnpj_socio": None if source_kind == "empresa" else rel.get("source_cpf_cnpj_socio"),
                         "identificador_socio": rel.get("source_identificador_socio"),
                         "faixa_etaria": rel.get("source_faixa_etaria"),
@@ -159,7 +155,6 @@ class CompanyNetworkService:
                         "razao_social": rel.get("target_label"),
                         "porte_empresa": rel.get("target_porte_empresa"),
                         "natureza_juridica": rel.get("target_natureza_juridica"),
-                        "capital_social": rel.get("target_capital_social"),
                         "is_core": target_id == empresa_node_id,
                     },
                 }

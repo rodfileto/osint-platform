@@ -1,8 +1,14 @@
+from pathlib import Path
+from urllib.parse import urlencode
+from django.http import FileResponse
 from django.db.models import Q
 from django.conf import settings
 from rest_framework import viewsets, mixins
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError, NotFound, APIException
+from django.urls import reverse
+from django.utils import timezone
 import unicodedata
 
 from .models import MvCompanySearch, MvCompanySearchInactive, Empresa
@@ -12,6 +18,7 @@ from .serializers import (
     CompanyNetworkResponseSerializer,
 )
 from .graph_service import CompanyNetworkService
+from .export_utils import build_export_bytes, open_export, persist_export
 
 
 def _strip_accents(text: str) -> str:
@@ -44,6 +51,87 @@ class CnpjSearchViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewse
 
     serializer_class = MvCompanySearchSerializer
     lookup_field = 'cnpj_14'
+    export_prefix = 'cnpj-search'
+
+    def _get_export_limit(self, request) -> int:
+        raw_limit = str(request.data.get('limit', request.query_params.get('limit', ''))).strip()
+        configured_limit = int(getattr(settings, 'CNPJ_EXPORT_MAX_ROWS', 5000))
+        if not raw_limit:
+            return configured_limit
+        if not raw_limit.isdigit():
+            raise ValidationError({'limit': 'Informe um limite inteiro positivo.'})
+        limit = int(raw_limit)
+        if limit < 1:
+            raise ValidationError({'limit': 'Informe um limite maior que zero.'})
+        return min(limit, configured_limit)
+
+    def _get_export_format(self, request) -> str:
+        export_format = str(request.data.get('format', request.query_params.get('format', 'csv'))).strip().lower()
+        if export_format not in {'csv', 'xlsx'}:
+            raise ValidationError({'format': 'Use `csv` ou `xlsx`.'})
+        return export_format
+
+    @action(detail=False, methods=['post'], url_path='export')
+    def export(self, request, *args, **kwargs):
+        export_limit = self._get_export_limit(request)
+        export_format = self._get_export_format(request)
+
+        queryset = self.filter_queryset(self.get_queryset())[:export_limit]
+        serializer = self.get_serializer(queryset, many=True)
+        rows = list(serializer.data)
+        if not rows:
+            raise ValidationError({'detail': 'Nenhum registro encontrado para exportacao.'})
+
+        timestamp = timezone.now().strftime('%Y%m%dT%H%M%SZ')
+        extension = 'csv' if export_format == 'csv' else 'xlsx'
+        object_key = f'{self.export_prefix}/{timestamp}.{extension}'
+        file_name = f'cnpj-search-{timestamp}.{extension}'
+
+        content, content_type = build_export_bytes(
+            rows,
+            list(self.serializer_class.Meta.fields),
+            export_format,
+        )
+        stored_key = persist_export('exports', object_key, content)
+
+        download_query = urlencode({'file': stored_key})
+        download_url = request.build_absolute_uri(
+            f"{reverse('cnpj-search-export-download')}?{download_query}"
+        )
+
+        return Response(
+            {
+                'file_name': file_name,
+                'storage_key': stored_key,
+                'download_url': download_url,
+                'content_type': content_type,
+                'row_count': len(rows),
+                'truncated': len(rows) == export_limit,
+                'limit': export_limit,
+            }
+        )
+
+    @action(detail=False, methods=['get'], url_path='export-download')
+    def export_download(self, request, *args, **kwargs):
+        file_name = request.query_params.get('file', '').strip()
+        if not file_name:
+            raise ValidationError({'file': 'Informe o caminho do arquivo exportado.'})
+        if '..' in file_name or not file_name.startswith(f'{self.export_prefix}/'):
+            raise ValidationError({'file': 'Arquivo de exportacao invalido.'})
+
+        try:
+            exported_file = open_export('exports', file_name)
+        except FileNotFoundError as exc:
+            raise NotFound('Arquivo de exportacao nao encontrado.') from exc
+
+        suffix = Path(file_name).suffix.lower()
+        content_type = 'text/csv' if suffix == '.csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        return FileResponse(
+            exported_file,
+            as_attachment=True,
+            filename=Path(file_name).name,
+            content_type=content_type,
+        )
 
     def _apply_filters(self, qs):
         """Apply common search filters to active/inactive querysets."""

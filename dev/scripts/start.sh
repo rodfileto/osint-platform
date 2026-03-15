@@ -5,6 +5,35 @@ set -euo pipefail
 DEV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$DEV_DIR/.env"
 COMPOSE_FILE="$DEV_DIR/docker-compose.yml"
+START_AIRFLOW=false
+
+usage() {
+    cat <<'EOF'
+Usage: ./dev/scripts/start.sh [--with-airflow]
+
+Options:
+  --with-airflow  Start the Airflow webserver, scheduler, and triggerer.
+  -h, --help      Show this help message.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --with-airflow)
+            START_AIRFLOW=true
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "Missing $ENV_FILE"
@@ -65,21 +94,30 @@ wait_for_postgres
 wait_for_neo4j
 
 echo "Running Flyway migrations..."
-compose run --rm flyway
-
-echo "Initializing Airflow metadata..."
-compose run --rm airflow-init
+compose up --build --abort-on-container-exit --exit-code-from flyway flyway
 
 echo "Bootstrapping dev sample data..."
-"$DEV_DIR/scripts/bootstrap-sample.sh"
+compose up --build --abort-on-container-exit --exit-code-from dev-bootstrap dev-bootstrap
 
 echo "Starting application services..."
-compose up -d --build backend frontend airflow-webserver airflow-scheduler airflow-triggerer
+compose up -d --build backend frontend
+
+if [[ "$START_AIRFLOW" == "true" ]]; then
+    echo "Initializing Airflow metadata..."
+    compose --profile airflow up --build --abort-on-container-exit --exit-code-from airflow-init airflow-init
+
+    echo "Starting Airflow services..."
+    compose --profile airflow up -d --build airflow-webserver airflow-scheduler airflow-triggerer
+fi
 
 echo
 echo "Dev stack is up."
 echo "Frontend: http://localhost:${FRONTEND_PORT}"
 echo "Backend:  http://localhost:${BACKEND_PORT}"
-echo "Airflow:  http://localhost:${AIRFLOW_PORT}"
+if [[ "$START_AIRFLOW" == "true" ]]; then
+    echo "Airflow:  http://localhost:${AIRFLOW_PORT}"
+else
+    echo "Airflow:  not started (use --with-airflow)"
+fi
 echo "Neo4j:    http://localhost:${NEO4J_HTTP_PORT}"
 echo "MinIO:    http://localhost:${MINIO_CONSOLE_PORT}"

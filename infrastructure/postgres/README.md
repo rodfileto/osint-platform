@@ -27,6 +27,7 @@ As migrations versionadas ficam em:
 
 - `infrastructure/postgres/migrations/cnpj/`
 - `infrastructure/postgres/migrations/finep/`
+- `infrastructure/postgres/migrations/geo/`
 
 Comandos principais:
 
@@ -34,6 +35,7 @@ Comandos principais:
 ./infrastructure/postgres/run-flyway.sh info
 ./infrastructure/postgres/run-flyway.sh validate
 ./infrastructure/postgres/run-flyway.sh migrate
+sh ./infrastructure/postgres/run-geo-bootstrap.sh
 ```
 
 Regras práticas:
@@ -42,6 +44,7 @@ Regras práticas:
 - Banco existente: `flyway migrate`
 - Não edite migrations já aplicadas; crie uma nova migration
 - Use versões globais únicas, por exemplo `V2026.03.07.001__cnpj_add_new_index.sql`
+- O schema `geo` segue o mesmo fluxo de Flyway e deve ser tratado como fonte canônica para geografia brasileira compartilhada
 
 ---
 
@@ -78,6 +81,16 @@ GROUP BY tc.table_name, tc.constraint_name
 ORDER BY tc.table_name;
 "
 ```
+
+### 4. Carregar geografia canônica brasileira
+
+Quando quiser popular ou atualizar o schema `geo` fora do ambiente dev, execute o loader compartilhado:
+
+```bash
+sh ./infrastructure/postgres/run-geo-bootstrap.sh
+```
+
+Esse runner garante que PostgreSQL e Flyway estejam prontos e depois executa [pipelines/scripts/geo/load_br_geo_reference.py](pipelines/scripts/geo/load_br_geo_reference.py) no stack raiz.
 
 **Saída esperada:**
 ```
@@ -204,6 +217,37 @@ SELECT * FROM cnpj.empresa WHERE razao_social ILIKE '%petrobras%' LIMIT 10;
 
 -- Buscar estabelecimentos por município
 SELECT * FROM cnpj.estabelecimento WHERE municipio = 'SAO PAULO' AND situacao_cadastral = 2 LIMIT 10;
+```
+
+### Geo: queries de validação
+
+```sql
+-- Contagem das tabelas canônicas
+SELECT COUNT(*) AS total_states FROM geo.br_state;
+SELECT COUNT(*) AS total_municipalities FROM geo.br_municipality;
+
+-- Cobertura do mapa CNPJ -> município brasileiro canônico
+SELECT
+  COUNT(*) AS mapped_rows
+FROM geo.cnpj_br_municipality_map;
+
+SELECT
+  issue_type,
+  COUNT(*) AS total
+FROM geo.cnpj_br_municipality_map_issue
+GROUP BY issue_type
+ORDER BY total DESC;
+
+-- Conferir o join pronto para consumidores do backend
+SELECT
+  cnpj_municipality_code,
+  cnpj_municipality_name,
+  municipality_ibge_code,
+  municipality_name,
+  state_abbrev
+FROM geo.v_cnpj_br_municipality
+ORDER BY cnpj_municipality_code
+LIMIT 20;
 ```
 
 ---

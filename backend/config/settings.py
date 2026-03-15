@@ -27,16 +27,29 @@ def _split_csv_env(value: str | None, default: list[str]) -> list[str]:
     return [item.strip() for item in value.split(',') if item.strip()]
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-$mk#ep^s+mn1gj!yqv@ha#8v)w8-c%d!30v8o_4dc9t6pa*^#l'
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-$mk#ep^s+mn1gj!yqv@ha#8v)w8-c%d!30v8o_4dc9t6pa*^#l',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _get_bool_env('DJANGO_DEBUG', True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = _split_csv_env(
+    os.environ.get('DJANGO_ALLOWED_HOSTS'),
+    ['localhost', '127.0.0.1'],
+)
 
 
 # Application definition
@@ -58,6 +71,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -135,7 +149,60 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = os.environ.get('DJANGO_STATIC_URL', '/static/')
+STATIC_ROOT = BASE_DIR / os.environ.get('DJANGO_STATIC_ROOT', 'staticfiles')
+
+MEDIA_URL = os.environ.get('DJANGO_MEDIA_URL', '/media/')
+MEDIA_ROOT = BASE_DIR / os.environ.get('DJANGO_MEDIA_ROOT', 'media')
+
+EXPORTS_URL = os.environ.get('DJANGO_EXPORTS_URL', '/exports/')
+EXPORTS_ROOT = BASE_DIR / os.environ.get('DJANGO_EXPORTS_ROOT', 'exports')
+CNPJ_EXPORT_MAX_ROWS = int(os.environ.get('CNPJ_EXPORT_MAX_ROWS', '5000'))
+
+MINIO_STORAGE_ENABLED = _get_bool_env('MINIO_STORAGE_ENABLED', False)
+MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY', os.environ.get('MINIO_ROOT_USER'))
+MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY', os.environ.get('MINIO_ROOT_PASSWORD'))
+MINIO_STORAGE_READY = MINIO_STORAGE_ENABLED and bool(MINIO_ACCESS_KEY and MINIO_SECRET_KEY)
+
+if MINIO_STORAGE_READY:
+    AWS_S3_ENDPOINT_URL = os.environ.get('MINIO_ENDPOINT_URL', 'http://minio:9000')
+    AWS_ACCESS_KEY_ID = MINIO_ACCESS_KEY
+    AWS_SECRET_ACCESS_KEY = MINIO_SECRET_KEY
+    AWS_S3_REGION_NAME = os.environ.get('MINIO_REGION', 'us-east-1')
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_S3_ADDRESSING_STYLE = 'path'
+    AWS_S3_USE_SSL = _get_bool_env('MINIO_STORAGE_USE_SSL', False)
+    AWS_S3_VERIFY = _get_bool_env('MINIO_STORAGE_VERIFY_SSL', False)
+    AWS_QUERYSTRING_AUTH = _get_bool_env('MINIO_STORAGE_QUERYSTRING_AUTH', True)
+    AWS_QUERYSTRING_EXPIRE = int(os.environ.get('MINIO_STORAGE_QUERYSTRING_EXPIRE', '3600'))
+    AWS_DEFAULT_ACL = None
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_S3_CUSTOM_DOMAIN = os.environ.get('MINIO_STORAGE_CUSTOM_DOMAIN') or None
+    DEFAULT_FILE_STORAGE_BACKEND = 'config.storage_backends.MediaStorage'
+    EXPORTS_STORAGE_BACKEND = 'config.storage_backends.ExportStorage'
+else:
+    DEFAULT_FILE_STORAGE_BACKEND = 'django.core.files.storage.FileSystemStorage'
+    EXPORTS_STORAGE_BACKEND = 'django.core.files.storage.FileSystemStorage'
+
+STORAGES = {
+    'default': {
+        'BACKEND': DEFAULT_FILE_STORAGE_BACKEND,
+        'OPTIONS': {} if MINIO_STORAGE_READY else {
+            'location': MEDIA_ROOT,
+            'base_url': MEDIA_URL,
+        },
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+    'exports': {
+        'BACKEND': EXPORTS_STORAGE_BACKEND,
+        'OPTIONS': {} if MINIO_STORAGE_READY else {
+            'location': EXPORTS_ROOT,
+            'base_url': EXPORTS_URL,
+        },
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -154,6 +221,16 @@ CORS_ALLOWED_ORIGINS = _split_csv_env(
 )
 CORS_ALLOW_CREDENTIALS = True
 
+CSRF_TRUSTED_ORIGINS = _split_csv_env(
+    os.environ.get('CSRF_TRUSTED_ORIGINS'),
+    [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:8000',
+        'http://127.0.0.1:8000',
+    ],
+)
+
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
@@ -166,6 +243,12 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
     ],
 }
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = _get_bool_env('DJANGO_USE_X_FORWARDED_HOST', False)
+SECURE_SSL_REDIRECT = _get_bool_env('DJANGO_SECURE_SSL_REDIRECT', False)
+SESSION_COOKIE_SECURE = _get_bool_env('DJANGO_SESSION_COOKIE_SECURE', False)
+CSRF_COOKIE_SECURE = _get_bool_env('DJANGO_CSRF_COOKIE_SECURE', False)
 
 # Neo4j
 NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://neo4j:7687')

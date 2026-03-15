@@ -1,0 +1,16 @@
+[Unit]
+Description=OSINT Platform Airflow Stack
+Requires=docker.service
+After=docker.service network-online.target osint-platform-local.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/rfileto/projects/osint-platform
+ExecStart=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env --profile airflow up -d airflow-init airflow-webserver airflow-scheduler airflow-triggerer
+ExecStop=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env stop airflow-webserver airflow-scheduler airflow-triggerer
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

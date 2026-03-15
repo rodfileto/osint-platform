@@ -13,6 +13,7 @@ This directory stores versioned PostgreSQL schema changes managed by Flyway.
 
 - `cnpj/` for CNPJ schema changes
 - `finep/` for FINEP schema changes
+- `geo/` for canonical geography schemas, boundaries, and cross-dataset mapping objects
 
 ## Naming convention
 
@@ -26,6 +27,7 @@ Examples:
 
 - `V2026.03.07.001__cnpj_add_company_search_index.sql`
 - `V2026.03.08.001__finep_add_contract_status_column.sql`
+- `V2026.03.15.001__geo_enable_postgis.sql`
 
 ## Commands
 

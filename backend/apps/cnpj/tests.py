@@ -104,6 +104,8 @@ class CompanyNetworkServiceTests(SimpleTestCase):
 		self.assertEqual(nodes_by_id["empresa:87654321"]["type"], "empresa")
 		self.assertEqual(nodes_by_id["empresa:87654321"]["label"], "Holding XPTO LTDA")
 		self.assertEqual(nodes_by_id["empresa:87654321"]["data"]["cnpj_basico"], "87654321")
+		self.assertNotIn("capital_social", nodes_by_id["empresa:12345678"]["data"])
+		self.assertNotIn("capital_social", nodes_by_id["empresa:87654321"]["data"])
 
 		edges_by_id = {edge["id"]: edge for edge in result["edges"]}
 		self.assertEqual(edges_by_id["edge:rel-pf"]["source"], "socio:***123456**")
@@ -213,6 +215,7 @@ class CompanyNetworkServiceTests(SimpleTestCase):
 		nodes_by_id = {node["id"]: node for node in result["nodes"]}
 		self.assertIn("empresa:22223333", nodes_by_id)
 		self.assertIn("socio:***999000**", nodes_by_id)
+		self.assertNotIn("capital_social", nodes_by_id["empresa:22223333"]["data"])
 		self.assertEqual(result["metadata"]["depth"], 2)
 		self.assertEqual(result["metadata"]["total_edges"], 3)
 		self.assertFalse(result["metadata"]["truncated"])

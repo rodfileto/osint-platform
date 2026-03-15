@@ -1,0 +1,16 @@
+[Unit]
+Description=OSINT Platform Local Production Stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/rfileto/projects/osint-platform
+ExecStart=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env up -d --build
+ExecStop=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env down
+RemainAfterExit=yes
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

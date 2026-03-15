@@ -35,7 +35,7 @@ services:
   # --- Data Layer ---
 
   postgres:
-    image: postgres:16
+    image: postgis/postgis:16-3.4
     container_name: osint_postgres
     command:
       - "postgres"
@@ -150,20 +150,52 @@ services:
       - "9001:9001"
     restart: always
 
+  minio-init:
+    image: minio/mc:latest
+    container_name: osint_minio_init
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}"; do
+          sleep 2
+        done
+        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}"
+        mc mb --ignore-existing "local/${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}"
+    restart: "no"
+
   # --- Application Layer ---
 
   backend:
     build: ./backend
     container_name: osint_backend
-    command: python manage.py runserver 0.0.0.0:8000
-    volumes:
-      - ./backend:/app
+    command: /app/entrypoint.prod.sh
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
       TZ: America/Sao_Paulo
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000}
+      MINIO_STORAGE_ENABLED: ${MINIO_STORAGE_ENABLED:-true}
+      MINIO_ENDPOINT_URL: ${MINIO_ENDPOINT_URL:-http://minio:9000}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      MINIO_STORAGE_BUCKET_MEDIA: ${MINIO_STORAGE_BUCKET_MEDIA:-osint-media}
+      MINIO_STORAGE_BUCKET_EXPORTS: ${MINIO_STORAGE_BUCKET_EXPORTS:-osint-exports}
+      MINIO_MEDIA_LOCATION: ${MINIO_MEDIA_LOCATION:-media}
+      MINIO_EXPORTS_LOCATION: ${MINIO_EXPORTS_LOCATION:-exports}
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,28 +203,56 @@ services:
         condition: service_completed_successfully
       neo4j:
         condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  geo-bootstrap:
+    build: ./backend
+    container_name: osint_geo_bootstrap
+    command: python /workspace/pipelines/scripts/geo/load_br_geo_reference.py
+    env_file:
+      - .env
+    environment:
+      TZ: America/Sao_Paulo
+    volumes:
+      - ./:/workspace:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    restart: "no"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: osint_frontend
-    command: npm run dev
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
     ports:
       - "3000:3000"
     env_file:
       - .env
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000 >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
   # --- Airflow Orchestration ---
 
   airflow-webserver:
     <<: *airflow-common
+    profiles:
+      - airflow
     command: webserver
     ports:
       - "8080:8080"
@@ -205,6 +265,8 @@ services:
 
   airflow-scheduler:
     <<: *airflow-common
+    profiles:
+      - airflow
     command: scheduler
     healthcheck:
       test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local"]
@@ -215,6 +277,8 @@ services:
 
   airflow-triggerer:
     <<: *airflow-common
+    profiles:
+      - airflow
     command: triggerer
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
@@ -225,6 +289,8 @@ services:
 
   airflow-init:
     <<: *airflow-common
+    profiles:
+      - airflow
     command: version
     environment:
       <<: *airflow-common-env
@@ -237,6 +303,7 @@ services:
   airflow-cli:
     <<: *airflow-common
     profiles:
+      - airflow
       - debug
     environment:
       <<: *airflow-common-env
@@ -256,8 +323,8 @@ services:
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
       FLYWAY_DEFAULT_SCHEMA: public
       FLYWAY_TABLE: flyway_schema_history
-      FLYWAY_SCHEMAS: cnpj,finep,airflow,naturalization,sanctions,contracts
-      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep
+      FLYWAY_SCHEMAS: cnpj,finep,geo,airflow,naturalization,sanctions,contracts
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo
       FLYWAY_VALIDATE_MIGRATION_NAMING: "true"
       FLYWAY_CLEAN_DISABLED: "true"
       FLYWAY_CONNECT_RETRIES: "60"

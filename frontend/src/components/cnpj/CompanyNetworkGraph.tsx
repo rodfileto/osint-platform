@@ -21,7 +21,6 @@ interface NetworkNode {
   data?: {
     cnpj_basico?: string;
     cpf_cnpj_socio?: string;
-    capital_social?: number | string | null;
     is_core?: boolean;
   };
 }
@@ -67,22 +66,6 @@ interface GraphNodeEventTarget {
 
 interface GraphNodeEvent {
   target: GraphNodeEventTarget;
-}
-
-function toNumber(value: number | string | null | undefined): number | null {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
-  const parsed = typeof value === "number" ? value : Number(String(value).replace(/,/g, "."));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function getCompanyNodeSize(capitalSocial: number | string | null | undefined, isCore: boolean): number {
-  const capital = toNumber(capitalSocial);
-  const baseSize = capital && capital > 0 ? 34 + Math.log10(capital + 1) * 7 : 48;
-  const emphasizedSize = isCore ? baseSize + 6 : baseSize;
-  return Math.max(40, Math.min(96, Math.round(emphasizedSize)));
 }
 
 function getShortLabel(label: string, type: NetworkNode["type"]): string {
@@ -149,7 +132,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
             fullLabel: node.label,
             type: node.type,
             isCore,
-            size: isCompany ? getCompanyNodeSize(node.data?.capital_social, Boolean(isCore)) : 30,
+            size: isCompany ? 48 : 30,
             nodeShape: isCompany ? "round-rectangle" : "ellipse",
             nodeColor: isCompany ? (isCore ? "#0f766e" : "#1d4ed8") : "#c2410c",
             nodeBorderColor: isCompany ? (isCore ? "#134e4a" : "#1e40af") : "#9a3412",
@@ -358,7 +341,6 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
               <span className="h-3 w-3 rounded-full bg-orange-700" />
               <span>PF / pessoa</span>
             </div>
-            <div>Empresas maiores representam maior capital social em escala log.</div>
           </div>
 
           {data.nodes.length === 0 ? (
