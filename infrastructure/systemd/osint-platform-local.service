@@ -7,8 +7,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/home/rfileto/projects/osint-platform
-ExecStart=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env up -d --build
-ExecStop=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env down
+ExecStart=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env -f /home/rfileto/projects/osint-platform/docker-compose.yml -f /home/rfileto/projects/osint-platform/compose.prod.yml up -d
+ExecStop=/usr/bin/docker compose --env-file /home/rfileto/projects/osint-platform/.env -f /home/rfileto/projects/osint-platform/docker-compose.yml -f /home/rfileto/projects/osint-platform/compose.prod.yml down
 RemainAfterExit=yes
 TimeoutStartSec=0
 

@@ -122,3 +122,38 @@ MERGE (mario)-[r7:SOCIO_DE]->(inativa)
 SET r7.qualificacao_socio = '49',
     r7.data_entrada_sociedade = date('2012-09-17'),
     r7.reference_month = '2026-02';
+
+// =====================================================
+// FINEP Empresa nodes (real proponents and executors)
+// Needed so PROPOSTO_POR / EXECUTADO_POR edges can be
+// created when finep_nlp_topic DAG runs in dev mode.
+// =====================================================
+
+// Top proponents by project count
+MERGE (n:Empresa {cnpj_basico: '18720938'}) SET n.razao_social = 'FUNDACAO DE DESENVOLVIMENTO DA PESQUISA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '74704008'}) SET n.razao_social = 'FUNDACAO DE APOIO DA UNIVERSIDADE FEDERAL DO RIO GRANDE DO SUL', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '72060999'}) SET n.razao_social = 'FUNDACAO COORDENACAO DE PROJETOS PESQUISAS E ESTUDOS TECNOLOGICOS COPPETEC', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '11735586'}) SET n.razao_social = 'FUNDACAO DE APOIO AO DESENVOLVIMENTO DA UNIVERSIDADE FEDERAL DE PERNAMBUCO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '51619104'}) SET n.razao_social = 'FUNDACAO DE CIENCIA APLICACOES E TECNOLOGIA ESPACIAIS', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '68314830'}) SET n.razao_social = 'FUNDACAO DE APOIO A UNIVERSIDADE DE SAO PAULO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '20320503'}) SET n.razao_social = 'FUNDACAO ARTHUR BERNARDES - MATRIZ', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '82895327'}) SET n.razao_social = 'FUNDACAO DE ENSINO E ENGENHARIA DE SANTA CATARINA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '06220430'}) SET n.razao_social = 'FUNDACAO DE APOIO AO DESENVOLVIMENTO DA COMPUTACAO CIENTIFICA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '42429480'}) SET n.razao_social = 'FUNDACAO UNIVERSITARIA JOSE BONIFACIO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '49607336'}) SET n.razao_social = 'FUNDACAO DE DESENVOLVIMENTO DA UNICAMP', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '05572870'}) SET n.razao_social = 'FUNDACAO DE AMPARO E DESENVOLVIMENTO DA PESQUISA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '08469280'}) SET n.razao_social = 'FUNDACAO NORTE RIO GRANDENSE DE PESQUISA E CULTURA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '14645162'}) SET n.razao_social = 'FUNDACAO DE APOIO A PESQUISA E A EXTENSAO FAPEX-BA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '64037492'}) SET n.razao_social = 'FUNDACAO CASIMIRO MONTENEGRO FILHO', n.porte_empresa = '05';
+
+// Top executors (distinct from proponents above)
+MERGE (n:Empresa {cnpj_basico: '83899526'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DE SANTA CATARINA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '92969856'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DO RIO GRANDE DO SUL', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '24134488'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DE PERNAMBUCO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '33663683'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DO RIO DE JANEIRO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '63025530'}) SET n.razao_social = 'UNIVERSIDADE DE SAO PAULO', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '17217985'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DE MINAS GERAIS', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '24365710'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DO RIO GRANDE DO NORTE', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '46068425'}) SET n.razao_social = 'UNIVERSIDADE ESTADUAL DE CAMPINAS', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '15180714'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DA BAHIA', n.porte_empresa = '05';
+MERGE (n:Empresa {cnpj_basico: '07272636'}) SET n.razao_social = 'UNIVERSIDADE FEDERAL DO CEARA', n.porte_empresa = '05';

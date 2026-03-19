@@ -24,9 +24,12 @@ install -m 0644 "$SOURCE_UNIT" "$TARGET_UNIT"
 install -m 0644 "$AIRFLOW_SOURCE_UNIT" "$AIRFLOW_TARGET_UNIT"
 systemctl daemon-reload
 systemctl enable "$UNIT_NAME"
+systemctl enable "$AIRFLOW_UNIT_NAME"
 
 if [ "${1:-}" = "--start" ]; then
   systemctl restart "$UNIT_NAME"
+  systemctl restart "$AIRFLOW_UNIT_NAME"
 fi
 
 systemctl status "$UNIT_NAME" --no-pager
+systemctl status "$AIRFLOW_UNIT_NAME" --no-pager

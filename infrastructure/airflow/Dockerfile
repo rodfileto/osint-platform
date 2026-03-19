@@ -14,4 +14,4 @@ USER airflow
 
 # Copy and install Python dependencies
 COPY pipelines/requirements.txt /requirements.txt
-RUN pip install --no-cache-dir -r /requirements.txt || true
+RUN pip install --no-cache-dir -r /requirements.txt
