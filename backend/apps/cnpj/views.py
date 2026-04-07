@@ -11,11 +11,14 @@ from django.urls import reverse
 from django.utils import timezone
 import unicodedata
 
-from .models import MvCompanySearch, MvCompanySearchInactive, Empresa
+from .models import MvCompanySearch, MvCompanySearchInactive, Empresa, Socio, Estabelecimento, QualificacaoSocio
 from .serializers import (
     MvCompanySearchSerializer,
     EmpresaDetailSerializer,
     CompanyNetworkResponseSerializer,
+    PessoaSearchResultSerializer,
+    PessoaDetailSerializer,
+    PersonNetworkResponseSerializer,
 )
 from .graph_service import CompanyNetworkService
 from .export_utils import build_export_bytes, open_export, persist_export
@@ -27,6 +30,27 @@ def _strip_accents(text: str) -> str:
         c for c in unicodedata.normalize('NFD', text.upper())
         if unicodedata.category(c) != 'Mn'
     )
+
+
+def _mask_cpf(cpf_raw: str) -> str | None:
+    """Converte CPF completo (11 dígitos) para o formato mascarado da Receita Federal: ***XXXXXX**"""
+    digits = cpf_raw.replace('.', '').replace('-', '').replace(' ', '')
+    if len(digits) != 11 or not digits.isdigit():
+        return None
+    return f"***{digits[3:9]}**"
+
+
+def _normalize_masked_cpf(cpf_masked: str) -> str | None:
+    """Valida CPF mascarado no formato Receita Federal: ***XXXXXX**."""
+    normalized = cpf_masked.strip().replace(' ', '')
+    if len(normalized) != 11:
+        return None
+    if normalized[:3] != '***' or normalized[-2:] != '**':
+        return None
+    middle = normalized[3:9]
+    if not middle.isdigit():
+        return None
+    return normalized
 
 
 class CnpjSearchViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
@@ -198,6 +222,241 @@ class CnpjSearchInactiveViewSet(CnpjSearchViewSet):
     def get_queryset(self):
         qs = MvCompanySearchInactive.objects.all()
         return self._apply_filters(qs)
+
+
+# ============================================================================
+# PESSOA (Person Search & Detail)
+# ============================================================================
+
+class PessoaSearchViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    Busca de pessoas físicas (sócios PF) no quadro societário.
+
+    Endpoints:
+        GET /api/cnpj/pessoa/search/
+
+    Filtros:
+        ?q=<nome>  busca por nome (normaliza acentos, mínimo 3 chars)
+
+    A busca retorna pares distintos (nome + cpf_mascarado), que são usados
+    para drill-down nos detalhes e na rede da pessoa.
+    """
+
+    serializer_class = PessoaSearchResultSerializer
+
+    def get_queryset(self):
+        from django.db.models import Count
+
+        q = self.request.GET.get('q', '').strip()
+
+        if len(q) < 3:
+            raise ValidationError({'q': 'Informe ao menos 3 caracteres para busca por nome.'})
+
+        # Somente sócios PF/Estrangeiro (identificador 2 e 3); PJ são empresas, não pessoas
+        qs = Socio.objects.filter(identificador_socio__in=[2, 3])
+
+        q_normalized = _strip_accents(q)
+        qs = qs.filter(nome_socio_razao_social__icontains=q_normalized)
+
+        return (
+            qs
+            .values('nome_socio_razao_social', 'cpf_cnpj_socio', 'faixa_etaria')
+            .annotate(total_empresas=Count('empresa', distinct=True))
+            .order_by('nome_socio_razao_social')
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        page = self.paginate_queryset(queryset)
+        rows = page if page is not None else queryset
+        data = [
+            {
+                'nome': row['nome_socio_razao_social'],
+                'cpf_cnpj_socio': row['cpf_cnpj_socio'],
+                'faixa_etaria': row['faixa_etaria'],
+                'total_empresas': row['total_empresas'],
+            }
+            for row in rows
+        ]
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
+
+
+class PessoaDetailViewSet(viewsets.GenericViewSet):
+    """
+    Detalhes de pessoa física por nome + CPF mascarado.
+
+    Endpoints:
+        GET /api/cnpj/pessoa/detail/?nome=<nome>&cpf_mascarado=***123456**
+        GET /api/cnpj/pessoa/{cpf}/  (compatibilidade com lookup legado)
+
+    Parâmetros:
+        nome            obrigatório no endpoint `detail`
+        cpf_mascarado   obrigatório no endpoint `detail`
+
+    Retorna as empresas em que a pessoa é/foi sócia com dados do quadro societário.
+    """
+
+    serializer_class = PessoaDetailSerializer
+    lookup_field = 'cpf'
+    lookup_value_regex = r'[0-9]{11}'
+
+    def _build_response(self, nome: str, cpf_masked: str):
+        nome_normalized = _strip_accents(nome)
+
+        socios = list(
+            Socio.objects.filter(
+                cpf_cnpj_socio=cpf_masked,
+                identificador_socio__in=[2, 3],
+                nome_socio_razao_social=nome_normalized,
+            )
+            .select_related('empresa', 'qualificacao_socio')
+            .order_by('empresa__razao_social', '-reference_month')
+        )
+
+        if not socios:
+            raise NotFound('Pessoa não encontrada para o par nome + CPF mascarado informado.')
+
+        cnpj_basicos = list({s.empresa.cnpj_basico for s in socios})
+        matrizes = {
+            e['empresa_id']: e
+            for e in Estabelecimento.objects.filter(
+                empresa_id__in=cnpj_basicos,
+                identificador_matriz_filial=1,
+            ).values(
+                'empresa_id',
+                'situacao_cadastral',
+                'uf',
+                'municipio__descricao',
+            )
+        }
+
+        qualificacao_map = dict(QualificacaoSocio.objects.values_list('codigo', 'descricao'))
+
+        seen_companies = {}
+        for socio in socios:
+            cnpj = socio.empresa.cnpj_basico
+            if cnpj in seen_companies:
+                continue
+            matriz = matrizes.get(cnpj, {})
+            qualificacao_codigo = (
+                socio.qualificacao_socio.codigo
+                if socio.qualificacao_socio is not None
+                else None
+            )
+            seen_companies[cnpj] = {
+                'cnpj_basico': cnpj,
+                'razao_social': socio.empresa.razao_social,
+                'qualificacao_socio': qualificacao_codigo,
+                'qualificacao_socio_descricao': qualificacao_map.get(qualificacao_codigo),
+                'data_entrada_sociedade': socio.data_entrada_sociedade,
+                'situacao_cadastral': matriz.get('situacao_cadastral'),
+                'uf': matriz.get('uf'),
+                'municipio_nome': matriz.get('municipio__descricao'),
+                'reference_month': socio.reference_month,
+            }
+
+        first = socios[0]
+        return Response({
+            'cpf_mascarado': cpf_masked,
+            'nome': first.nome_socio_razao_social,
+            'faixa_etaria': first.faixa_etaria,
+            'total_empresas': len(seen_companies),
+            'empresas': list(seen_companies.values()),
+        })
+
+    @action(detail=False, methods=['get'], url_path='detail')
+    def detail_lookup(self, request, *args, **kwargs):
+        nome = request.GET.get('nome', '').strip()
+        cpf_masked = _normalize_masked_cpf(request.GET.get('cpf_mascarado', ''))
+
+        if len(nome) < 3:
+            raise ValidationError({'nome': 'Informe o nome da pessoa com ao menos 3 caracteres.'})
+        if cpf_masked is None:
+            raise ValidationError({'cpf_mascarado': 'Informe um CPF mascarado válido no formato ***123456**.'})
+
+        return self._build_response(nome, cpf_masked)
+
+    def retrieve(self, request, *args, **kwargs):
+        cpf_raw = kwargs['cpf']
+        cpf_masked = _mask_cpf(cpf_raw)
+        if cpf_masked is None:
+            raise ValidationError({'cpf': 'Informe um CPF válido com 11 dígitos numéricos.'})
+
+        nome_param = request.GET.get('nome', '').strip()
+        if len(nome_param) < 3:
+            raise ValidationError({'nome': 'Informe o nome da pessoa para desambiguar o CPF mascarado.'})
+
+        return self._build_response(nome_param, cpf_masked)
+
+
+class PessoaNetworkViewSet(viewsets.GenericViewSet):
+    """
+    Rede de co-propriedade de uma pessoa física via Neo4j.
+
+    Endpoints:
+        GET /api/cnpj/pessoa-network/detail/?nome=<nome>&cpf_mascarado=***123456**
+        GET /api/cnpj/pessoa-network/{cpf}/  (compatibilidade com lookup legado)
+
+    Parâmetros:
+        nome            obrigatório no endpoint `detail`
+        cpf_mascarado   obrigatório no endpoint `detail`
+        depth           profundidade da rede (1 = empresas diretas; 2 = co-sócios)
+    """
+
+    serializer_class = PersonNetworkResponseSerializer
+    lookup_field = 'cpf'
+    lookup_value_regex = r'[0-9]{11}'
+    network_service = CompanyNetworkService()
+
+    def _retrieve_network(self, nome: str, cpf_masked: str, depth_raw: str):
+        nome_normalized = _strip_accents(nome)
+
+        if not depth_raw.isdigit():
+            raise ValidationError({'depth': 'Informe uma profundidade válida com valor inteiro positivo.'})
+
+        depth = int(depth_raw)
+        max_depth = max(1, settings.NEO4J_MAX_NETWORK_DEPTH)
+        if depth < 1 or depth > max_depth:
+            raise ValidationError({'depth': f'Informe uma profundidade entre 1 e {max_depth}.'})
+
+        try:
+            payload = self.network_service.get_person_network(cpf_masked, nome=nome_normalized, depth=depth)
+        except RuntimeError as exc:
+            raise APIException('Falha ao consultar rede no Neo4j.') from exc
+
+        if payload is None:
+            raise NotFound('Pessoa não encontrada na base Neo4j para o par nome + CPF mascarado informado.')
+
+        serializer = self.get_serializer(payload)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='detail')
+    def detail_lookup(self, request, *args, **kwargs):
+        nome = request.GET.get('nome', '').strip()
+        cpf_masked = _normalize_masked_cpf(request.GET.get('cpf_mascarado', ''))
+        depth_raw = request.GET.get('depth', '1').strip()
+
+        if len(nome) < 3:
+            raise ValidationError({'nome': 'Informe o nome da pessoa com ao menos 3 caracteres.'})
+        if cpf_masked is None:
+            raise ValidationError({'cpf_mascarado': 'Informe um CPF mascarado válido no formato ***123456**.'})
+
+        return self._retrieve_network(nome, cpf_masked, depth_raw)
+
+    def retrieve(self, request, *args, **kwargs):
+        cpf_raw = kwargs['cpf']
+        cpf_masked = _mask_cpf(cpf_raw)
+        if cpf_masked is None:
+            raise ValidationError({'cpf': 'Informe um CPF válido com 11 dígitos numéricos.'})
+
+        nome_param = request.GET.get('nome', '').strip()
+        depth_raw = request.GET.get('depth', '1').strip()
+        if len(nome_param) < 3:
+            raise ValidationError({'nome': 'Informe o nome da pessoa para desambiguar o CPF mascarado.'})
+
+        return self._retrieve_network(nome_param, cpf_masked, depth_raw)
 
 
 class EmpresaViewSet(mixins.RetrieveModelMixin, viewsets.GenericViewSet):

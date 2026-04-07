@@ -21,4 +21,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/cnpj/', include('cnpj.urls')),
     path('api/finep/', include('finep.urls')),
+    path('api/inpi/', include('inpi.urls')),
 ]

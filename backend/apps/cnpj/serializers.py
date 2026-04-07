@@ -311,3 +311,54 @@ class CompanyNetworkResponseSerializer(serializers.Serializer):
     nodes = serializers.ListField(child=serializers.DictField())
     edges = serializers.ListField(child=serializers.DictField())
     metadata = CompanyNetworkMetadataSerializer()
+
+
+# ============================================================================
+# PESSOA (Person) Serializers
+# ============================================================================
+
+class PessoaSearchResultSerializer(serializers.Serializer):
+    """Resultado de busca de pessoa — um par (nome + cpf_mascarado) distinto."""
+    nome = serializers.CharField()
+    cpf_cnpj_socio = serializers.CharField()
+    faixa_etaria = serializers.IntegerField(allow_null=True)
+    total_empresas = serializers.IntegerField()
+
+
+class SocioEmpresaSerializer(serializers.Serializer):
+    """Uma empresa em que a pessoa é/foi sócia."""
+    cnpj_basico = serializers.CharField()
+    razao_social = serializers.CharField()
+    qualificacao_socio = serializers.CharField(allow_null=True)
+    qualificacao_socio_descricao = serializers.CharField(allow_null=True)
+    data_entrada_sociedade = serializers.DateField(allow_null=True)
+    situacao_cadastral = serializers.CharField(allow_null=True)
+    uf = serializers.CharField(allow_null=True)
+    municipio_nome = serializers.CharField(allow_null=True)
+    reference_month = serializers.CharField()
+
+
+class PessoaDetailSerializer(serializers.Serializer):
+    """Detalhes de uma pessoa física: empresas do quadro societário."""
+    cpf_mascarado = serializers.CharField()
+    nome = serializers.CharField(allow_null=True)
+    faixa_etaria = serializers.IntegerField(allow_null=True)
+    total_empresas = serializers.IntegerField()
+    empresas = SocioEmpresaSerializer(many=True)
+
+
+class PersonNetworkMetadataSerializer(serializers.Serializer):
+    core_cpf_mascarado = serializers.CharField()
+    core_nome = serializers.CharField(allow_null=True)
+    depth = serializers.IntegerField()
+    total_nodes = serializers.IntegerField()
+    total_edges = serializers.IntegerField()
+    total_relationships = serializers.IntegerField()
+    truncated = serializers.BooleanField()
+    max_edges = serializers.IntegerField()
+
+
+class PersonNetworkResponseSerializer(serializers.Serializer):
+    nodes = serializers.ListField(child=serializers.DictField())
+    edges = serializers.ListField(child=serializers.DictField())
+    metadata = PersonNetworkMetadataSerializer()

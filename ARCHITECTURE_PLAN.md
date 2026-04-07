@@ -22,14 +22,20 @@
 
 ## 1. Camada de Processamento (Pipelines)
 
-Cada fonte de dados (CNPJ, Sanções, Contratos) tem seu próprio pipeline independente:
+Cada fonte de dados tem seu próprio pipeline independente:
 
 - Localização: `/pipelines/{fonte}/`
 - Ferramentas: **DuckDB** (transformações bulk), **Python**, **Apache Airflow** (orquestração)
-- Fluxo padrão: `Receita Federal → MinIO (raw ZIP) → Extract/Transform (Parquet) → Load PostgreSQL → MatView Refresh → Load Neo4j`
 - DAGs encadeadas via `TriggerDagRunOperator` — cada DAG aciona a próxima ao terminar
-- Outputs: tabelas limpas no PostgreSQL, nós/arestas no Neo4j, Parquet como intermediário
-- Dumps mensais são **full snapshots** — apenas o mês mais recente é processado
+- Outputs: tabelas limpas no PostgreSQL, nós/arestas no Neo4j, MinIO como raw store
+
+**Pipelines implementados:**
+
+| Fonte | Fluxo | Cadência |
+|-------|-------|----------|
+| CNPJ (Receita Federal) | `download → transform (Parquet) → load_postgres → load_neo4j` | Mensal (full snapshot) |
+| FINEP (projetos de inovação) | `download → load_postgres → nlp_topics → load_neo4j` | Sob demanda |
+| INPI (patentes) | `download → load_postgres → load_neo4j` | Semanal (detecção via ETag/Last-Modified) |
 
 ---
 
@@ -39,10 +45,19 @@ Cada fonte de dados (CNPJ, Sanções, Contratos) tem seu próprio pipeline indep
 
 Cluster único com separação por schema:
 
-- `cnpj.*` — empresas, estabelecimentos, manifests de pipeline
-- `sanctions.*` — entidades sancionadas
-- `contracts.*` — contratos públicos
-- `public.*` — auth compartilhada
+| Schema | Conteúdo | Status |
+|--------|----------|--------|
+| `cnpj.*` | Empresas, estabelecimentos, sócios, manifests de pipeline | ✅ Implementado |
+| `finep.*` | Projetos de inovação, liberações, tópicos NLP | ✅ Implementado |
+| `inpi.*` | 10 tabelas de patentes + `mv_patent_search` (145k patentes) | ✅ Implementado |
+| `sanctions.*` | Entidades sancionadas | Planejado |
+| `contracts.*` | Contratos públicos | Planejado |
+| `public.*` | Auth compartilhada | — |
+
+**Schema `inpi.*` — tabelas implementadas:**  
+`patentes_dados_bibliograficos` (tabela pai, 145k) · `patentes_conteudo` · `patentes_inventores` · `patentes_depositantes` · `patentes_classificacao_ipc` · `patentes_despachos` · `patentes_prioridades` · `patentes_procuradores` · `patentes_vinculos` · `patentes_renumeracoes`  
+Materialized view: `mv_patent_search` (PI=83.7k / MU=50.5k / MI=9.5k / PP=1.2k)  
+Cross-domain: `patentes_depositantes.cnpj_basico_resolved` — CNPJ de pessoa jurídica resolvido no load para JOIN com `cnpj.empresa` e para arestas Neo4j.
 
 **Desempenho:** dados históricos (HDD) + Materialized Views de busca (SSD via Tablespace).
 Isso permite que a camada de busca do frontend use I/O de SSD sem pagar o custo do HDD para dados raw.
@@ -54,13 +69,40 @@ Isso permite que a camada de busca do frontend use I/O de SSD sem pagar o custo 
 
 ### Neo4j — Camada de Grafo
 
-Grafo unificado entre todas as fontes para inteligência cross-domínio:
+Grafo unificado entre todas as fontes para inteligência cross-domínio.
 
-- **Nodes (implementados):** `Empresa` (66.6M), `Estabelecimento` (69.1M)
-- **Nodes (planejados):** `Pessoa`, `Contrato`, `SanctionedEntity`
-- **Relationships (planejados):** `SOCIO_DE`, `CONTRATOU`, `DOADOR_DE`, `LOCALIZADO_EM`
+**Nodes implementados:**
 
-Permite consultas como: *"Um sócio da Empresa A aparece em lista de sanções e venceu licitações públicas?"*
+| Label | Chave | Contagem (prod) | Fonte |
+|-------|-------|-----------------|-------|
+| `Empresa` | `cnpj_basico` | 66.6M | CNPJ |
+| `Pessoa` | `pessoa_id` (SHA-256) | 17.5M+ | CNPJ sócios |
+| `ProjetoFinep` | `id` | ~25k | FINEP operação direta |
+| `Patente` | `codigo_interno` | 145k | INPI |
+| `ClasseIPC` | `simbolo` | 36.3k | INPI |
+| `DepositantePF` | `depositante_id` (SHA-256) | 13.5k | INPI |
+
+**Relationships implementados:**
+
+| Tipo | De → Para | Fonte |
+|------|-----------|-------|
+| `SOCIO_DE` | `Pessoa → Empresa` | CNPJ |
+| `PROPOSTO_POR` | `ProjetoFinep → Empresa` | FINEP |
+| `EXECUTADO_POR` | `ProjetoFinep → Empresa` | FINEP |
+| `SIMILAR_TO` | `ProjetoFinep → ProjetoFinep` | FINEP NLP (k-NN cosine) |
+| `DEPOSITOU` | `Empresa → Patente` | INPI (via `cnpj_basico_resolved`) |
+| `DEPOSITOU` | `DepositantePF → Patente` | INPI (pessoa física) |
+| `CLASSIFICADA_COMO` | `Patente → ClasseIPC` | INPI |
+| `VINCULADA_A` | `Patente → Patente` | INPI (A=Alteração, I=Incorporação) |
+
+**Nodes planejados:** `Contrato`, `SanctionedEntity`  
+**Relationships planejados:** `CONTRATOU`, `DOADOR_DE`, `LOCALIZADO_EM`
+
+**Deduplicação de identidade:**  
+`Pessoa` e `DepositantePF` usam SHA-256 de campos normalizados como chave estável — permite MERGE idempotente e consolida múltiplas aparições de uma mesma pessoa em um único nó.  
+Linkage cross-domínio: `Empresa.cnpj_basico` é a chave de junção universal entre CNPJ, FINEP e INPI.
+
+Permite consultas como: *"Quais empresas depositaram patentes em defesa (IPC F41\*) e também aparecem em projetos FINEP de mesmo tema?"*
 
 **Layout atual de volumes:**
 - Data dir Neo4j: `/srv/osint/neo4j/data` (NVMe)

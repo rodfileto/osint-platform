@@ -1,0 +1,23 @@
+# Cloudflare Tunnel configuration
+# This file is used by cloudflared inside the Docker container.
+# The tunnel token is passed via CLOUDFLARE_TUNNEL_TOKEN env var at runtime,
+# so no credentials file is needed here.
+
+tunnel: ${CLOUDFLARE_TUNNEL_ID}
+credentials-file: /etc/cloudflared/creds.json
+
+ingress:
+  # Public-facing frontend (Next.js)
+  - hostname: ${CF_APP_DOMAIN}
+    service: http://frontend:3000
+
+  # Backend API (Django) - served under /api/* path via hostname
+  - hostname: ${CF_API_DOMAIN}
+    service: http://backend:8000
+
+  # Airflow webserver (optional, restrict access with Cloudflare Access)
+  - hostname: ${CF_AIRFLOW_DOMAIN}
+    service: http://airflow-webserver:8080
+
+  # Catch-all: required by cloudflared
+  - service: http_status:404

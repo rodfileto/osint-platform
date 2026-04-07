@@ -32,7 +32,9 @@ const navItems: NavItem[] = [
     name: "Dashboard",
     subItems: [
       { name: "Pesquisa CNPJ", path: "/", pro: false },
-      { name: "Painel FINEP", path: "/finep", pro: false, new: true },
+      { name: "Pesquisa Pessoas", path: "/pessoa", pro: false },
+      { name: "Painel FINEP", path: "/finep", pro: false },
+      { name: "Painel INPI", path: "/inpi", pro: false, new: true },
     ],
   },
   {

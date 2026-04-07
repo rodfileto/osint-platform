@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     # Project apps
     'cnpj',
     'finep',
+    'inpi',
 ]
 
 MIDDLEWARE = [
