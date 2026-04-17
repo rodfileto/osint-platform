@@ -162,9 +162,10 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ./frontend-vite
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_WS_URL: ${VITE_WS_URL:-}
 
   airflow-webserver:
     <<: *airflow-common
