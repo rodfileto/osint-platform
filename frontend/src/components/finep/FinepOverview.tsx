@@ -1,30 +1,13 @@
-"use client";
-
-import React, { useEffect, useMemo, useState } from "react";
-import axios from "axios";
-
+import { useEffect, useMemo, useState } from "react";
+import { isAxiosError } from "axios";
 import ComponentCard from "@/components/common/ComponentCard";
 import FinepMunicipioResourceMap from "@/components/finep/FinepMunicipioResourceMap";
 import type { FinepMunicipioMapFeatureCollection } from "@/components/finep/FinepMunicipioResourceMap";
-import Input from "@/components/form/input/InputField";
+import InputField from "@/components/form/input/InputField";
 import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import apiClient from "@/lib/apiClient";
-import {
-  ArrowDownIcon,
-  ArrowUpIcon,
-  BoxCubeIcon,
-  DollarLineIcon,
-  GroupIcon,
-  PieChartIcon,
-} from "@/icons";
 
 interface FinepResumoGeral {
   total_empresas: number;
@@ -104,37 +87,7 @@ interface PaginatedResponse<T> {
   results: T[];
 }
 
-const UF_OPTIONS = [
-  "",
-  "AC",
-  "AL",
-  "AM",
-  "AP",
-  "BA",
-  "CE",
-  "DF",
-  "ES",
-  "GO",
-  "MA",
-  "MG",
-  "MS",
-  "MT",
-  "PA",
-  "PB",
-  "PE",
-  "PI",
-  "PR",
-  "RJ",
-  "RN",
-  "RO",
-  "RR",
-  "RS",
-  "SC",
-  "SE",
-  "SP",
-  "TO",
-  "NA",
-];
+const UF_OPTIONS = ["", "AC", "AL", "AM", "AP", "BA", "CE", "DF", "ES", "GO", "MA", "MG", "MS", "MT", "PA", "PB", "PE", "PI", "PR", "RJ", "RN", "RO", "RR", "RS", "SC", "SE", "SP", "TO", "NA"];
 
 function formatMoney(value: string | number | null | undefined): string {
   const amount = Number(value ?? 0);
@@ -156,43 +109,28 @@ function formatCompactMoney(value: string | number | null | undefined): string {
 }
 
 function formatCnpj(cnpj: string): string {
-  return cnpj.replace(
-    /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,
-    "$1.$2.$3/$4-$5"
-  );
+  return cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
 }
 
 function sourceLabel(source: string): string {
   const labels: Record<string, string> = {
     ancine: "Ancine",
-    credito_descentralizado: "Crédito Descentralizado",
+    credito_descentralizado: "Credito Descentralizado",
     investimento: "Investimento",
-    operacao_direta: "Operação Direta",
+    operacao_direta: "Operacao Direta",
   };
   return labels[source] ?? source;
 }
 
-function formatCnaeLabel(
-  cnaeDescricao: string | null | undefined,
-  cnaeCodigo: string | null | undefined
-): string {
-  if (cnaeDescricao) {
-    return cnaeDescricao;
-  }
-
-  if (cnaeCodigo) {
-    return `CNAE ${cnaeCodigo}`;
-  }
-
-  return "CNAE não identificado";
+function formatCnaeLabel(cnaeDescricao: string | null | undefined, cnaeCodigo: string | null | undefined): string {
+  if (cnaeDescricao) return cnaeDescricao;
+  if (cnaeCodigo) return `CNAE ${cnaeCodigo}`;
+  return "CNAE nao identificado";
 }
 
 function barWidth(value: string | number, maxValue: number): string {
   const current = Number(value);
-  if (!maxValue || !Number.isFinite(current)) {
-    return "0%";
-  }
-
+  if (!maxValue || !Number.isFinite(current)) return "0%";
   return `${Math.max(8, (current / maxValue) * 100)}%`;
 }
 
@@ -201,6 +139,19 @@ function formatGini(value: number | null | undefined): string {
     minimumFractionDigits: 3,
     maximumFractionDigits: 3,
   }).format(value ?? 0);
+}
+
+function MetricCard({ title, value, note, accentClass }: { title: string; value: string; note?: string; accentClass: string }) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
+      <div className={`flex h-12 w-12 items-center justify-center rounded-xl text-sm font-semibold ${accentClass}`}>{title.slice(0, 3).toUpperCase()}</div>
+      <div className="mt-5">
+        <p className="text-sm text-gray-500 dark:text-gray-400">{title}</p>
+        <h3 className="mt-2 text-2xl font-semibold text-gray-800 dark:text-white/90">{value}</h3>
+        {note ? <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">{note}</p> : null}
+      </div>
+    </div>
+  );
 }
 
 export default function FinepOverview() {
@@ -223,12 +174,8 @@ export default function FinepOverview() {
       setError(null);
 
       const params: Record<string, string> = {};
-      if (appliedQuery.trim()) {
-        params.q = appliedQuery.trim();
-      }
-      if (appliedUf) {
-        params.uf = appliedUf;
-      }
+      if (appliedQuery.trim()) params.q = appliedQuery.trim();
+      if (appliedUf) params.uf = appliedUf;
 
       try {
         const [overviewResponse, companiesResponse, ufResponse, cnaeResponse, municipioResponse, municipioMapResponse] = await Promise.all([
@@ -250,7 +197,7 @@ export default function FinepOverview() {
         setMunicipioMapData(municipioMapResponse.data);
       } catch (fetchError) {
         const message =
-          axios.isAxiosError(fetchError) && fetchError.response
+          isAxiosError(fetchError) && fetchError.response
             ? `Erro ${fetchError.response.status}: ${fetchError.response.statusText}`
             : "Erro ao carregar o panorama da FINEP.";
         setError(message);
@@ -259,28 +206,13 @@ export default function FinepOverview() {
       }
     };
 
-    fetchOverview();
+    void fetchOverview();
   }, [appliedQuery, appliedUf]);
 
-  const topUfMax = useMemo(() => {
-    return Math.max(...(ufs?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0]));
-  }, [ufs]);
-
-  const topCnaeMax = useMemo(() => {
-    return Math.max(...(cnaes?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0]));
-  }, [cnaes]);
-
-  const sourceBreakdown = useMemo(() => {
-    if (!overview) {
-      return [];
-    }
-
-    return Object.entries(overview.projetos_por_fonte).sort((left, right) => right[1] - left[1]);
-  }, [overview]);
-
-  const topMunicipioMax = useMemo(() => {
-    return Math.max(...(municipios?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0]));
-  }, [municipios]);
+  const topUfMax = useMemo(() => Math.max(...(ufs?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0])), [ufs]);
+  const topCnaeMax = useMemo(() => Math.max(...(cnaes?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0])), [cnaes]);
+  const topMunicipioMax = useMemo(() => Math.max(...(municipios?.results.map((item) => Number(item.total_aprovado_finep)) ?? [0])), [municipios]);
+  const sourceBreakdown = useMemo(() => (overview ? Object.entries(overview.projetos_por_fonte).sort((left, right) => right[1] - left[1]) : []), [overview]);
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -299,11 +231,11 @@ export default function FinepOverview() {
     <div className="space-y-6">
       <ComponentCard
         title="Radar FINEP"
-        desc="Visão geral dos projetos apoiados, com recortes por empresa, UF e atividade econômica."
+        desc="Visao geral dos projetos apoiados, com recortes por empresa, UF e atividade economica."
       >
         <form className="flex flex-col gap-3 lg:flex-row lg:items-end" onSubmit={handleSubmit}>
           <div className="flex-1">
-            <Input
+            <InputField
               id="finep-query"
               type="text"
               placeholder="Buscar por empresa, CNAE ou instrumento"
@@ -312,134 +244,79 @@ export default function FinepOverview() {
             />
           </div>
           <div className="w-full lg:w-40">
-            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              UF
-            </label>
+            <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">UF</label>
             <select
               className="h-11 w-full rounded-lg border border-gray-300 bg-white px-4 text-sm text-gray-800 outline-none transition focus:border-brand-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white/90"
               value={selectedUf}
               onChange={(event) => setSelectedUf(event.target.value)}
             >
               {UF_OPTIONS.map((uf) => (
-                <option key={uf || "all"} value={uf}>
-                  {uf || "Todas as UFs"}
-                </option>
+                <option key={uf || "all"} value={uf}>{uf || "Todas as UFs"}</option>
               ))}
             </select>
           </div>
           <div className="flex gap-3">
-            <Button type="submit" disabled={loading}>
-              {loading ? "Atualizando..." : "Aplicar"}
-            </Button>
-            <Button type="button" variant="outline" onClick={handleReset}>
-              Limpar
-            </Button>
+            <Button type="submit" disabled={loading}>{loading ? "Atualizando..." : "Aplicar"}</Button>
+            <Button type="button" variant="outline" onClick={handleReset}>Limpar</Button>
           </div>
         </form>
 
-        {overview && (
+        {overview ? (
           <div className="mt-4 flex flex-wrap gap-2">
             {overview.fontes.map((source) => (
-              <Badge key={source} color="info" size="sm">
-                {sourceLabel(source)}
-              </Badge>
+              <Badge key={source} color="info" size="sm">{sourceLabel(source)}</Badge>
             ))}
           </div>
-        )}
+        ) : null}
       </ComponentCard>
 
-      {error && (
-        <div className="rounded-2xl border border-error-200 bg-error-50 px-5 py-4 text-sm text-error-700 dark:border-error-500/20 dark:bg-error-500/10 dark:text-error-400">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
           {error}
         </div>
-      )}
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50 text-brand-500 dark:bg-brand-500/15 dark:text-brand-400">
-            <GroupIcon className="size-6" />
-          </div>
-          <div className="mt-5">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Empresas apoiadas</p>
-            <h3 className="mt-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
-              {loading || !overview ? "..." : overview.total_empresas.toLocaleString("pt-BR")}
-            </h3>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-success-50 text-success-600 dark:bg-success-500/15 dark:text-success-500">
-            <BoxCubeIcon className="size-6" />
-          </div>
-          <div className="mt-5">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Projetos mapeados</p>
-            <h3 className="mt-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
-              {loading || !overview ? "..." : overview.total_projetos.toLocaleString("pt-BR")}
-            </h3>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-warning-50 text-warning-600 dark:bg-warning-500/15 dark:text-warning-400">
-            <DollarLineIcon className="size-6" />
-          </div>
-          <div className="mt-5">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Valor aprovado FINEP</p>
-            <h3 className="mt-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
-              {loading || !overview ? "..." : formatCompactMoney(overview.total_aprovado_finep)}
-            </h3>
-            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Ticket médio {loading || !overview ? "..." : formatCompactMoney(overview.ticket_medio_projeto)}
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 dark:border-gray-800 dark:bg-white/[0.03]">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-light-50 text-blue-light-500 dark:bg-blue-light-500/15 dark:text-blue-light-400">
-            <PieChartIcon className="size-6" />
-          </div>
-          <div className="mt-5">
-            <p className="text-sm text-gray-500 dark:text-gray-400">Valor liberado</p>
-            <h3 className="mt-2 text-2xl font-semibold text-gray-800 dark:text-white/90">
-              {loading || !overview ? "..." : formatCompactMoney(overview.total_liberado)}
-            </h3>
-            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Cobertura territorial {loading || !overview ? "..." : `${overview.total_municipios} municípios em ${overview.total_ufs} UFs`}
-            </p>
-          </div>
-        </div>
+        <MetricCard
+          title="Empresas apoiadas"
+          value={loading || !overview ? "..." : overview.total_empresas.toLocaleString("pt-BR")}
+          accentClass="bg-brand-50 text-brand-500 dark:bg-brand-500/15 dark:text-brand-400"
+        />
+        <MetricCard
+          title="Projetos mapeados"
+          value={loading || !overview ? "..." : overview.total_projetos.toLocaleString("pt-BR")}
+          accentClass="bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-500"
+        />
+        <MetricCard
+          title="Valor aprovado FINEP"
+          value={loading || !overview ? "..." : formatCompactMoney(overview.total_aprovado_finep)}
+          note={loading || !overview ? undefined : `Ticket medio ${formatCompactMoney(overview.ticket_medio_projeto)}`}
+          accentClass="bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400"
+        />
+        <MetricCard
+          title="Valor liberado"
+          value={loading || !overview ? "..." : formatCompactMoney(overview.total_liberado)}
+          note={loading || !overview ? undefined : `Cobertura territorial ${overview.total_municipios} municipios em ${overview.total_ufs} UFs`}
+          accentClass="bg-sky-50 text-sky-500 dark:bg-sky-500/15 dark:text-sky-400"
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
-        <ComponentCard
-          title="Distribuição por Fonte"
-          desc="Participação das linhas de apoio no total de projetos filtrados."
-          className="xl:col-span-4"
-        >
+        <ComponentCard title="Distribuicao por Fonte" desc="Participacao das linhas de apoio no total de projetos filtrados." className="xl:col-span-4">
           <div className="space-y-4">
             {sourceBreakdown.map(([source, total]) => (
               <div key={source} className="rounded-xl border border-gray-100 p-4 dark:border-gray-800">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-medium text-gray-800 dark:text-white/90">
-                    {sourceLabel(source)}
-                  </span>
-                  <Badge color="light" size="sm">
-                    {total.toLocaleString("pt-BR")} projetos
-                  </Badge>
+                  <span className="text-sm font-medium text-gray-800 dark:text-white/90">{sourceLabel(source)}</span>
+                  <Badge color="light" size="sm">{total.toLocaleString("pt-BR")} projetos</Badge>
                 </div>
               </div>
             ))}
-            {!sourceBreakdown.length && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum dado disponível.</p>
-            )}
+            {!sourceBreakdown.length ? <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum dado disponivel.</p> : null}
           </div>
         </ComponentCard>
 
-        <ComponentCard
-          title="Top UFs"
-          desc="Estados com maior volume aprovado nos filtros atuais."
-          className="xl:col-span-8"
-        >
+        <ComponentCard title="Top UFs" desc="Estados com maior volume aprovado nos filtros atuais." className="xl:col-span-8">
           <div className="space-y-4">
             {(ufs?.results ?? []).slice(0, 6).map((item) => (
               <div key={item.uf} className="space-y-2">
@@ -451,25 +328,16 @@ export default function FinepOverview() {
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-800 dark:text-white/90">
-                      {formatMoney(item.total_aprovado_finep)}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Liberado {formatCompactMoney(item.total_liberado)}
-                    </p>
+                    <p className="text-sm font-semibold text-gray-800 dark:text-white/90">{formatMoney(item.total_aprovado_finep)}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Liberado {formatCompactMoney(item.total_liberado)}</p>
                   </div>
                 </div>
                 <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-800">
-                  <div
-                    className="h-2 rounded-full bg-brand-500"
-                    style={{ width: barWidth(item.total_aprovado_finep, topUfMax) }}
-                  />
+                  <div className="h-2 rounded-full bg-brand-500" style={{ width: barWidth(item.total_aprovado_finep, topUfMax) }} />
                 </div>
               </div>
             ))}
-            {!ufs?.results.length && !loading && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Nenhuma UF encontrada.</p>
-            )}
+            {!ufs?.results.length && !loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Nenhuma UF encontrada.</p> : null}
           </div>
         </ComponentCard>
       </div>
@@ -477,62 +345,39 @@ export default function FinepOverview() {
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
         <FinepMunicipioResourceMap featureCollection={municipioMapData} loading={loading} />
 
-        <ComponentCard
-          title="Concentração Territorial"
-          desc="Coeficiente de Gini sobre a distribuição municipal dos valores liberados no recorte atual."
-          className="xl:col-span-5"
-        >
-          <div className="rounded-xl border border-success-100 bg-success-50/60 p-4 dark:border-success-500/20 dark:bg-success-500/10">
+        <ComponentCard title="Concentracao Territorial" desc="Coeficiente de Gini sobre a distribuicao municipal dos valores liberados no recorte atual." className="xl:col-span-5">
+          <div className="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4 dark:border-emerald-500/20 dark:bg-emerald-500/10">
             <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Brasil · Liberado</p>
-            <p className="mt-2 text-3xl font-semibold text-gray-800 dark:text-white/90">
-              {loading || !overview ? "..." : formatGini(overview.gini_liberado)}
-            </p>
-            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Quanto mais perto de 1, maior a concentração entre municípios que receberam desembolso.
-            </p>
+            <p className="mt-2 text-3xl font-semibold text-gray-800 dark:text-white/90">{loading || !overview ? "..." : formatGini(overview.gini_liberado)}</p>
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Quanto mais perto de 1, maior a concentracao entre municipios que receberam desembolso.</p>
           </div>
-
           <div className="mt-5 space-y-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Gini por UF
-            </p>
+            <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Gini por UF</p>
             {(overview?.gini_por_uf ?? []).slice(0, 6).map((item) => (
               <div key={item.uf} className="flex items-center justify-between gap-3 rounded-xl border border-gray-100 px-4 py-3 dark:border-gray-800">
                 <div>
                   <p className="text-sm font-medium text-gray-800 dark:text-white/90">{item.uf}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {item.total_municipios.toLocaleString("pt-BR")} municípios com registros
-                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{item.total_municipios.toLocaleString("pt-BR")} municipios com registros</p>
                 </div>
-                <div className="flex flex-col items-end gap-1 text-right">
-                  <Badge color="success" size="sm">Liberado {formatGini(item.gini_liberado)}</Badge>
-                </div>
+                <Badge color="success" size="sm">Liberado {formatGini(item.gini_liberado)}</Badge>
               </div>
             ))}
           </div>
         </ComponentCard>
 
-        <ComponentCard
-          title="Municípios com Maior Volume"
-          desc="Ranking municipal com leitura simultânea de valores aprovados e liberados."
-          className="xl:col-span-7"
-        >
+        <ComponentCard title="Municipios com Maior Volume" desc="Ranking municipal com leitura simultanea de valores aprovados e liberados." className="xl:col-span-7">
           <div className="space-y-4">
             {(municipios?.results ?? []).slice(0, 8).map((item) => (
               <div key={`${item.uf ?? "na"}-${item.municipio_nome}`} className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                      {item.municipio_nome}
-                    </p>
+                    <p className="text-sm font-medium text-gray-800 dark:text-white/90">{item.municipio_nome}</p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
                       {item.uf ?? "Sem UF"} • {item.total_empresas.toLocaleString("pt-BR")} empresas • {item.total_projetos.toLocaleString("pt-BR")} projetos
                     </p>
                   </div>
                   <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-800 dark:text-white/90">
-                      {formatMoney(item.total_aprovado_finep)}
-                    </p>
+                    <p className="text-sm font-semibold text-gray-800 dark:text-white/90">{formatMoney(item.total_aprovado_finep)}</p>
                     <div className="mt-1 flex flex-col items-end gap-1">
                       <Badge color="primary" size="sm">Aprovado {formatCompactMoney(item.total_aprovado_finep)}</Badge>
                       <Badge color="success" size="sm">Liberado {formatCompactMoney(item.total_liberado)}</Badge>
@@ -540,71 +385,43 @@ export default function FinepOverview() {
                   </div>
                 </div>
                 <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-800">
-                  <div
-                    className="h-2 rounded-full bg-warning-500"
-                    style={{ width: barWidth(item.total_aprovado_finep, topMunicipioMax) }}
-                  />
+                  <div className="h-2 rounded-full bg-amber-500" style={{ width: barWidth(item.total_aprovado_finep, topMunicipioMax) }} />
                 </div>
               </div>
             ))}
-            {!municipios?.results.length && !loading && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum município encontrado.</p>
-            )}
+            {!municipios?.results.length && !loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum municipio encontrado.</p> : null}
           </div>
         </ComponentCard>
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
-        <ComponentCard
-          title="Atividades Econômicas"
-          desc="CNAEs com maior volume aprovado nos dados FINEP filtrados."
-          className="xl:col-span-5"
-        >
+        <ComponentCard title="Atividades Economicas" desc="CNAEs com maior volume aprovado nos dados FINEP filtrados." className="xl:col-span-5">
           <div className="space-y-4">
             {(cnaes?.results ?? []).slice(0, 6).map((item) => (
               <div key={`${item.cnae_fiscal_principal ?? "na"}-${item.cnae_descricao ?? "sem-cnae"}`} className="space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                      {formatCnaeLabel(item.cnae_descricao, item.cnae_fiscal_principal)}
-                    </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {item.cnae_fiscal_principal ?? "Sem código"} • {item.total_empresas.toLocaleString("pt-BR")} empresas
-                    </p>
+                    <p className="text-sm font-medium text-gray-800 dark:text-white/90">{formatCnaeLabel(item.cnae_descricao, item.cnae_fiscal_principal)}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{item.cnae_fiscal_principal ?? "Sem codigo"} • {item.total_empresas.toLocaleString("pt-BR")} empresas</p>
                   </div>
-                  <span className="text-sm font-semibold text-gray-800 dark:text-white/90">
-                    {formatCompactMoney(item.total_aprovado_finep)}
-                  </span>
+                  <span className="text-sm font-semibold text-gray-800 dark:text-white/90">{formatCompactMoney(item.total_aprovado_finep)}</span>
                 </div>
                 <div className="h-2 rounded-full bg-gray-100 dark:bg-gray-800">
-                  <div
-                    className="h-2 rounded-full bg-success-500"
-                    style={{ width: barWidth(item.total_aprovado_finep, topCnaeMax) }}
-                  />
+                  <div className="h-2 rounded-full bg-emerald-500" style={{ width: barWidth(item.total_aprovado_finep, topCnaeMax) }} />
                 </div>
               </div>
             ))}
-            {!cnaes?.results.length && !loading && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum CNAE encontrado.</p>
-            )}
+            {!cnaes?.results.length && !loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Nenhum CNAE encontrado.</p> : null}
           </div>
         </ComponentCard>
 
-        <ComponentCard
-          title="Empresas com Maior Valor Aprovado"
-          desc="Ranking inicial para navegação e priorização analítica."
-          className="xl:col-span-7"
-        >
+        <ComponentCard title="Empresas com Maior Valor Aprovado" desc="Ranking inicial para navegacao e priorizacao analitica." className="xl:col-span-7">
           <div className="overflow-x-auto">
             <Table className="table-auto">
               <TableHeader>
                 <TableRow className="border-b border-gray-100 dark:border-gray-800">
                   {['Empresa', 'UF', 'Projetos', 'Aprovado', 'Sinal'].map((header) => (
-                    <TableCell
-                      key={header}
-                      isHeader
-                      className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
-                    >
+                    <TableCell key={header} isHeader className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
                       {header}
                     </TableCell>
                   ))}
@@ -617,36 +434,18 @@ export default function FinepOverview() {
                   const adimplencia = aprovado > 0 ? liberado / aprovado : 0;
 
                   return (
-                    <TableRow
-                      key={company.cnpj_14}
-                      className="border-b border-gray-100 last:border-0 dark:border-gray-800"
-                    >
+                    <TableRow key={company.cnpj_14} className="border-b border-gray-100 last:border-0 dark:border-gray-800">
                       <TableCell className="px-4 py-3">
                         <div>
-                          <p className="text-sm font-medium text-gray-800 dark:text-white/90">
-                            {company.razao_social ?? formatCnpj(company.cnpj_14)}
-                          </p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">
-                            {formatCnpj(company.cnpj_14)}
-                            {` • ${formatCnaeLabel(company.cnae_descricao, company.cnae_fiscal_principal)}`}
-                          </p>
+                          <p className="text-sm font-medium text-gray-800 dark:text-white/90">{company.razao_social ?? formatCnpj(company.cnpj_14)}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">{formatCnpj(company.cnpj_14)} • {formatCnaeLabel(company.cnae_descricao, company.cnae_fiscal_principal)}</p>
                         </div>
                       </TableCell>
-                      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                        {company.uf ?? "—"}
-                      </TableCell>
-                      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                        {company.total_projetos.toLocaleString("pt-BR")}
-                      </TableCell>
-                      <TableCell className="px-4 py-3 text-sm font-semibold text-gray-800 dark:text-white/90">
-                        {formatMoney(company.total_aprovado_finep)}
-                      </TableCell>
+                      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{company.uf ?? "—"}</TableCell>
+                      <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{company.total_projetos.toLocaleString("pt-BR")}</TableCell>
+                      <TableCell className="px-4 py-3 text-sm font-semibold text-gray-800 dark:text-white/90">{formatMoney(company.total_aprovado_finep)}</TableCell>
                       <TableCell className="px-4 py-3">
-                        <Badge
-                          color={adimplencia >= 0.7 ? "success" : adimplencia >= 0.4 ? "warning" : "error"}
-                          size="sm"
-                          startIcon={adimplencia >= 0.7 ? <ArrowUpIcon /> : <ArrowDownIcon />}
-                        >
+                        <Badge color={adimplencia >= 0.7 ? "success" : adimplencia >= 0.4 ? "warning" : "error"} size="sm">
                           {`${Math.round(adimplencia * 100)}% liberado`}
                         </Badge>
                       </TableCell>
@@ -656,10 +455,7 @@ export default function FinepOverview() {
               </TableBody>
             </Table>
           </div>
-
-          {!companies?.results.length && !loading && (
-            <p className="px-6 pb-6 text-sm text-gray-500 dark:text-gray-400">Nenhuma empresa encontrada para o filtro atual.</p>
-          )}
+          {!companies?.results.length && !loading ? <p className="px-6 pb-6 text-sm text-gray-500 dark:text-gray-400">Nenhuma empresa encontrada para o filtro atual.</p> : null}
         </ComponentCard>
       </div>
     </div>

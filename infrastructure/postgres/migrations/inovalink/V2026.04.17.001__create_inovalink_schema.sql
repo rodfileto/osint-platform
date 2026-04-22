@@ -1,0 +1,2 @@
+CREATE SCHEMA IF NOT EXISTS inovalink;
+GRANT ALL PRIVILEGES ON SCHEMA inovalink TO osint_admin;

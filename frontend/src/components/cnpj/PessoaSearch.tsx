@@ -1,22 +1,12 @@
-"use client";
-
-import React, { useState, useCallback, useRef } from "react";
-import Link from "next/link";
+import { useCallback, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { isAxiosError } from "axios";
 import ComponentCard from "@/components/common/ComponentCard";
-import Input from "@/components/form/input/InputField";
+import InputField from "@/components/form/input/InputField";
 import Badge from "@/components/ui/badge/Badge";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableCell,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import Pagination from "@/components/tables/Pagination";
 import apiClient from "@/lib/apiClient";
-import axios from "axios";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PessoaResult {
   nome: string;
@@ -32,23 +22,19 @@ interface ApiResponse {
   results: PessoaResult[];
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 const FAIXA_ETARIA_LABEL: Record<number, string> = {
   0: "NI",
-  1: "≤ 20",
-  2: "21–30",
-  3: "31–40",
-  4: "41–50",
-  5: "51–60",
-  6: "61–70",
-  7: "71–80",
+  1: "<= 20",
+  2: "21-30",
+  3: "31-40",
+  4: "41-50",
+  5: "51-60",
+  6: "61-70",
+  7: "71-80",
   9: "> 80",
 };
 
 const PAGE_SIZE = 20;
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function PessoaSearch() {
   const [query, setQuery] = useState("");
@@ -58,10 +44,10 @@ export default function PessoaSearch() {
   const [error, setError] = useState<string | null>(null);
   const lastQuery = useRef("");
 
-  const search = useCallback(async (q: string, p: number) => {
-    const trimmedQ = q.trim();
+  const search = useCallback(async (searchQuery: string, nextPage: number) => {
+    const trimmedQuery = searchQuery.trim();
 
-    if (trimmedQ.length < 3) {
+    if (trimmedQuery.length < 3) {
       setError("Informe ao menos 3 caracteres para buscar por nome.");
       return;
     }
@@ -70,36 +56,34 @@ export default function PessoaSearch() {
     setError(null);
 
     try {
-      const params: Record<string, string | number> = { page: p };
-      params.q = trimmedQ;
+      const response = await apiClient.get<ApiResponse>("/api/cnpj/pessoa/search/", {
+        params: { q: trimmedQuery, page: nextPage },
+      });
 
-      const { data: json } = await apiClient.get<ApiResponse>(
-        "/api/cnpj/pessoa/search/",
-        { params }
-      );
-      setData(json);
-      lastQuery.current = trimmedQ;
-    } catch (e) {
-      const msg =
-        axios.isAxiosError(e) && e.response
-          ? `Erro ${e.response.status}: ${e.response.statusText}`
+      setData(response.data);
+      lastQuery.current = trimmedQuery;
+    } catch (errorValue) {
+      const message =
+        isAxiosError(errorValue) && errorValue.response
+          ? `Erro ${errorValue.response.status}: ${errorValue.response.statusText}`
           : "Erro de conexão com o servidor";
-      setError(msg);
+
+      setError(message);
       setData(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
     setPage(1);
-    search(query, 1);
+    void search(query, 1);
   };
 
-  const handlePageChange = (p: number) => {
-    setPage(p);
-    search(lastQuery.current, p);
+  const handlePageChange = (nextPage: number) => {
+    setPage(nextPage);
+    void search(lastQuery.current, nextPage);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -107,20 +91,19 @@ export default function PessoaSearch() {
 
   return (
     <div className="space-y-4">
-      {/* Search form */}
       <ComponentCard
         title="Pesquisa de Pessoas"
         desc="Busque por nome. O drill-down usa o par nome + CPF mascarado retornado na busca."
       >
         <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="flex gap-3">
+          <div className="flex flex-col gap-3 md:flex-row">
             <div className="flex-1">
-              <Input
+              <InputField
                 id="pessoa-search-nome"
                 type="text"
-                placeholder="Nome do sócio  (ex: JOAO DA SILVA)"
+                placeholder="Nome do sócio (ex: JOAO DA SILVA)"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(event) => setQuery(event.target.value)}
               />
             </div>
             <button
@@ -128,7 +111,7 @@ export default function PessoaSearch() {
               disabled={loading || query.trim().length < 3}
               className="inline-flex h-11 items-center justify-center rounded-lg bg-brand-500 px-5 text-sm font-medium text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? "Buscando…" : "Buscar"}
+              {loading ? "Buscando..." : "Buscar"}
             </button>
           </div>
           <p className="text-xs text-gray-400 dark:text-gray-500">
@@ -137,15 +120,13 @@ export default function PessoaSearch() {
         </form>
       </ComponentCard>
 
-      {/* Error */}
-      {error && (
-        <div className="rounded-2xl border border-error-200 bg-error-50 px-5 py-4 text-sm text-error-700 dark:border-error-500/20 dark:bg-error-500/10 dark:text-error-400">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
           {error}
         </div>
-      )}
+      ) : null}
 
-      {/* Results */}
-      {data && (
+      {data ? (
         <ComponentCard
           title="Resultados"
           desc={`${data.count.toLocaleString("pt-BR")} pessoa${data.count !== 1 ? "s" : ""} encontrada${data.count !== 1 ? "s" : ""}`}
@@ -156,63 +137,55 @@ export default function PessoaSearch() {
             </p>
           ) : (
             <>
-              <div className="mb-3 rounded-xl border border-info-200 bg-info-50 px-4 py-2.5 text-xs text-info-700 dark:border-info-500/20 dark:bg-info-500/10 dark:text-info-300">
+              <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300">
                 Cada linha representa uma identidade distinta conforme a chave disponível na base: nome + CPF mascarado.
               </div>
               <div className="overflow-x-auto">
                 <Table className="table-auto">
                   <TableHeader>
                     <TableRow className="border-b border-gray-100 dark:border-gray-800">
-                      {["Nome", "CPF mascarado", "Faixa etária", "Empresas", "Ações"].map((h) => (
+                      {["Nome", "CPF mascarado", "Faixa etária", "Empresas", "Ações"].map((header) => (
                         <TableCell
-                          key={h}
+                          key={header}
                           isHeader
-                          className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap"
+                          className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
                         >
-                          {h}
+                          {header}
                         </TableCell>
                       ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.results.map((r, i) => {
-                      const detailHref = `/pessoa/detalhe?nome=${encodeURIComponent(r.nome)}&cpf_mascarado=${encodeURIComponent(r.cpf_cnpj_socio)}`;
+                    {data.results.map((result, index) => {
+                      const detailHref = `/pessoa/detalhe?nome=${encodeURIComponent(result.nome)}&cpf_mascarado=${encodeURIComponent(result.cpf_cnpj_socio)}`;
+
                       return (
                         <TableRow
-                          key={`${r.cpf_cnpj_socio}-${r.nome}-${i}`}
-                          className="border-b border-gray-100 last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.02] transition-colors"
+                          key={`${result.cpf_cnpj_socio}-${result.nome}-${index}`}
+                          className="border-b border-gray-100 transition-colors last:border-0 hover:bg-gray-50 dark:border-gray-800 dark:hover:bg-white/[0.02]"
                         >
-                          {/* Nome */}
                           <TableCell className="px-4 py-3 text-sm font-medium text-gray-800 dark:text-white/90">
-                            {r.nome || "—"}
+                            {result.nome || "—"}
                           </TableCell>
-
-                          {/* CPF mascarado */}
-                          <TableCell className="px-4 py-3 text-sm font-mono text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                            {r.cpf_cnpj_socio || "—"}
+                          <TableCell className="whitespace-nowrap px-4 py-3 font-mono text-sm text-gray-500 dark:text-gray-400">
+                            {result.cpf_cnpj_socio || "—"}
                           </TableCell>
-
-                          {/* Faixa etária */}
-                          <TableCell className="px-4 py-3 whitespace-nowrap">
-                            {r.faixa_etaria != null ? (
+                          <TableCell className="whitespace-nowrap px-4 py-3">
+                            {result.faixa_etaria != null ? (
                               <Badge variant="light" size="sm" color="info">
-                                {FAIXA_ETARIA_LABEL[r.faixa_etaria] ?? String(r.faixa_etaria)}
+                                {FAIXA_ETARIA_LABEL[result.faixa_etaria] ?? String(result.faixa_etaria)}
                               </Badge>
                             ) : (
                               <span className="text-sm text-gray-400">—</span>
                             )}
                           </TableCell>
-
-                          {/* Total empresas */}
-                          <TableCell className="px-4 py-3 text-sm font-semibold text-gray-700 dark:text-gray-300 whitespace-nowrap text-right">
-                            {r.total_empresas.toLocaleString("pt-BR")}
+                          <TableCell className="whitespace-nowrap px-4 py-3 text-right text-sm font-semibold text-gray-700 dark:text-gray-300">
+                            {result.total_empresas.toLocaleString("pt-BR")}
                           </TableCell>
-
-                          {/* Ações */}
-                          <TableCell className="px-4 py-3 whitespace-nowrap">
+                          <TableCell className="whitespace-nowrap px-4 py-3">
                             <Link
-                              href={detailHref}
-                              className="inline-flex items-center justify-center font-medium gap-2 rounded-lg transition px-4 py-3 text-sm bg-white text-gray-700 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-white/[0.03] dark:hover:text-gray-300"
+                              to={detailHref}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-white/[0.03] dark:hover:text-gray-300"
                             >
                               Ver detalhes
                             </Link>
@@ -224,19 +197,15 @@ export default function PessoaSearch() {
                 </Table>
               </div>
 
-              {totalPages > 1 && (
-                <div className="flex justify-end pt-4 border-t border-gray-100 dark:border-gray-800">
-                  <Pagination
-                    currentPage={page}
-                    totalPages={totalPages}
-                    onPageChange={handlePageChange}
-                  />
+              {totalPages > 1 ? (
+                <div className="flex justify-end border-t border-gray-100 pt-4 dark:border-gray-800">
+                  <Pagination currentPage={page} totalPages={totalPages} onPageChange={handlePageChange} />
                 </div>
-              )}
+              ) : null}
             </>
           )}
         </ComponentCard>
-      )}
+      ) : null}
     </div>
   );
 }

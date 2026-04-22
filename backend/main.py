@@ -42,7 +42,11 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/health", tags=["system"])
-    async def healthcheck(request: Request):
+    async def liveness_check():
+        return JSONResponse(status_code=200, content={"status": "ok"})
+
+    @app.get("/health/ready", tags=["system"])
+    async def readiness_check(request: Request):
         report = await request.app.state.database_manager.healthcheck()
         is_healthy = all(service["ok"] for service in report.values())
         return JSONResponse(

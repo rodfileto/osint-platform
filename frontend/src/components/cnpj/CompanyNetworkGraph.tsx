@@ -1,7 +1,5 @@
-"use client";
-
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isAxiosError } from "axios";
 import ComponentCard from "@/components/common/ComponentCard";
 import Select from "@/components/form/Select";
 import Button from "@/components/ui/button/Button";
@@ -48,17 +46,6 @@ interface NetworkResponse {
   metadata: NetworkMetadata;
 }
 
-interface CompanyNetworkGraphProps {
-  cnpjBasico: string;
-}
-
-interface NetworkTooltipState {
-  label: string;
-  x: number;
-  y: number;
-  visible: boolean;
-}
-
 interface GraphNodeEventTarget {
   data: (key: string) => unknown;
   renderedPosition: () => { x: number; y: number };
@@ -68,8 +55,20 @@ interface GraphNodeEvent {
   target: GraphNodeEventTarget;
 }
 
-function getShortLabel(label: string, type: NetworkNode["type"]): string {
+type CompanyNetworkGraphProps = {
+  cnpjBasico: string;
+};
+
+type NetworkTooltipState = {
+  label: string;
+  x: number;
+  y: number;
+  visible: boolean;
+};
+
+function getShortLabel(label: string, type: NetworkNode["type"]) {
   const maxLength = type === "empresa" ? 22 : 18;
+
   if (label.length <= maxLength) {
     return label;
   }
@@ -101,19 +100,20 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
           params: { depth },
         });
         setData(response.data);
-      } catch (e) {
-        const msg =
-          axios.isAxiosError(e) && e.response
-            ? `Erro ${e.response.status}: ${e.response.statusText}`
+      } catch (errorValue) {
+        const message =
+          isAxiosError(errorValue) && errorValue.response
+            ? `Erro ${errorValue.response.status}: ${errorValue.response.statusText}`
             : "Erro de conexão ao carregar rede societária";
-        setError(msg);
+
+        setError(message);
         setData(null);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchNetwork();
+    void fetchNetwork();
   }, [cnpjBasico, depth]);
 
   const elements = useMemo(() => {
@@ -125,6 +125,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
       ...data.nodes.map((node) => {
         const isCompany = node.type === "empresa";
         const isCore = node.data?.is_core ? 1 : 0;
+
         return {
           data: {
             id: node.id,
@@ -248,9 +249,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
 
       const hideTooltip = () => {
         setTooltip((currentTooltip) =>
-          currentTooltip.visible
-            ? { ...currentTooltip, visible: false }
-            : currentTooltip,
+          currentTooltip.visible ? { ...currentTooltip, visible: false } : currentTooltip,
         );
       };
 
@@ -264,10 +263,11 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
       cyInstance.fit(30);
     };
 
-    mountGraph();
+    void mountGraph();
 
     return () => {
       isMounted = false;
+
       if (cyRef.current) {
         cyRef.current.destroy();
         cyRef.current = null;
@@ -283,27 +283,27 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
 
   const handleRelayout = () => {
     if (cyRef.current) {
-      cyRef.current.layout({
-        name: "cose-bilkent",
-        animate: true,
-        animationDuration: 300,
-      }).run();
+      cyRef.current
+        .layout({
+          name: "cose-bilkent",
+          animate: true,
+          animationDuration: 300,
+        })
+        .run();
     }
   };
 
   return (
     <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios (Neo4j)">
-      {loading && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando rede…</p>
-      )}
+      {loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Carregando rede...</p> : null}
 
-      {error && (
-        <div className="rounded-2xl border border-error-200 bg-error-50 px-5 py-4 text-sm text-error-700 dark:border-error-500/20 dark:bg-error-500/10 dark:text-error-400">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
           {error}
         </div>
-      )}
+      ) : null}
 
-      {!loading && !error && data && (
+      {!loading && !error && data ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -350,7 +350,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
           ) : (
             <div className="relative h-[460px] w-full rounded-xl border border-gray-200 dark:border-gray-800">
               <div ref={graphRef} className="h-full w-full" />
-              {tooltip.visible && (
+              {tooltip.visible ? (
                 <div
                   className="pointer-events-none absolute z-10 max-w-64 rounded-lg bg-gray-950/90 px-3 py-2 text-xs font-medium text-white shadow-lg"
                   style={{
@@ -360,11 +360,11 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
                 >
                   {tooltip.label}
                 </div>
-              )}
+              ) : null}
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </ComponentCard>
   );
 }

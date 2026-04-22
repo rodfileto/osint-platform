@@ -1,19 +1,12 @@
-"use client";
-
-import React, { useEffect, useState } from "react";
-import axios from "axios";
+import { Suspense, lazy, useEffect, useState } from "react";
+import { isAxiosError } from "axios";
 import ComponentCard from "@/components/common/ComponentCard";
 import Badge from "@/components/ui/badge/Badge";
-import {
-  Table,
-  TableHeader,
-  TableBody,
-  TableRow,
-  TableCell,
-} from "@/components/ui/table";
-import apiClient from "@/lib/apiClient";
-import CompanyNetworkGraph from "@/components/cnpj/CompanyNetworkGraph";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import Pagination from "@/components/tables/Pagination";
+import apiClient from "@/lib/apiClient";
+
+const CompanyNetworkGraph = lazy(() => import("@/components/cnpj/CompanyNetworkGraph"));
 
 interface EstabelecimentoDetail {
   cnpj_completo: string;
@@ -68,21 +61,45 @@ interface EmpresaDetailResponse {
   estabelecimentos: EstabelecimentoDetail[];
 }
 
-interface EmpresaDetailProps {
+type EmpresaDetailProps = {
   cnpjBasico: string | null;
-}
+};
 
 const PAGE_SIZE = 20;
 
 function formatMoney(value: string | null): string {
-  if (!value) return "—";
-  const number = Number(value);
-  if (Number.isNaN(number)) return value;
+  if (!value) {
+    return "—";
+  }
+
+  const numericValue = Number(value);
+
+  if (Number.isNaN(numericValue)) {
+    return value;
+  }
+
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
     minimumFractionDigits: 2,
-  }).format(number);
+  }).format(numericValue);
+}
+
+function InfoItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-800">
+      <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
+      <p className="mt-1 text-sm font-medium text-gray-800 dark:text-white/90">{value}</p>
+    </div>
+  );
+}
+
+function GraphFallback() {
+  return (
+    <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios (Neo4j)">
+      <p className="text-sm text-gray-500 dark:text-gray-400">Carregando grafo...</p>
+    </ComponentCard>
+  );
 }
 
 export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
@@ -104,24 +121,23 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
       setError(null);
 
       try {
-        const { data: detail } = await apiClient.get<EmpresaDetailResponse>(
-          `/api/cnpj/empresa/${cnpjBasico}/`
-        );
-        setData(detail);
+        const response = await apiClient.get<EmpresaDetailResponse>(`/api/cnpj/empresa/${cnpjBasico}/`);
+        setData(response.data);
         setCurrentPage(1);
-      } catch (e) {
-        const msg =
-          axios.isAxiosError(e) && e.response
-            ? `Erro ${e.response.status}: ${e.response.statusText}`
+      } catch (errorValue) {
+        const message =
+          isAxiosError(errorValue) && errorValue.response
+            ? `Erro ${errorValue.response.status}: ${errorValue.response.statusText}`
             : "Erro de conexão ao carregar detalhes da empresa";
-        setError(msg);
+
+        setError(message);
         setData(null);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchDetail();
+    void fetchDetail();
   }, [cnpjBasico]);
 
   if (!cnpjBasico) {
@@ -136,17 +152,15 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
 
   return (
     <div className="space-y-5">
-      {loading && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando detalhes…</p>
-      )}
+      {loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Carregando detalhes...</p> : null}
 
-      {error && (
-        <div className="rounded-2xl border border-error-200 bg-error-50 px-5 py-4 text-sm text-error-700 dark:border-error-500/20 dark:bg-error-500/10 dark:text-error-400">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
           {error}
         </div>
-      )}
+      ) : null}
 
-      {!loading && !error && data && (
+      {!loading && !error && data ? (
         <>
           <ComponentCard title="Detalhes da Empresa" desc={`CNPJ básico: ${cnpjBasico}`}>
             <div className="space-y-5">
@@ -158,21 +172,11 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
                 />
                 <InfoItem
                   label="Qualificação responsável"
-                  value={
-                    data.qualificacao_responsavel_descricao ||
-                    data.qualificacao_responsavel ||
-                    "—"
-                  }
+                  value={data.qualificacao_responsavel_descricao || data.qualificacao_responsavel || "—"}
                 />
-                <InfoItem
-                  label="Porte"
-                  value={data.porte_empresa_display || data.porte_empresa || "—"}
-                />
+                <InfoItem label="Porte" value={data.porte_empresa_display || data.porte_empresa || "—"} />
                 <InfoItem label="Capital social" value={formatMoney(data.capital_social)} />
-                <InfoItem
-                  label="Ente federativo"
-                  value={data.ente_federativo_responsavel || "—"}
-                />
+                <InfoItem label="Ente federativo" value={data.ente_federativo_responsavel || "—"} />
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -195,45 +199,43 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
                 <Table className="table-auto">
                   <TableHeader>
                     <TableRow className="border-b border-gray-100 dark:border-gray-800">
-                      {["CNPJ", "Tipo", "Nome Fantasia", "Situação", "UF", "Município", "CNAE"].map(
-                        (header) => (
-                          <TableCell
-                            key={header}
-                            isHeader
-                            className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 whitespace-nowrap"
-                          >
-                            {header}
-                          </TableCell>
-                        )
-                      )}
+                      {["CNPJ", "Tipo", "Nome Fantasia", "Situação", "UF", "Município", "CNAE"].map((header) => (
+                        <TableCell
+                          key={header}
+                          isHeader
+                          className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400"
+                        >
+                          {header}
+                        </TableCell>
+                      ))}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {paginatedEstabelecimentos.map((est) => (
+                    {paginatedEstabelecimentos.map((estabelecimento) => (
                       <TableRow
-                        key={`${est.cnpj_ordem}${est.cnpj_dv}`}
+                        key={`${estabelecimento.cnpj_ordem}${estabelecimento.cnpj_dv}`}
                         className="border-b border-gray-100 last:border-0 dark:border-gray-800"
                       >
-                        <TableCell className="px-4 py-3 text-sm font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {est.cnpj_completo}
+                        <TableCell className="whitespace-nowrap px-4 py-3 font-mono text-sm text-gray-700 dark:text-gray-300">
+                          {estabelecimento.cnpj_completo}
                         </TableCell>
-                        <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {est.tipo_estabelecimento}
-                        </TableCell>
-                        <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                          {est.nome_fantasia || "—"}
-                        </TableCell>
-                        <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {est.situacao_cadastral_display || est.situacao_cadastral || "—"}
-                        </TableCell>
-                        <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300 whitespace-nowrap">
-                          {est.endereco.uf || "—"}
+                        <TableCell className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                          {estabelecimento.tipo_estabelecimento}
                         </TableCell>
                         <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                          {est.endereco.municipio_nome || est.endereco.municipio || "—"}
+                          {estabelecimento.nome_fantasia || "—"}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                          {estabelecimento.situacao_cadastral_display || estabelecimento.situacao_cadastral || "—"}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                          {estabelecimento.endereco.uf || "—"}
                         </TableCell>
                         <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
-                          {est.cnae_fiscal_principal_descricao || est.cnae_fiscal_principal || "—"}
+                          {estabelecimento.endereco.municipio_nome || estabelecimento.endereco.municipio || "—"}
+                        </TableCell>
+                        <TableCell className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">
+                          {estabelecimento.cnae_fiscal_principal_descricao || estabelecimento.cnae_fiscal_principal || "—"}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -241,7 +243,7 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
                 </Table>
               </div>
 
-              {totalPages > 1 && (
+              {totalPages > 1 ? (
                 <div className="flex justify-end border-t border-gray-100 pt-4 dark:border-gray-800">
                   <Pagination
                     currentPage={safeCurrentPage}
@@ -249,23 +251,14 @@ export default function EmpresaDetail({ cnpjBasico }: EmpresaDetailProps) {
                     onPageChange={(page) => setCurrentPage(page)}
                   />
                 </div>
-              )}
+              ) : null}
             </div>
           </ComponentCard>
-
-          <CompanyNetworkGraph cnpjBasico={cnpjBasico} />
+          <Suspense fallback={<GraphFallback />}>
+            <CompanyNetworkGraph cnpjBasico={cnpjBasico} />
+          </Suspense>
         </>
-      )}
-
-    </div>
-  );
-}
-
-function InfoItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-800">
-      <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">{label}</p>
-      <p className="mt-1 text-sm font-medium text-gray-800 dark:text-white/90">{value}</p>
+      ) : null}
     </div>
   );
 }

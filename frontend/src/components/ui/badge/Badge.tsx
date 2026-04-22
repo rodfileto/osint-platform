@@ -1,79 +1,57 @@
-import React from "react";
-
 type BadgeVariant = "light" | "solid";
 type BadgeSize = "sm" | "md";
-type BadgeColor =
-  | "primary"
-  | "success"
-  | "error"
-  | "warning"
-  | "info"
-  | "light"
-  | "dark";
+type BadgeColor = "primary" | "success" | "error" | "warning" | "info" | "light" | "dark";
 
-interface BadgeProps {
-  variant?: BadgeVariant; // Light or solid variant
-  size?: BadgeSize; // Badge size
-  color?: BadgeColor; // Badge color
-  startIcon?: React.ReactNode; // Icon at the start
-  endIcon?: React.ReactNode; // Icon at the end
-  children: React.ReactNode; // Badge content
-}
+type BadgeProps = {
+  variant?: BadgeVariant;
+  size?: BadgeSize;
+  color?: BadgeColor;
+  startIcon?: React.ReactNode;
+  endIcon?: React.ReactNode;
+  children: React.ReactNode;
+};
 
-const Badge: React.FC<BadgeProps> = ({
+export default function Badge({
   variant = "light",
-  color = "primary",
   size = "md",
+  color = "primary",
   startIcon,
   endIcon,
   children,
-}) => {
-  const baseStyles =
-    "inline-flex items-center px-2.5 py-0.5 justify-center gap-1 rounded-full font-medium";
+}: BadgeProps) {
+  const baseStyles = "inline-flex items-center justify-center gap-1 rounded-full px-2.5 py-0.5 font-medium";
 
-  // Define size styles
   const sizeStyles = {
-    sm: "text-theme-xs", // Smaller padding and font size
-    md: "text-sm", // Default padding and font size
+    sm: "text-theme-xs",
+    md: "text-sm",
   };
 
-  // Define color styles for variants
   const variants = {
     light: {
-      primary:
-        "bg-brand-50 text-brand-500 dark:bg-brand-500/15 dark:text-brand-400",
-      success:
-        "bg-success-50 text-success-600 dark:bg-success-500/15 dark:text-success-500",
-      error:
-        "bg-error-50 text-error-600 dark:bg-error-500/15 dark:text-error-500",
-      warning:
-        "bg-warning-50 text-warning-600 dark:bg-warning-500/15 dark:text-orange-400",
-      info: "bg-blue-light-50 text-blue-light-500 dark:bg-blue-light-500/15 dark:text-blue-light-500",
+      primary: "bg-brand-50 text-brand-500 dark:bg-brand-500/15 dark:text-brand-400",
+      success: "bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400",
+      error: "bg-red-50 text-red-600 dark:bg-red-500/15 dark:text-red-400",
+      warning: "bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400",
+      info: "bg-sky-50 text-sky-600 dark:bg-sky-500/15 dark:text-sky-400",
       light: "bg-gray-100 text-gray-700 dark:bg-white/5 dark:text-white/80",
       dark: "bg-gray-500 text-white dark:bg-white/5 dark:text-white",
     },
     solid: {
-      primary: "bg-brand-500 text-white dark:text-white",
-      success: "bg-success-500 text-white dark:text-white",
-      error: "bg-error-500 text-white dark:text-white",
-      warning: "bg-warning-500 text-white dark:text-white",
-      info: "bg-blue-light-500 text-white dark:text-white",
-      light: "bg-gray-400 dark:bg-white/5 text-white dark:text-white/80",
-      dark: "bg-gray-700 text-white dark:text-white",
+      primary: "bg-brand-500 text-white",
+      success: "bg-emerald-500 text-white",
+      error: "bg-red-500 text-white",
+      warning: "bg-amber-500 text-white",
+      info: "bg-sky-500 text-white",
+      light: "bg-gray-400 text-white",
+      dark: "bg-gray-700 text-white",
     },
   };
 
-  // Get styles based on size and color variant
-  const sizeClass = sizeStyles[size];
-  const colorStyles = variants[variant][color];
-
   return (
-    <span className={`${baseStyles} ${sizeClass} ${colorStyles}`}>
-      {startIcon && <span className="mr-1">{startIcon}</span>}
+    <span className={`${baseStyles} ${sizeStyles[size]} ${variants[variant][color]}`}>
+      {startIcon ? <span className="mr-1">{startIcon}</span> : null}
       {children}
-      {endIcon && <span className="ml-1">{endIcon}</span>}
+      {endIcon ? <span className="ml-1">{endIcon}</span> : null}
     </span>
   );
-};
-
-export default Badge;
+}

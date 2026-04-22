@@ -53,6 +53,9 @@ frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
 frontend/.pnpm-debug.log*
+frontend-vite/node_modules/
+frontend-vite/dist/
+frontend-vite/.package-lock.json
 
 # --- IDEs ---
 .idea/

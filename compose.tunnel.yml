@@ -5,7 +5,7 @@
 # Prerequisites:
 #   1. Create a tunnel in the Cloudflare Zero Trust dashboard (or via `cloudflared tunnel create <name>`)
 #   2. Set CLOUDFLARE_TUNNEL_TOKEN in your .env file
-#   3. Configure DNS CNAMEs for CF_APP_DOMAIN, CF_API_DOMAIN, CF_AIRFLOW_DOMAIN
+#   3. Configure DNS CNAMEs / Public Hostnames for CF_APP_DOMAIN, CF_API_DOMAIN, CF_AUTH_DOMAIN, CF_AIRFLOW_DOMAIN
 #      pointing to <tunnel-id>.cfargotunnel.com
 
 services:

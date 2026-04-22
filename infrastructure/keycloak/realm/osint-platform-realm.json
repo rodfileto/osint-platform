@@ -1,0 +1,59 @@
+{
+  "realm": "osint-platform",
+  "enabled": true,
+  "displayName": "OSINT Platform",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "clients": [
+    {
+      "clientId": "osint-frontend",
+      "name": "OSINT Platform Frontend",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "http://localhost:13000/*",
+        "http://127.0.0.1:13000/*",
+        "https://app.lab-srd.com/*",
+        "https://app.yourdomain.com/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:13000",
+        "http://127.0.0.1:13000",
+        "https://app.lab-srd.com",
+        "https://app.yourdomain.com"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*##http://127.0.0.1:3000/*##http://localhost:13000/*##http://127.0.0.1:13000/*##https://app.lab-srd.com/*##https://app.yourdomain.com/*"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "osint-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "OSINT",
+      "lastName": "Admin",
+      "email": "osint-admin@local.test",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "osint123",
+          "temporary": false
+        }
+      ],
+      "requiredActions": []
+    }
+  ]
+}

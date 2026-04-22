@@ -1,6 +1,7 @@
 """Configuration primitives for the FastAPI backend."""
 
 from functools import lru_cache
+from urllib.parse import urljoin
 from typing import Annotated
 
 from pydantic import AliasChoices, Field, field_validator
@@ -25,6 +26,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS"),
     )
     cors_allow_credentials: bool = Field(default=True, alias="CORS_ALLOW_CREDENTIALS")
+    keycloak_auth_enabled: bool = Field(default=False, alias="KEYCLOAK_AUTH_ENABLED")
+    keycloak_url: str = Field(default="http://localhost:8081", alias="KEYCLOAK_URL")
+    keycloak_public_url: str = Field(
+        default="http://localhost:8081",
+        validation_alias=AliasChoices("KEYCLOAK_PUBLIC_URL", "KEYCLOAK_URL"),
+    )
+    keycloak_internal_url: str = Field(default="http://keycloak:8080", alias="KEYCLOAK_INTERNAL_URL")
+    keycloak_realm: str = Field(default="osint-platform", alias="KEYCLOAK_REALM")
+    keycloak_client_id: str = Field(default="osint-frontend", alias="KEYCLOAK_CLIENT_ID")
+    keycloak_http_timeout_seconds: int = Field(default=5, alias="KEYCLOAK_HTTP_TIMEOUT_SECONDS")
+    keycloak_jwks_cache_ttl_seconds: int = Field(default=300, alias="KEYCLOAK_JWKS_CACHE_TTL_SECONDS")
 
     postgres_host: str = Field(default="postgres", alias="POSTGRES_HOST")
     postgres_port: int = Field(default=5432, alias="POSTGRES_PORT")
@@ -68,6 +80,24 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_db,
         ).render_as_string(hide_password=False)
+
+    @property
+    def keycloak_realm_url(self) -> str:
+        return urljoin(self.keycloak_public_url.rstrip("/") + "/", f"realms/{self.keycloak_realm}")
+
+    @property
+    def keycloak_internal_realm_url(self) -> str:
+        return urljoin(
+            self.keycloak_internal_url.rstrip("/") + "/",
+            f"realms/{self.keycloak_realm}",
+        )
+
+    @property
+    def keycloak_jwks_url(self) -> str:
+        return urljoin(
+            self.keycloak_internal_realm_url.rstrip("/") + "/",
+            "protocol/openid-connect/certs",
+        )
 
 
 @lru_cache(maxsize=1)

@@ -12,6 +12,118 @@ SKIP_MIGRATIONS=false
 START_AIRFLOW=false
 START_CLOUDFLARED=false
 
+env_value() {
+    local key="$1"
+    local fallback="${2:-}"
+    local value="${!key:-}"
+
+    if [[ -n "$value" ]]; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+
+    if [[ -f "$ENV_FILE" ]]; then
+        value="$(sed -n "s/^${key}=//p" "$ENV_FILE" | head -n1)"
+        if [[ -n "$value" ]]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    fi
+
+    printf '%s\n' "$fallback"
+}
+
+set_env_file_value() {
+    local key="$1"
+    local value="$2"
+
+    if grep -q "^${key}=" "$ENV_FILE"; then
+        python3 - <<'PY' "$ENV_FILE" "$key" "$value"
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+lines = env_path.read_text(encoding="utf-8").splitlines()
+updated = []
+for line in lines:
+    if line.startswith(f"{key}="):
+        updated.append(f"{key}={value}")
+    else:
+        updated.append(line)
+env_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+PY
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+    fi
+}
+
+wait_for_public_url() {
+    local label="$1"
+    local url="$2"
+    local timeout_seconds="$3"
+    local start_time
+    local http_code
+    start_time=$(date +%s)
+
+    if [[ -z "$url" ]]; then
+        return 0
+    fi
+
+    while true; do
+        http_code="$(curl -k -L -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url" 2>/dev/null || true)"
+        case "$http_code" in
+            200|204|301|302|303|307|308|401|403)
+                echo "$label is reachable at $url (HTTP $http_code)."
+                return 0
+                ;;
+        esac
+
+        if (( $(date +%s) - start_time >= timeout_seconds )); then
+            echo "Timed out waiting for $label at $url. Last HTTP code: ${http_code:-none}."
+            echo "If you are using a token-managed Cloudflare tunnel, confirm the public hostname exists in the Cloudflare Zero Trust tunnel config."
+            return 1
+        fi
+
+        sleep 2
+    done
+}
+
+wait_for_cloudflared_hostname() {
+    local expected_hostname="$1"
+    local timeout_seconds="$2"
+    local start_time
+    local logs
+    start_time=$(date +%s)
+
+    if [[ -z "$expected_hostname" ]]; then
+        return 0
+    fi
+
+    while true; do
+        logs="$(compose logs --tail=200 cloudflared 2>/dev/null || true)"
+        if grep -Fq "\\\"hostname\\\":\\\"${expected_hostname}\\\"" <<< "$logs"; then
+            echo "cloudflared is advertising hostname ${expected_hostname}."
+            return 0
+        fi
+
+        if grep -Fq "\\\"hostname\\\":\\\"${expected_hostname}." <<< "$logs"; then
+            echo "cloudflared advertised a malformed hostname based on ${expected_hostname}."
+            echo "$logs" | tail -n 40
+            return 1
+        fi
+
+        if (( $(date +%s) - start_time >= timeout_seconds )); then
+            echo "Timed out waiting for cloudflared to advertise hostname ${expected_hostname}."
+            echo "$logs" | tail -n 40
+            return 1
+        fi
+
+        sleep 2
+    done
+}
+
 usage() {
     cat <<'EOF'
 Usage: ./scripts/start-prod-like.sh [--apply-migrations | --skip-migrations] [--with-airflow] [--with-cloudflared]
@@ -167,19 +279,35 @@ wait_for_service_health() {
 }
 
 echo "Starting shared infrastructure..."
-compose up -d postgres neo4j redis minio
+compose up -d postgres neo4j redis minio keycloak
 
 echo "Waiting for shared infrastructure readiness..."
 wait_for_service_health postgres 180
 wait_for_service_state neo4j running 120
 wait_for_service_health redis 120
 wait_for_service_state minio running 120
+wait_for_service_health keycloak 180
 
 if [[ "$APPLY_MIGRATIONS" == "true" ]]; then
     echo "Running Flyway migrations for prod-like..."
     "$ROOT_DIR/infrastructure/postgres/run-flyway.sh" --env prod-like --yes migrate
 else
     echo "Skipping Flyway migrations for prod-like."
+fi
+
+local_keycloak_url="http://localhost:$(env_value KEYCLOAK_PORT 8081)"
+if [[ "$START_CLOUDFLARED" == "true" ]]; then
+    auth_domain="$(env_value CF_AUTH_DOMAIN)"
+    auth_public_url_default=""
+    if [[ -n "$auth_domain" ]]; then
+        auth_public_url_default="https://${auth_domain}"
+    fi
+
+    set_env_file_value KEYCLOAK_PUBLIC_URL "${auth_public_url_default:-$(env_value KEYCLOAK_PUBLIC_URL "$local_keycloak_url")}" 
+    set_env_file_value VITE_KEYCLOAK_URL "${auth_public_url_default:-$(env_value VITE_KEYCLOAK_URL "$local_keycloak_url")}" 
+else
+    set_env_file_value KEYCLOAK_PUBLIC_URL "$local_keycloak_url"
+    set_env_file_value VITE_KEYCLOAK_URL "$local_keycloak_url"
 fi
 
 echo "Starting prod-like application services..."
@@ -206,6 +334,21 @@ if [[ "$START_CLOUDFLARED" == "true" ]]; then
     echo "Starting Cloudflare tunnel overlay..."
     compose up -d cloudflared
     wait_for_service_state cloudflared running 120
+
+    auth_public_base_url="$(env_value KEYCLOAK_PUBLIC_URL)"
+    auth_public_url="${auth_public_base_url%/}/realms/$(env_value KEYCLOAK_REALM osint-platform)"
+    frontend_public_url="https://$(env_value CF_APP_DOMAIN)"
+    backend_public_url="https://$(env_value CF_API_DOMAIN)/health"
+
+    echo "Validating Cloudflare public hostnames..."
+    wait_for_cloudflared_hostname "$(env_value CF_APP_DOMAIN)" 120
+    wait_for_cloudflared_hostname "$(env_value CF_API_DOMAIN)" 120
+    wait_for_public_url "Frontend public hostname" "$frontend_public_url" 120
+    wait_for_public_url "Backend public hostname" "$backend_public_url" 120
+    if [[ -n "$auth_public_base_url" && "$auth_public_base_url" == https://* ]]; then
+        wait_for_cloudflared_hostname "$(env_value CF_AUTH_DOMAIN)" 120
+        wait_for_public_url "Keycloak public hostname" "$auth_public_url" 120
+    fi
 fi
 
 echo
@@ -224,3 +367,4 @@ else
 fi
 echo "Neo4j:    http://localhost:${NEO4J_HTTP_PORT:-7474}"
 echo "MinIO:    http://localhost:${MINIO_CONSOLE_PORT:-9001}"
+echo "Keycloak: http://localhost:${KEYCLOAK_PORT:-8081}"

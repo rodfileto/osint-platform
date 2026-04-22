@@ -1,0 +1,322 @@
+{
+  "incubated_companies": {
+    "count": 93,
+    "examples": [
+      {
+        "id": 112,
+        "name": "GESTFAIR",
+        "cnpj": "50953719000115",
+        "telephone": "5591750499",
+        "email": "CONTATO@GESTFAIR.COM.BR",
+        "site": "https://gestfair.com.br/",
+        "created_at": "2023-10-23T19:41:30.000000Z",
+        "updated_at": "2023-10-24T21:50:31.000000Z",
+        "address": {
+          "postcode": "97105900",
+          "street": "Avenida Roraima",
+          "number": "1000",
+          "neighborhood": "Camobi"
+        },
+        "city": {
+          "id": 4316907,
+          "name": "Santa Maria"
+        },
+        "state": {
+          "id": 43,
+          "name": "Rio Grande do Sul",
+          "uf": "RS"
+        }
+      },
+      {
+        "id": 166,
+        "name": "QIRON EDUCATION",
+        "cnpj": "27254398000149",
+        "telephone": "5599411342",
+        "email": "RAFAEL@QIRONROBOTICS.COM",
+        "site": "https://qironrobotics.com/en/homepage/",
+        "created_at": "2023-10-25T20:09:10.000000Z",
+        "updated_at": "2025-07-07T16:05:12.000000Z",
+        "address": {
+          "postcode": "97105900",
+          "street": "Avenida Roraima",
+          "number": "1000",
+          "neighborhood": "Camobi"
+        },
+        "city": {
+          "id": 4316907,
+          "name": "Santa Maria"
+        },
+        "state": {
+          "id": 43,
+          "name": "Rio Grande do Sul",
+          "uf": "RS"
+        }
+      },
+      {
+        "id": 213,
+        "name": "Ello Fertiliza Inova Simples (I.S.)",
+        "cnpj": "44646433000194",
+        "telephone": "3171230603",
+        "email": "karolinematiello1@gmail.com",
+        "site": "",
+        "created_at": "2023-10-30T12:57:16.000000Z",
+        "updated_at": "2023-12-05T14:37:49.000000Z",
+        "address": {
+          "postcode": "36574186",
+          "street": "Rua Dom Silvério",
+          "number": "141",
+          "neighborhood": "Nova Era"
+        },
+        "city": {
+          "id": 3171303,
+          "name": "Viçosa"
+        },
+        "state": {
+          "id": 31,
+          "name": "Minas Gerais",
+          "uf": "MG"
+        }
+      }
+    ]
+  },
+  "accelerated_companies": {
+    "count": 11,
+    "examples": [
+      {
+        "id": 1551,
+        "name": "Zinz",
+        "cnpj": "38173958000157",
+        "telephone": "41996869828",
+        "email": "iuri.lenzi@zinz.com.br",
+        "site": "https://zinz.com.br/",
+        "created_at": "2024-05-30T00:31:01.000000Z",
+        "updated_at": "2024-05-30T19:16:22.000000Z",
+        "address": {
+          "postcode": "80420080",
+          "street": "Rua Emiliano Perneta",
+          "number": "500",
+          "neighborhood": "Centro"
+        },
+        "city": {
+          "id": 4106902,
+          "name": "Curitiba"
+        },
+        "state": {
+          "id": 41,
+          "name": "Paraná",
+          "uf": "PR"
+        }
+      },
+      {
+        "id": 1573,
+        "name": "ONDASUP COMERCIO DE ROUPAS E EQUIPAMENTOS ESPORTIVOS LTDA",
+        "cnpj": "34742139000122",
+        "telephone": "6199791925",
+        "email": "ONDASUP@GMAIL.COM",
+        "site": null,
+        "created_at": "2024-05-31T15:15:33.000000Z",
+        "updated_at": "2025-01-28T19:00:16.000000Z",
+        "address": {
+          "postcode": "70610433",
+          "street": "SIG Quadra 3 Bloco C",
+          "number": "00",
+          "neighborhood": "Zona Industrial"
+        },
+        "city": {
+          "id": 5300108,
+          "name": "Brasília"
+        },
+        "state": {
+          "id": 53,
+          "name": "Distrito Federal",
+          "uf": "DF"
+        }
+      },
+      {
+        "id": 1860,
+        "name": "Buddie App Inova Simples",
+        "cnpj": "49933843000130",
+        "telephone": "2796991997",
+        "email": "contato@buddieapp.tech",
+        "site": null,
+        "created_at": "2024-06-27T20:38:26.000000Z",
+        "updated_at": "2024-06-27T22:08:35.000000Z",
+        "address": {
+          "postcode": "29056250",
+          "street": "Avenida Nossa Senhora da Penha",
+          "number": "353",
+          "neighborhood": "Santa Lúcia"
+        },
+        "city": {
+          "id": 3205309,
+          "name": "Vitória"
+        },
+        "state": {
+          "id": 32,
+          "name": "Espírito Santo",
+          "uf": "ES"
+        }
+      }
+    ]
+  },
+  "graduated_companies": {
+    "count": 48,
+    "examples": [
+      {
+        "id": 6,
+        "name": "INOVAÇÃO EM MECANIZAÇÃO AGRÍCOLA CEIFA LTDA",
+        "cnpj": "10786987000175",
+        "telephone": "3591229710",
+        "email": "FAMCEIFA@GMAIL.COM",
+        "site": "https://inovaceifa.com.br/",
+        "created_at": "2023-10-11T15:48:30.000000Z",
+        "updated_at": "2025-08-06T13:38:55.000000Z",
+        "address": {
+          "postcode": "37203202",
+          "street": "Trevo Rotatório Professor Edmir Sá Santos",
+          "number": "S/N",
+          "neighborhood": "Universidade Federal de Lavras"
+        },
+        "city": {
+          "id": 3138203,
+          "name": "Lavras"
+        },
+        "state": {
+          "id": 31,
+          "name": "Minas Gerais",
+          "uf": "MG"
+        }
+      },
+      {
+        "id": 22,
+        "name": "ENVIRONMENT INTELIGENCIA DE NEGOCIOS E TECNOLOGIA LTDA",
+        "cnpj": "33190194000194",
+        "telephone": "35999925353",
+        "email": "environbit@environbit.com.br",
+        "site": "https://environbit.com.br/",
+        "created_at": "2023-10-17T13:02:53.000000Z",
+        "updated_at": "2023-11-08T21:49:52.000000Z",
+        "address": {
+          "postcode": "37202734",
+          "street": "Rua Ângelo Padovani",
+          "number": "292",
+          "neighborhood": "Vila Pitangui"
+        },
+        "city": {
+          "id": 3138203,
+          "name": "Lavras"
+        },
+        "state": {
+          "id": 31,
+          "name": "Minas Gerais",
+          "uf": "MG"
+        }
+      },
+      {
+        "id": 81,
+        "name": "Zaruc Tecnologia Ltda",
+        "cnpj": "10499742000167",
+        "telephone": "2733001200",
+        "email": "contato@zaruc.com.br",
+        "site": "https://www.zaruc.com.br/",
+        "created_at": "2023-10-20T14:31:22.000000Z",
+        "updated_at": "2026-03-20T18:01:24.000000Z",
+        "address": {
+          "postcode": "29165491",
+          "street": "Rua Afonso Arinos Melo Franco",
+          "number": "181",
+          "neighborhood": "Parque Residencial Laranjeiras"
+        },
+        "city": {
+          "id": 3205002,
+          "name": "Serra"
+        },
+        "state": {
+          "id": 32,
+          "name": "Espírito Santo",
+          "uf": "ES"
+        }
+      }
+    ]
+  },
+  "resident_companies": {
+    "count": 4084,
+    "examples": [
+      {
+        "id": 14507,
+        "name": "ZCR INFORMATICA LTDA",
+        "cnpj": "40626483000159",
+        "telephone": "7136128514",
+        "email": "comunicacao@zcr.com.br",
+        "site": null,
+        "created_at": "2026-02-08T06:13:46.000000Z",
+        "updated_at": "2026-02-08T06:13:46.000000Z",
+        "address": {
+          "postcode": "41745715",
+          "street": "Rua Mundo EDIF TECNOCENTRO SALA 210 ",
+          "number": "121",
+          "neighborhood": "Trobogy"
+        },
+        "city": {
+          "id": 2900108,
+          "name": "Abaíra"
+        },
+        "state": {
+          "id": 29,
+          "name": "Bahia",
+          "uf": "BA"
+        }
+      },
+      {
+        "id": 14508,
+        "name": "INSTITUTO FEDERAL DA BAHIA - IFBA",
+        "cnpj": "10764307000112",
+        "telephone": "7121040727",
+        "email": "poloinovacaosalvador@ifba.edu.br",
+        "site": null,
+        "created_at": "2026-02-08T06:13:46.000000Z",
+        "updated_at": "2026-02-08T06:13:46.000000Z",
+        "address": {
+          "postcode": "41301110",
+          "street": "R Mundo, Edf. Tecnocentro, SL G2B",
+          "number": "121",
+          "neighborhood": "Trobogy"
+        },
+        "city": {
+          "id": 2900108,
+          "name": "Abaíra"
+        },
+        "state": {
+          "id": 29,
+          "name": "Bahia",
+          "uf": "BA"
+        }
+      },
+      {
+        "id": 14509,
+        "name": "TOPOS INFORMÁTICA DO BRASIL LTDA",
+        "cnpj": "96770573000173",
+        "telephone": "7133681898",
+        "email": "financeiro@topos.inf.br",
+        "site": null,
+        "created_at": "2026-02-08T06:13:46.000000Z",
+        "updated_at": "2026-02-08T06:13:46.000000Z",
+        "address": {
+          "postcode": "41745715",
+          "street": "Rua Mundo, Edf Tecnocentro, sala 201",
+          "number": "121",
+          "neighborhood": "Trobogy"
+        },
+        "city": {
+          "id": 2900108,
+          "name": "Abaíra"
+        },
+        "state": {
+          "id": 29,
+          "name": "Bahia",
+          "uf": "BA"
+        }
+      }
+    ]
+  }
+}

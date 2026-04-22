@@ -1,7 +1,5 @@
-"use client";
-
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import axios from "axios";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isAxiosError } from "axios";
 import ComponentCard from "@/components/common/ComponentCard";
 import Select from "@/components/form/Select";
 import Button from "@/components/ui/button/Button";
@@ -51,18 +49,6 @@ interface PersonNetworkResponse {
   metadata: PersonNetworkMetadata;
 }
 
-interface PersonNetworkGraphProps {
-  cpfMascarado: string;
-  nome: string;
-}
-
-interface NetworkTooltipState {
-  label: string;
-  x: number;
-  y: number;
-  visible: boolean;
-}
-
 interface GraphNodeEventTarget {
   data: (key: string) => unknown;
   renderedPosition: () => { x: number; y: number };
@@ -72,9 +58,26 @@ interface GraphNodeEvent {
   target: GraphNodeEventTarget;
 }
 
-function getShortLabel(label: string, type: NetworkNode["type"]): string {
+type PersonNetworkGraphProps = {
+  cpfMascarado: string;
+  nome: string;
+};
+
+type NetworkTooltipState = {
+  label: string;
+  x: number;
+  y: number;
+  visible: boolean;
+};
+
+function getShortLabel(label: string, type: NetworkNode["type"]) {
   const maxLength = type === "empresa" ? 22 : 18;
-  return label.length <= maxLength ? label : `${label.slice(0, maxLength - 1)}…`;
+
+  if (label.length <= maxLength) {
+    return label;
+  }
+
+  return `${label.slice(0, maxLength - 1)}…`;
 }
 
 export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetworkGraphProps) {
@@ -82,7 +85,12 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
   const [depth, setDepth] = useState("1");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [tooltip, setTooltip] = useState<NetworkTooltipState>({ label: "", x: 0, y: 0, visible: false });
+  const [tooltip, setTooltip] = useState<NetworkTooltipState>({
+    label: "",
+    x: 0,
+    y: 0,
+    visible: false,
+  });
   const graphRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<GraphCore | null>(null);
 
@@ -90,37 +98,42 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
     const fetchNetwork = async () => {
       setLoading(true);
       setError(null);
+
       try {
-        const params: Record<string, string> = {
-          depth,
-          nome,
-          cpf_mascarado: cpfMascarado,
-        };
-        const response = await apiClient.get<PersonNetworkResponse>(
-          "/api/cnpj/pessoa-network/detail/",
-          { params }
-        );
+        const response = await apiClient.get<PersonNetworkResponse>("/api/cnpj/pessoa-network/detail/", {
+          params: {
+            depth,
+            nome,
+            cpf_mascarado: cpfMascarado,
+          },
+        });
         setData(response.data);
-      } catch (e) {
-        const msg =
-          axios.isAxiosError(e) && e.response
-            ? `Erro ${e.response.status}: ${e.response.statusText}`
+      } catch (errorValue) {
+        const message =
+          isAxiosError(errorValue) && errorValue.response
+            ? `Erro ${errorValue.response.status}: ${errorValue.response.statusText}`
             : "Erro de conexão ao carregar rede de co-propriedade";
-        setError(msg);
+
+        setError(message);
         setData(null);
       } finally {
         setLoading(false);
       }
     };
-    fetchNetwork();
+
+    void fetchNetwork();
   }, [cpfMascarado, nome, depth]);
 
   const elements = useMemo(() => {
-    if (!data) return [];
+    if (!data) {
+      return [];
+    }
+
     return [
       ...data.nodes.map((node) => {
         const isPessoa = node.type === "pessoa";
         const isCore = node.data?.is_core ? 1 : 0;
+
         return {
           data: {
             id: node.id,
@@ -130,12 +143,8 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
             isCore,
             size: isPessoa ? (isCore ? 48 : 30) : 44,
             nodeShape: isPessoa ? "ellipse" : "round-rectangle",
-            nodeColor: isPessoa
-              ? isCore ? "#92400e" : "#c2410c"
-              : "#1d4ed8",
-            nodeBorderColor: isPessoa
-              ? isCore ? "#78350f" : "#9a3412"
-              : "#1e40af",
+            nodeColor: isPessoa ? (isCore ? "#92400e" : "#c2410c") : "#1d4ed8",
+            nodeBorderColor: isPessoa ? (isCore ? "#78350f" : "#9a3412") : "#1e40af",
           },
         };
       }),
@@ -161,13 +170,21 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
         }
         return;
       }
+
       const cytoscapeModule = await import("cytoscape");
       const coseBilkentModule = await import("cytoscape-cose-bilkent");
-      if (!isMounted) return;
+
+      if (!isMounted) {
+        return;
+      }
+
       const cytoscape = cytoscapeModule.default;
       const coseBilkent = coseBilkentModule.default;
       cytoscape.use(coseBilkent);
-      if (cyRef.current) cyRef.current.destroy();
+
+      if (cyRef.current) {
+        cyRef.current.destroy();
+      }
 
       const cyInstance = cytoscape({
         container: graphRef.current,
@@ -223,14 +240,21 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
       cyRef.current = cyInstance;
 
       const showTooltip = (event: GraphNodeEvent) => {
-        if (!graphRef.current) return;
-        const pos = event.target.renderedPosition();
+        const renderedPosition = event.target.renderedPosition();
         const fullLabel = String(event.target.data("fullLabel") || event.target.data("label") || "");
-        setTooltip({ label: fullLabel, x: pos.x + 12, y: pos.y - 12, visible: true });
+
+        setTooltip({
+          label: fullLabel,
+          x: renderedPosition.x + 12,
+          y: renderedPosition.y - 12,
+          visible: true,
+        });
       };
 
       const hideTooltip = () => {
-        setTooltip((t) => t.visible ? { ...t, visible: false } : t);
+        setTooltip((currentTooltip) =>
+          currentTooltip.visible ? { ...currentTooltip, visible: false } : currentTooltip,
+        );
       };
 
       cyInstance.on("mouseover", "node", showTooltip);
@@ -242,10 +266,11 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
       cyInstance.fit(30);
     };
 
-    mountGraph();
+    void mountGraph();
 
     return () => {
       isMounted = false;
+
       if (cyRef.current) {
         cyRef.current.destroy();
         cyRef.current = null;
@@ -253,31 +278,36 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
     };
   }, [elements]);
 
-  const handleRefit = () => cyRef.current?.fit(30);
+  const handleRefit = () => {
+    if (cyRef.current) {
+      cyRef.current.fit(30);
+    }
+  };
 
   const handleRelayout = () => {
-    if (!cyRef.current) return;
-    cyRef.current.layout({
-      name: "cose-bilkent",
-      animate: false,
-      nodeRepulsion: 6000,
-      idealEdgeLength: 130,
-    }).run();
+    if (cyRef.current) {
+      cyRef.current
+        .layout({
+          name: "cose-bilkent",
+          animate: false,
+          nodeRepulsion: 6000,
+          idealEdgeLength: 130,
+        })
+        .run();
+    }
   };
 
   return (
     <ComponentCard title="Rede de Co-propriedade" desc="Pessoa ↔ Empresas ↔ Co-sócios (Neo4j)">
-      {loading && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Carregando rede…</p>
-      )}
+      {loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Carregando rede...</p> : null}
 
-      {error && (
-        <div className="rounded-2xl border border-error-200 bg-error-50 px-5 py-4 text-sm text-error-700 dark:border-error-500/20 dark:bg-error-500/10 dark:text-error-400">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400">
           {error}
         </div>
-      )}
+      ) : null}
 
-      {!loading && !error && data && (
+      {!loading && !error && data ? (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-gray-500 dark:text-gray-400">
@@ -297,8 +327,12 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
                   className="h-9 rounded-lg py-2 text-xs"
                 />
               </div>
-              <Button variant="outline" size="sm" onClick={handleRelayout}>Reorganizar</Button>
-              <Button variant="outline" size="sm" onClick={handleRefit}>Ajustar</Button>
+              <Button variant="outline" size="sm" onClick={handleRelayout}>
+                Reorganizar
+              </Button>
+              <Button variant="outline" size="sm" onClick={handleRefit}>
+                Ajustar
+              </Button>
             </div>
           </div>
 
@@ -324,18 +358,18 @@ export default function PersonNetworkGraph({ cpfMascarado, nome }: PersonNetwork
           ) : (
             <div className="relative h-[460px] w-full rounded-xl border border-gray-200 dark:border-gray-800">
               <div ref={graphRef} className="h-full w-full" />
-              {tooltip.visible && (
+              {tooltip.visible ? (
                 <div
                   className="pointer-events-none absolute z-10 max-w-64 rounded-lg bg-gray-950/90 px-3 py-2 text-xs font-medium text-white shadow-lg"
                   style={{ left: Math.min(tooltip.x, 520), top: Math.max(tooltip.y, 8) }}
                 >
                   {tooltip.label}
                 </div>
-              )}
+              ) : null}
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </ComponentCard>
   );
 }

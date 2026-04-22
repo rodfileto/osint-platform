@@ -15,6 +15,10 @@ ingress:
   - hostname: ${CF_API_DOMAIN}
     service: http://backend:8000
 
+  # Keycloak login / OIDC endpoints
+  - hostname: ${CF_AUTH_DOMAIN}
+    service: http://keycloak:8080
+
   # Airflow webserver (optional, restrict access with Cloudflare Access)
   - hostname: ${CF_AIRFLOW_DOMAIN}
     service: http://airflow-webserver:8080

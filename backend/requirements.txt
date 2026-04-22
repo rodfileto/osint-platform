@@ -7,5 +7,6 @@ sqlalchemy>=2.0.0,<3.0.0
 neo4j>=5.28.0,<6.0.0
 psycopg2-binary>=2.9.0,<3.0.0
 requests>=2.31.0,<3.0.0
+PyJWT[crypto]>=2.9.0,<3.0.0
 openpyxl>=3.1.0,<4.0.0
 geobr>=0.2.2,<1.0.0
