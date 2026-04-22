@@ -29,6 +29,10 @@ from inovalink.loader import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+INOVALINK_REDACT_GOOGLE_MAPS_KEYS = os.getenv(
+    "INOVALINK_REDACT_GOOGLE_MAPS_KEYS", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 default_args = {
     "owner": "osint-platform",
     "depends_on_past": False,
@@ -41,7 +45,9 @@ default_args = {
 
 
 def _collect_livewire_payload(**context) -> dict:
-    return collect_livewire_payload()
+    return collect_livewire_payload(
+        redact_google_api_keys=INOVALINK_REDACT_GOOGLE_MAPS_KEYS
+    )
 
 
 def _register_sync_manifest(**context) -> dict:

@@ -84,3 +84,7 @@ pipelines/*.err
 pipelines/*.log
 airflow.db
 pipelines/__pycache__/
+
+# --- Inovalink Generated Artifacts ---
+dev/artifacts/inovalink/livewire_update_*.json
+dev/artifacts/inovalink/livewire_update_*.html

@@ -34,6 +34,8 @@ ARTIFACT_DIR = Path(
 )
 MINIO_BUCKET_RAW = os.getenv("MINIO_BUCKET_RAW", "osint-raw")
 MINIO_PREFIX_INOVALINK = os.getenv("MINIO_PREFIX_INOVALINK", "inovalink/livewire").rstrip("/")
+GOOGLE_API_KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z\-_]{35}")
+REDACTED_GOOGLE_API_KEY = "[REDACTED_GOOGLE_API_KEY]"
 
 COLLECTION_TO_ENTITY_KIND = {
     "incubators": "incubator",
@@ -120,6 +122,16 @@ def _normalize_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _redact_google_api_keys(value: Any) -> Any:
+    if isinstance(value, str):
+        return GOOGLE_API_KEY_PATTERN.sub(REDACTED_GOOGLE_API_KEY, value)
+    if isinstance(value, list):
+        return [_redact_google_api_keys(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_google_api_keys(item) for key, item in value.items()}
+    return value
 
 
 def _normalize_digits(value: Any, width: int | None = None) -> str | None:
@@ -235,7 +247,7 @@ def _extract_livewire_actor_payload(response_json: dict[str, Any]) -> dict[str, 
     return params[0]
 
 
-def collect_livewire_payload() -> dict[str, Any]:
+def collect_livewire_payload(*, redact_google_api_keys: bool = False) -> dict[str, Any]:
     session = requests.Session()
     collected_at = datetime.now(timezone.utc)
 
@@ -289,6 +301,9 @@ def collect_livewire_payload() -> dict[str, Any]:
     response.raise_for_status()
 
     response_json = response.json()
+    if redact_google_api_keys:
+        response_json = _redact_google_api_keys(response_json)
+
     actors = _extract_livewire_actor_payload(response_json)
     response_bytes = response.content
     response_checksum = _sha256_bytes(response_bytes)
