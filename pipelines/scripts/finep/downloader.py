@@ -227,6 +227,15 @@ def validate_xlsx(path: Path) -> dict:
         }
 
 
+def find_existing_download(dataset_dir: Path, file_name: str, remote_headers: dict) -> Optional[Path]:
+    """Newest local <timestamp>_<file_name> matching the remote size, or None."""
+    expected_size = remote_headers.get("content_length")
+    if expected_size is None:
+        return None
+    candidates = sorted(dataset_dir.glob(f"*_{file_name}"), reverse=True)
+    return next((p for p in candidates if p.stat().st_size == int(expected_size)), None)
+
+
 # ---------------------------------------------------------------------------
 # Registro no manifesto
 # ---------------------------------------------------------------------------
@@ -378,18 +387,26 @@ def collect_dataset(
         logger.info(f"[{dataset_type}] Arquivo inalterado — download ignorado.")
         return {"dataset_type": dataset_type, "skipped": True, "reason": "unchanged"}
 
-    # 2. Download
+    # 2. Download, unless bronze already holds this version and the manifest just lost track of it
     file_name = url.rstrip("/").split("/")[-1]
-    timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-    dest_path = output_dir / dataset_type / f"{timestamp}_{file_name}"
+    existing = None
+    if not force and get_last_download_info(dataset_type) is None:
+        existing = find_existing_download(output_dir / dataset_type, file_name, remote_headers)
 
-    try:
-        file_size = download_file(url, dest_path)
-    except Exception as exc:
-        error_msg = f"Download falhou: {exc}"
-        logger.error(f"[{dataset_type}] {error_msg}")
-        register_failed(dataset_type=dataset_type, source_url=url, error_message=error_msg)
-        raise
+    if existing:
+        dest_path = existing
+        file_size = dest_path.stat().st_size
+        logger.info(f"[{dataset_type}] Arquivo já existe em bronze — registrado sem download: {dest_path}")
+    else:
+        timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        dest_path = output_dir / dataset_type / f"{timestamp}_{file_name}"
+        try:
+            file_size = download_file(url, dest_path)
+        except Exception as exc:
+            error_msg = f"Download falhou: {exc}"
+            logger.error(f"[{dataset_type}] {error_msg}")
+            register_failed(dataset_type=dataset_type, source_url=url, error_message=error_msg)
+            raise
 
     # 3. Checksum
     checksum = _sha256(dest_path)
@@ -414,6 +431,7 @@ def collect_dataset(
     return {
         "dataset_type":  dataset_type,
         "skipped":       False,
+        "reused":        existing is not None,
         "manifest_id":   manifest_id,
         "local_path":    str(dest_path),
         "file_size_bytes": file_size,

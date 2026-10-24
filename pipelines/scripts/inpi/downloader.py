@@ -304,6 +304,33 @@ def download_and_upload_to_minio(
     }
 
 
+def find_existing_snapshot(url: str, snapshot_date: date, remote_headers: dict) -> Optional[dict]:
+    """Return the bronze object for this remote version, or None if it must be downloaded."""
+    file_name = url.rstrip("/").split("/")[-1]
+    minio_key = _build_minio_key(snapshot_date, file_name)
+    bucket, _ = _get_minio_bucket_and_prefix()
+    s3 = _get_minio_s3_client()
+    try:
+        head = s3.head_object(Bucket=bucket, Key=minio_key)
+    except s3.exceptions.ClientError:
+        return None
+
+    expected_size = remote_headers.get("content_length")
+    if expected_size is not None and int(head["ContentLength"]) != int(expected_size):
+        return None
+
+    return {
+        "file_name":     file_name,
+        "minio_key":     minio_key,
+        "minio_bucket":  bucket,
+        "file_size":     int(head["ContentLength"]),
+        "checksum":      (head.get("Metadata") or {}).get("sha256"),
+        "row_count":     None,
+        "column_names":  None,
+        "snapshot_date": snapshot_date,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Registro no manifesto
 # ---------------------------------------------------------------------------
@@ -464,7 +491,30 @@ def collect_dataset(
 
     download_date = datetime.now(tz=timezone.utc)
 
-    # 2. Download → MinIO
+    # 2a. Reuse the snapshot if bronze already holds this exact version
+    existing = None if force else find_existing_snapshot(url, snapshot_date, remote_headers)
+    if existing:
+        manifest_id = register_manifest(
+            dataset_name=dataset_name,
+            source_url=url,
+            result=existing,
+            remote_headers=remote_headers,
+            download_date=download_date,
+        )
+        logger.info(f"[{dataset_name}] Snapshot já existe no MinIO — registrado sem download: {existing['minio_key']}")
+        return {
+            "dataset_name":  dataset_name,
+            "skipped":       False,
+            "reused":        True,
+            "minio_key":     existing["minio_key"],
+            "file_size":     existing["file_size"],
+            "checksum":      existing["checksum"],
+            "row_count":     None,
+            "snapshot_date": snapshot_date.isoformat(),
+            "manifest_id":   manifest_id,
+        }
+
+    # 2b. Download → MinIO
     try:
         result = download_and_upload_to_minio(
             dataset_name=dataset_name,
