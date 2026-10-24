@@ -1,6 +1,6 @@
 # Data Architecture Review: Lake → PostgreSQL + Neo4j
 
-Date: 2026-10-24. Scope: CNPJ, INPI and FINEP ingestion, how they are stored, and what the API actually reads.
+Date: 2026-10-24. Scope: CNPJ, INPI and FINEP ingestion, how they are stored, and what the API actually reads. The current design itself is described in [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md); this document only covers its problems.
 
 ## TL;DR
 
@@ -16,7 +16,7 @@ Writing to two stores has also caused **real correctness drift**: the two stores
 | Neo4j | `CnpjNetworkService.get_company_network`, `get_person_network` ([cnpj_network.py](../../backend/api/services/cnpj_network.py)), plus a "preview" branch in unified search ([search.py:143](../../backend/api/routers/search.py#L143)) |
 
 - The finep and inpi routers never query Neo4j. The INPI (`Patente`, `ClasseIPC`, `DEPOSITOU`) and FINEP (`ProjetoFinep`, `SIMILAR_TO`) graph data is loaded but **nothing reads it**.
-- `grep` finds no `shortestPath`, `gds.*` or `apoc.*` calls in backend or pipelines. The cross-domain query in ARCHITECTURE_PLAN ("defence patents + FINEP projects on the same topic") does not exist.
+- `grep` finds no `shortestPath`, `gds.*` or `apoc.*` calls in backend or pipelines. The cross-domain query the earlier architecture plan advertised ("defence patents + FINEP projects on the same topic") does not exist.
 - Network depth is capped by `NEO4J_MAX_NETWORK_DEPTH=3` and results by `NEO4J_MAX_NETWORK_EDGES=200`. A recursive CTE over `cnpj.socio` handles this kind of bounded query well, and the indexes it needs (`idx_socio_cnpj_basico`, `idx_socio_cpf_cnpj`) already exist.
 
 ## 2. Redundancy map (CNPJ)
@@ -57,7 +57,6 @@ In normal mode, `load_to_postgresql` skips a month that is already loaded and ot
 ### 3.5 Inconsistent lineage
 - CNPJ → Neo4j reads **Parquet**. INPI/FINEP → Neo4j read **PostgreSQL**.
 - `DEPOSITOU` / `PROPOSTO_POR` silently skip any company not yet in Neo4j, so graph completeness depends on DAG order.
-- Docs say `pessoa_id` is SHA-256. The code uses MD5 of `cpf|nome`. (This is harmless for dedup but shows the docs and code have drifted apart.)
 
 ## 4. Neo4j load efficiency
 

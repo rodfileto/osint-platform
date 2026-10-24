@@ -1,188 +1,94 @@
-# OSINT Platform Architecture Plan
+# Architecture
 
-> Documento de referência de **decisões arquiteturais e stack tecnológico**.
-> Para configuração de ambiente, hardware e histórico de execução, veja [IMPLEMENTATION_STEPS.md](IMPLEMENTATION_STEPS.md).
+How the platform is built today. For a critique of the storage design and the recommended changes, see [DATA_ARCHITECTURE_REVIEW.md](DATA_ARCHITECTURE_REVIEW.md). Setup and configuration live in the [README](../../README.md) and [`.env.example`](../../.env.example).
 
----
+## Layers
 
-## Princípio Central
+| Layer | Responsibility | Location |
+|---|---|---|
+| Pipelines | Download, transform and load each source | `pipelines/` (Airflow DAGs and scripts) |
+| Storage | Raw files, relational tables, graph | MinIO, PostgreSQL + PostGIS, Neo4j |
+| API | Stateless read-only gateway for the UI | `backend/` (FastAPI) |
+| Frontend | Search, detail pages, networks, maps | `frontend/` (React + Vite) |
+| Auth | OIDC login for UI and API | Keycloak |
 
-**Separar em camadas independentes:**
+Pipelines never serve HTTP; the API never runs ETL. The API only reads what the pipelines produced.
 
-| Camada | Responsabilidade | Localização |
-|--------|-----------------|-------------|
-| Pipelines | Processamento e ingestão de dados | `/pipelines` |
-| Storage | Persistência estruturada e grafo | PostgreSQL + Neo4j |
-| API | Gateway stateless para a UI | `/backend` |
-| Frontend | Apresentação e busca | `/frontend` |
+## Pipelines
 
-**Regra:** Django não processa dados. Airflow não serve HTTP. Pipelines não têm dependência do Django.
+Each source has its own DAG chain, linked with `TriggerDagRunOperator`. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
 
----
+| Source | Chain | Schedule |
+|---|---|---|
+| CNPJ (Receita Federal) | `cnpj_download` → *(manual: `run_pipeline.sh`)* `cnpj_transform` → `cnpj_load_postgres` → `cnpj_matview_refresh` → `cnpj_load_neo4j` | Monthly, 2nd at 02:00 |
+| FINEP | `finep_download` → 7 `finep_load_*` DAGs; `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
+| INPI | `inpi_download` → `inpi_load_postgres` → `inpi_load_neo4j` | Weekly, Monday 05:00 |
 
-## 1. Camada de Processamento (Pipelines)
+Schedule times are in Airflow's default timezone, America/Sao_Paulo. CNPJ transforms run in DuckDB SQL: ZIPs are extracted to CSV staging and written as Parquet, then bulk-loaded.
 
-Cada fonte de dados tem seu próprio pipeline independente:
+## Storage
 
-- Localização: `/pipelines/{fonte}/`
-- Ferramentas: **DuckDB** (transformações bulk), **Python**, **Apache Airflow** (orquestração)
-- DAGs encadeadas via `TriggerDagRunOperator` — cada DAG aciona a próxima ao terminar
-- Outputs: tabelas limpas no PostgreSQL, nós/arestas no Neo4j, MinIO como raw store
+### MinIO (raw layer)
 
-**Pipelines implementados:**
+The bucket `osint-raw` is the source of truth for downloaded files:
 
-| Fonte | Fluxo | Cadência |
-|-------|-------|----------|
-| CNPJ (Receita Federal) | `download → transform (Parquet) → load_postgres → load_neo4j` | Mensal (full snapshot) |
-| FINEP (projetos de inovação) | `download → load_postgres → nlp_topics → load_neo4j` | Sob demanda |
-| INPI (patentes) | `download → load_postgres → load_neo4j` | Semanal (detecção via ETag/Last-Modified) |
+- `cnpj/raw/<YYYY-MM>/<File>.zip`: streamed straight from the Receita Federal server
+- `inpi/patentes/<YYYYMMDD>/<FILE>.csv`: one immutable snapshot per upstream version
 
----
+FINEP spreadsheets are kept on the Airflow data volume (`/opt/airflow/data/finep/`). CNPJ CSV staging and Parquet live on the Airflow temp volume and can be regenerated from the raw ZIPs.
 
-## 2. Estratégia de Storage
+### PostgreSQL
 
-### PostgreSQL — Camada Relacional
+One database, one schema per domain, managed by Flyway (`infrastructure/postgres/migrations/`):
 
-Cluster único com separação por schema:
+| Schema | Content |
+|---|---|
+| `cnpj` | Companies, establishments, partners, reference tables, download manifest, search materialized views |
+| `finep` | Contracts, disbursements, NLP topics, download manifest |
+| `inpi` | 10 patent tables, `mv_patent_search`, download manifest |
+| `geo` | IBGE states and municipalities, CNPJ municipality mapping (loaded by `run-geo-bootstrap.sh`) |
+| `public` | Airflow metadata and the Flyway history |
 
-| Schema | Conteúdo | Status |
-|--------|----------|--------|
-| `cnpj.*` | Empresas, estabelecimentos, sócios, manifests de pipeline | ✅ Implementado |
-| `finep.*` | Projetos de inovação, liberações, tópicos NLP | ✅ Implementado |
-| `inpi.*` | 10 tabelas de patentes + `mv_patent_search` (145k patentes) | ✅ Implementado |
-| `sanctions.*` | Entidades sancionadas | Planejado |
-| `contracts.*` | Contratos públicos | Planejado |
-| `public.*` | Auth compartilhada | — |
+Cross-domain joins go through `cnpj_basico`: INPI applicants are resolved to `inpi.patentes_depositantes.cnpj_basico_resolved` at load time.
 
-**Schema `inpi.*` — tabelas implementadas:**  
-`patentes_dados_bibliograficos` (tabela pai, 145k) · `patentes_conteudo` · `patentes_inventores` · `patentes_depositantes` · `patentes_classificacao_ipc` · `patentes_despachos` · `patentes_prioridades` · `patentes_procuradores` · `patentes_vinculos` · `patentes_renumeracoes`  
-Materialized view: `mv_patent_search` (PI=83.7k / MU=50.5k / MI=9.5k / PP=1.2k)  
-Cross-domain: `patentes_depositantes.cnpj_basico_resolved` — CNPJ de pessoa jurídica resolvido no load para JOIN com `cnpj.empresa` e para arestas Neo4j.
+### Neo4j
 
-**Desempenho:** dados históricos (HDD) + Materialized Views de busca (SSD via Tablespace).
-Isso permite que a camada de busca do frontend use I/O de SSD sem pagar o custo do HDD para dados raw.
+| Node | Key | Source |
+|---|---|---|
+| `Empresa` | `cnpj_basico` | CNPJ |
+| `Pessoa` | `pessoa_id` (MD5 of normalized fields) | CNPJ partners |
+| `ProjetoFinep` | `id` | FINEP |
+| `Patente` | `codigo_interno` | INPI |
+| `ClasseIPC` | `simbolo` | INPI |
+| `DepositantePF` | `depositante_id` (hash) | INPI individuals |
 
-**Layout atual de volumes:**
-- Data dir principal: `/srv/osint/postgres/data` (NVMe)
-- Tablespace de busca `fast_ssd`: `/srv/osint/postgres/ssd_tablespace` (NVMe)
-- Estratégia: PostgreSQL permanece no NVMe para menor latência; datasets de arquivo e objeto ficam fora do cluster, em HDD
-
-### Neo4j — Camada de Grafo
-
-Grafo unificado entre todas as fontes para inteligência cross-domínio.
-
-**Nodes implementados:**
-
-| Label | Chave | Contagem (prod) | Fonte |
-|-------|-------|-----------------|-------|
-| `Empresa` | `cnpj_basico` | 66.6M | CNPJ |
-| `Pessoa` | `pessoa_id` (SHA-256) | 17.5M+ | CNPJ sócios |
-| `ProjetoFinep` | `id` | ~25k | FINEP operação direta |
-| `Patente` | `codigo_interno` | 145k | INPI |
-| `ClasseIPC` | `simbolo` | 36.3k | INPI |
-| `DepositantePF` | `depositante_id` (SHA-256) | 13.5k | INPI |
-
-**Relationships implementados:**
-
-| Tipo | De → Para | Fonte |
-|------|-----------|-------|
+| Relationship | From → To | Source |
+|---|---|---|
 | `SOCIO_DE` | `Pessoa → Empresa` | CNPJ |
-| `PROPOSTO_POR` | `ProjetoFinep → Empresa` | FINEP |
-| `EXECUTADO_POR` | `ProjetoFinep → Empresa` | FINEP |
+| `PROPOSTO_POR`, `EXECUTADO_POR` | `ProjetoFinep → Empresa` | FINEP |
 | `SIMILAR_TO` | `ProjetoFinep → ProjetoFinep` | FINEP NLP (k-NN cosine) |
-| `DEPOSITOU` | `Empresa → Patente` | INPI (via `cnpj_basico_resolved`) |
-| `DEPOSITOU` | `DepositantePF → Patente` | INPI (pessoa física) |
+| `DEPOSITOU` | `Empresa` or `DepositantePF → Patente` | INPI |
 | `CLASSIFICADA_COMO` | `Patente → ClasseIPC` | INPI |
-| `VINCULADA_A` | `Patente → Patente` | INPI (A=Alteração, I=Incorporação) |
+| `VINCULADA_A` | `Patente → Patente` | INPI |
 
-**Nodes planejados:** `Contrato`, `SanctionedEntity`  
-**Relationships planejados:** `CONTRATOU`, `DOADOR_DE`, `LOCALIZADO_EM`
+The API reads Neo4j only for the CNPJ company and person networks and a search preview. The INPI and FINEP graph data is loaded but not yet used by the UI.
 
-**Deduplicação de identidade:**  
-`Pessoa` e `DepositantePF` usam SHA-256 de campos normalizados como chave estável — permite MERGE idempotente e consolida múltiplas aparições de uma mesma pessoa em um único nó.  
-Linkage cross-domínio: `Empresa.cnpj_basico` é a chave de junção universal entre CNPJ, FINEP e INPI.
+## API and frontend
 
-Permite consultas como: *"Quais empresas depositaram patentes em defesa (IPC F41\*) e também aparecem em projetos FINEP de mesmo tema?"*
+- **Backend:** FastAPI routers `auth`, `search`, `cnpj`, `finep`, `inpi` under `/api`; all except `auth` require a Keycloak token. PostgreSQL through SQLAlchemy async over asyncpg, Neo4j through the official driver.
+- **Frontend:** pages for CNPJ search, company detail, person search and detail, FINEP overview and INPI overview. Cytoscape for networks, Leaflet for maps, ApexCharts for charts.
 
-**Layout atual de volumes:**
-- Data dir Neo4j: `/srv/osint/neo4j/data` (NVMe)
-- Plugins: `./infrastructure/neo4j/plugins`
+## Stack
 
-### Storage Tiers
+| Component | Tool |
+|---|---|
+| Containers | Docker Compose: shared `docker-compose.yml` plus `compose.prod.yml` / `compose.dev.yml` overlays |
+| Orchestration | Apache Airflow 2.10 (LocalExecutor, metadata in PostgreSQL) |
+| Relational | PostgreSQL 16 + PostGIS |
+| Graph | Neo4j 5 Community + APOC |
+| Object storage | MinIO (S3 API) |
+| Transforms | DuckDB, Python |
+| NLP | sentence-transformers, UMAP, HDBSCAN, BERTopic |
+| Auth | Keycloak 26 (OIDC) |
 
-```
-NVMe (/srv/osint)           →  PostgreSQL, tablespace `fast_ssd`, Neo4j, temp rápido do Airflow
-HDD 10 TB (/mnt/data10tb)   →  `/opt/airflow/data` (raw/staging/processed) + MinIO object storage
-HDD 2 TB (/mnt/data2tb)     →  backups e retenção operacional
-```
-
-**Mounts nativos do host:**
-- `/mnt/data10tb` — volume bulk para pipelines e MinIO
-- `/mnt/data2tb` — volume de backup/retenção
-- `/srv/osint` — diretórios quentes de serviço no NVMe
-
-**Object storage (MinIO):**
-- Serviço local para arquivos raw/processados, logs arquivados e backups
-- Data dir: `/mnt/data10tb/osint/minio`
-- Buckets iniciais planejados: `osint-raw`, `osint-processed`, `osint-airflow-logs`, `osint-backups`
-- No pipeline CNPJ, os ZIPs raw são tratados como source of truth em `osint-raw/cnpj/raw/<YYYY-MM>/...`
-- A DAG `cnpj_download` faz streaming direto de Receita Federal para MinIO; o host local não é mais uma camada durável de raw ZIPs
-- A DAG `cnpj_transform` baixa sob demanda do MinIO apenas como etapa temporária de extração para staging
-
----
-
-## 3. Django API
-
-**Papel:** gateway stateless e orquestrador de consultas.
-
-- Localização: `/backend`
-- Apps: `cnpj`, `sanctions`, `contracts`, `core`
-- Django consome os bancos produzidos pelos pipelines — não tem lógica de ETL
-
----
-
-## 4. Frontend (React + Vite)
-
-**Papel:** dashboard de inteligência modular.
-
-- Localização: `/frontend`
-- Barra de busca unificada (CNPJ, CPF, nome)
-- Visualizador de grafo
-- Módulos por domínio: `/modules/cnpj`, `/modules/sanctions`
-
----
-
-## 5. Entity Resolution
-
-Camada de resolução de identidade global — o diferencial OSINT:
-
-- Um `Person` node por pessoa real (chave: CPF)
-- Um `Company` node por empresa real (chave: CNPJ raiz)
-- Todos os datasets se ligam a esses nodes centrais
-
-Permite descoberta de conexões entre domínios diferentes.
-
----
-
-## 6. Stack de Infraestrutura
-
-| Componente | Ferramenta | Papel |
-|------------|-----------|-------|
-| Containers | Docker Compose | Orquestra todos os serviços |
-| ETL | Apache Airflow 2.x | Agenda e monitora pipelines |
-| Storage relacional | PostgreSQL 16 | Dados estruturados + busca |
-| Storage grafo | Neo4j | Inteligência de relacionamentos |
-| Object storage | MinIO | Arquivos raw/processados, logs e backups |
-| Cache / fila | Redis | Sessões, filas Airflow |
-| Workers assíncronos | Celery | Background tasks (planejado) |
-
-### Convenções Operacionais
-
-- Paths internos dos containers permanecem estáveis (`/opt/airflow/data`, `/opt/airflow/temp_ssd`, `/var/lib/postgresql/data`, `/data` no Neo4j)
-- O mapeamento para discos físicos é feito por bind mounts no `docker-compose.yml`
-- O ambiente usa mounts nativos em `/mnt` em vez de automounts em `/media`
-- O automount do GNOME foi desabilitado para evitar remount automático dos HDDs fora do `fstab`
-
----
-
-*Para configuração de hardware, tuning de banco e histórico de implantação, veja [IMPLEMENTATION_STEPS.md](IMPLEMENTATION_STEPS.md).*
+Container paths are fixed (`/opt/airflow/data`, `/opt/airflow/temp_ssd`, `/var/lib/postgresql/data`, `/data`); which host disk backs each one is set only by the `*_HOST_PATH` variables in `.env`.
