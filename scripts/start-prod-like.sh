@@ -279,12 +279,11 @@ wait_for_service_health() {
 }
 
 echo "Starting shared infrastructure..."
-compose up -d postgres neo4j redis minio keycloak
+compose up -d postgres neo4j minio keycloak
 
 echo "Waiting for shared infrastructure readiness..."
 wait_for_service_health postgres 180
 wait_for_service_state neo4j running 120
-wait_for_service_health redis 120
 wait_for_service_state minio running 120
 wait_for_service_health keycloak 180
 
@@ -311,7 +310,7 @@ else
 fi
 
 echo "Starting prod-like application services..."
-compose up -d --build minio-init backend frontend
+compose up -d --build backend frontend
 
 echo "Waiting for application services readiness..."
 wait_for_service_health backend 240

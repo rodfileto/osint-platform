@@ -47,9 +47,9 @@ cp .env.example .env
 ./scripts/start-prod-like.sh --apply-migrations
 ```
 
-Por padrão, os dados de todos os serviços (PostgreSQL, Neo4j, MinIO, Redis, Airflow) ficam em `./data/` dentro do repositório, e a memória está dimensionada para um host de 16-32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL e do Neo4j; o `.env.example` traz o perfil de 64 GB.
+Por padrão, os dados de todos os serviços (PostgreSQL, Neo4j, MinIO, Airflow) ficam em `./data/` dentro do repositório, e a memória está dimensionada para um host de 16-32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL e do Neo4j; o `.env.example` traz o perfil de 64 GB.
 
-O `Quick Start` do compose raiz sobe o stack principal do produto: frontend, backend, PostgreSQL, Neo4j, Redis, MinIO e Flyway. Airflow fica fora do startup padrão e pode ser iniciado separadamente com o profile `airflow`.
+O `Quick Start` do compose raiz sobe o stack principal do produto: frontend, backend, PostgreSQL, Neo4j, MinIO e Flyway. Airflow fica fora do startup padrão e pode ser iniciado separadamente com o profile `airflow`.
 
 ### Ambiente Local Production-Like
 

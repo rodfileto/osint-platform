@@ -75,7 +75,6 @@ data/*
 
 # --- Infrastructure Data (Docker volumes) ---
 infrastructure/postgres/data/
-infrastructure/redis/data/
 infrastructure/neo4j/data/
 
 # --- Airflow ---

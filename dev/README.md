@@ -4,7 +4,7 @@ This folder contains a lightweight replica of the main OSINT stack. It keeps the
 
 ## What It Includes
 
-- PostgreSQL, Neo4j, Redis, MinIO, Flyway, backend, and the React + Vite frontend by default
+- PostgreSQL, Neo4j, MinIO, Flyway, backend, and the React + Vite frontend by default
 - Optional Airflow services when you need DAG and pipeline debugging
 - Reduced ports and memory settings so it can run side by side with the main stack
 - Sample CNPJ data for:

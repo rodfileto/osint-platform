@@ -72,7 +72,7 @@ FINEP and INPI follow the same pattern: a downloader with a manifest, then loade
 |---|---|
 | Orchestration | Apache Airflow 2.10 |
 | Processing | Python, DuckDB, pandas, PyArrow / Parquet |
-| Storage | PostgreSQL 16 + PostGIS, Neo4j 5 (APOC), MinIO (S3), Redis |
+| Storage | PostgreSQL 16 + PostGIS, Neo4j 5 (APOC), MinIO (S3) |
 | Schema management | Flyway, Cypher init scripts |
 | NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |
 | Backend | FastAPI, SQLAlchemy / asyncpg, Neo4j driver |
@@ -115,9 +115,9 @@ cp .env.example .env
 ./scripts/start-prod-like.sh --apply-migrations
 ```
 
-By default all service data (PostgreSQL, Neo4j, MinIO, Redis, Airflow) lives under `./data/` in the repo, and memory settings suit a 16-32 GB host. To load the full datasets, point the `*_HOST_PATH` variables in `.env` at larger disks and raise the PostgreSQL and Neo4j memory values; `.env.example` lists the 64 GB profile.
+By default all service data (PostgreSQL, Neo4j, MinIO, Airflow) lives under `./data/` in the repo, and memory settings suit a 16-32 GB host. To load the full datasets, point the `*_HOST_PATH` variables in `.env` at larger disks and raise the PostgreSQL and Neo4j memory values; `.env.example` lists the 64 GB profile.
 
-This starts the frontend (`http://localhost:3000`), backend (`http://localhost:8000`), Keycloak (`http://localhost:8081`), MinIO console (`http://localhost:9001`), PostgreSQL, Neo4j, Redis and Flyway. Migrations are never applied implicitly: the script requires `--apply-migrations` or `--skip-migrations`.
+This starts the frontend (`http://localhost:3000`), backend (`http://localhost:8000`), Keycloak (`http://localhost:8081`), MinIO console (`http://localhost:9001`), PostgreSQL, Neo4j and Flyway. Migrations are never applied implicitly: the script requires `--apply-migrations` or `--skip-migrations`.
 
 Airflow is kept out of the default startup and can be started separately:
 

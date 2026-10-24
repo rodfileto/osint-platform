@@ -29,7 +29,7 @@ $C down -v --remove-orphans
 
 # 2. Apaga os dados derivados (caminhos *_HOST_PATH do .env; padrão ./data/<serviço>)
 #    Mantenha o bronze (MinIO osint-raw) se não quiser baixar tudo de novo.
-sudo rm -rf ./data/postgres ./data/neo4j ./data/redis ./data/airflow/temp_ssd
+sudo rm -rf ./data/postgres ./data/neo4j ./data/airflow/temp_ssd
 
 # 3. Sobe do zero e aplica as migrations
 ./scripts/start-prod-like.sh --apply-migrations --with-airflow

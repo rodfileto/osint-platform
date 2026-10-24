@@ -57,8 +57,7 @@ ensure_host_dirs() {
         "$DEV_DIR/volumes/neo4j/data" \
         "$DEV_DIR/volumes/minio/data" \
         "$DEV_DIR/volumes/airflow/data" \
-        "$DEV_DIR/volumes/airflow/temp" \
-        "$DEV_DIR/volumes/redis/data"
+        "$DEV_DIR/volumes/airflow/temp"
 }
 
 wait_for_postgres() {
@@ -90,7 +89,7 @@ wait_for_neo4j() {
 ensure_host_dirs
 
 echo "Starting infrastructure services..."
-compose up -d postgres neo4j redis minio
+compose up -d postgres neo4j minio
 
 wait_for_postgres
 wait_for_neo4j

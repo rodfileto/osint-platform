@@ -33,6 +33,5 @@ wipe_dir "$DEV_DIR/volumes/neo4j/data"
 wipe_dir "$DEV_DIR/volumes/minio/data"
 wipe_dir "$DEV_DIR/volumes/airflow/data"
 wipe_dir "$DEV_DIR/volumes/airflow/temp"
-wipe_dir "$DEV_DIR/volumes/redis/data"
 
 echo "Dev state cleared. Run dev/scripts/start.sh to recreate the environment."
