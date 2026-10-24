@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -152,7 +153,7 @@ def embed_and_cluster(
     # ── 2. Embed ──────────────────────────────────────────────────────────────
     logger.info(f"Embedding with {embedding_model}...")
     st_model   = SentenceTransformer(embedding_model)
-    embeddings = st_model.encode(texts, show_progress_bar=True, batch_size=32)
+    embeddings = st_model.encode(texts, show_progress_bar=sys.stderr.isatty(), batch_size=32)
     embeddings = embeddings.astype(np.float32)
 
     # ── 3. BERTopic ───────────────────────────────────────────────────────────
