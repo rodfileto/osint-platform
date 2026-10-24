@@ -12,10 +12,10 @@ Writing to two stores has also caused **real correctness drift**: the two stores
 
 | Store | Used by the API for |
 |---|---|
-| PostgreSQL | All search (2 materialized views), company/person detail, FINEP, INPI, Inovalink, geography: essentially everything |
+| PostgreSQL | All search (2 materialized views), company/person detail, FINEP, INPI, geography: essentially everything |
 | Neo4j | `CnpjNetworkService.get_company_network`, `get_person_network` ([cnpj_network.py](../../backend/api/services/cnpj_network.py)), plus a "preview" branch in unified search ([search.py:143](../../backend/api/routers/search.py#L143)) |
 
-- The finep, inpi and inovalink routers never query Neo4j. The INPI (`Patente`, `ClasseIPC`, `DEPOSITOU`) and FINEP (`ProjetoFinep`, `SIMILAR_TO`) graph data is loaded but **nothing reads it**.
+- The finep and inpi routers never query Neo4j. The INPI (`Patente`, `ClasseIPC`, `DEPOSITOU`) and FINEP (`ProjetoFinep`, `SIMILAR_TO`) graph data is loaded but **nothing reads it**.
 - `grep` finds no `shortestPath`, `gds.*` or `apoc.*` calls in backend or pipelines. The cross-domain query in ARCHITECTURE_PLAN ("defence patents + FINEP projects on the same topic") does not exist.
 - Network depth is capped by `NEO4J_MAX_NETWORK_DEPTH=3` and results by `NEO4J_MAX_NETWORK_EDGES=200`. A recursive CTE over `cnpj.socio` handles this kind of bounded query well, and the indexes it needs (`idx_socio_cnpj_basico`, `idx_socio_cpf_cnpj`) already exist.
 

@@ -1,6 +1,6 @@
 # OSINT Platform
 
-An open-source intelligence platform for Brazilian public data. It ingests the federal company registry (CNPJ), FINEP innovation funding, INPI patents and Inovalink ecosystem data. It cleans the data at scale, then serves it as searchable relational tables and as a graph of company and shareholder relationships.
+An open-source intelligence platform for Brazilian public data. It ingests the federal company registry (CNPJ), FINEP innovation funding and INPI patents. It cleans the data at scale, then serves it as searchable relational tables and as a graph of company and shareholder relationships.
 
 [Leia em português](README.pt-BR.md)
 
@@ -10,7 +10,7 @@ An open-source intelligence platform for Brazilian public data. It ingests the f
 - **Large-scale processing:** the CNPJ registry has tens of millions of companies and establishments. DuckDB SQL transforms one ~5M-row file in 3 to 4 seconds (about 4M rows/s), and Parquet shrinks it by about 70%.
 - **Layered storage:** raw ZIPs and CSVs land in MinIO (S3 API) and are cleaned into Parquet, then loaded into PostgreSQL/PostGIS for search and Neo4j for networks.
 - **Idempotent and traceable:** download manifests record every file and reference month, so nothing is downloaded or reprocessed twice. Changes on the source are detected with ETag/Last-Modified checks.
-- **Schema as code:** Flyway migrations for each domain schema (`cnpj`, `finep`, `inpi`, `geo`, `inovalink`), plus Cypher scripts for Neo4j constraints and indexes.
+- **Schema as code:** Flyway migrations for each domain schema (`cnpj`, `finep`, `inpi`, `geo`), plus Cypher scripts for Neo4j constraints and indexes.
 - **NLP:** FINEP project texts are topic-modeled with multilingual sentence-transformers, UMAP, HDBSCAN and BERTopic. A k-NN similarity graph of projects is written to Neo4j.
 - **Full stack:** a FastAPI backend, a React + Vite frontend (Cytoscape network graphs, Leaflet maps, ApexCharts) and Keycloak (OIDC) authentication.
 
@@ -22,7 +22,6 @@ flowchart LR
         RF["Receita Federal<br/>CNPJ registry"]
         FINEP["FINEP<br/>funding spreadsheets"]
         INPI["INPI<br/>patents open data"]
-        INOVA["Inovalink"]
     end
 
     subgraph Airflow["Apache Airflow"]
@@ -40,7 +39,7 @@ flowchart LR
     UI["React frontend<br/>search, networks, maps"]
     KC["Keycloak (OIDC)"]
 
-    RF & FINEP & INPI & INOVA --> DL --> RAW --> TR --> PQ --> LD
+    RF & FINEP & INPI --> DL --> RAW --> TR --> PQ --> LD
     LD --> PG
     LD --> NEO
     PG --> NLP --> NEO

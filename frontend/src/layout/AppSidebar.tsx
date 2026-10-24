@@ -15,7 +15,6 @@ const navigation: NavItem[] = [
       { name: "Pesquisa CNPJ", path: "/" },
       { name: "Pesquisa Pessoas", path: "/pessoa" },
       { name: "Painel FINEP", path: "/finep" },
-      { name: "Validacao Inovalink", path: "/inovalink", badge: "geo" },
       { name: "Painel INPI", path: "/inpi", badge: "new" },
     ],
   },

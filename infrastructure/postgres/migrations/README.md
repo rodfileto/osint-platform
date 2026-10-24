@@ -14,7 +14,6 @@ This directory stores versioned PostgreSQL schema changes managed by Flyway.
 - `cnpj/` for CNPJ schema changes
 - `finep/` for FINEP schema changes
 - `geo/` for canonical geography schemas, boundaries, and cross-dataset mapping objects
-- `inovalink/` for Inovalink schema changes and ingestion support objects
 
 ## Naming convention
 

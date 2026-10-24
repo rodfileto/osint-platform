@@ -33,7 +33,7 @@ Principles:
 - **Bronze** is immutable. **Silver** is the system of record for history. **Gold** in PostgreSQL can be thrown away and rebuilt from silver at any time.
 - Every publish builds the gold tables from scratch. No upserts, no stubs, no index drop/recreate, no materialized-view refresh.
 - Neo4j is removed. The ownership network is served by PostgreSQL.
-- INPI, FINEP and Inovalink keep their current bronze → PostgreSQL flow. They are small, and moving them is out of scope. Only their links to Neo4j and to CNPJ tables change.
+- INPI and FINEP keep their current bronze → PostgreSQL flow. They are small, and moving them is out of scope. Only their links to Neo4j and to CNPJ tables change.
 
 ### Sizing
 
@@ -49,7 +49,7 @@ Table names stay the same where possible so the API and other domains change as 
 | Table | Built from | Notes |
 |---|---|---|
 | `empresa` | silver empresas (latest month) | Lookup labels joined in |
-| `estabelecimento` | silver estabelecimentos (latest month) | All branches (company detail and Inovalink/geo matching need them) |
+| `estabelecimento` | silver estabelecimentos (latest month) | All branches (company detail and geo matching need them) |
 | `socio` | silver socios (latest month) | Drops the surrogate `id`; indexes on `cnpj_basico` and `cpf_cnpj_socio` for the network CTE |
 | `socio_history` | silver socios (**all months**) | See below |
 | `simples_nacional` | silver simples (latest month) | |
@@ -73,8 +73,8 @@ Table names stay the same where possible so the API and other domains change as 
 ### Swap and dependent objects
 
 Swapping by renaming creates a new table, but foreign keys and views stay bound to the old one. Current dependents:
-- FKs: `inovalink.organization_cnpj_match` → `cnpj.empresa` and `cnpj.estabelecimento`; `geo.br_municipality…` → `cnpj.municipio`.
-- Views: `cnpj.estabelecimento_completo`, `inovalink.organization_cnpj_match_resolved`, `geo.v_cnpj_br_municipality`.
+- FKs: `geo.br_municipality…` → `cnpj.municipio`.
+- Views: `cnpj.estabelecimento_completo`, `geo.v_cnpj_br_municipality`.
 
 Plan: turn those FKs into soft references (indexed columns, no constraint), as was already done for `socio`/`estabelecimento` → `empresa`. The publish step recreates the dependent views inside the swap transaction, from one versioned SQL file.
 

@@ -9,7 +9,6 @@ import { runtimeEnv } from "@/lib/env";
 const CnpjSearchPage = lazy(() => import("@/pages/CnpjSearchPage"));
 const EmpresaDetailPage = lazy(() => import("@/pages/EmpresaDetailPage"));
 const FinepOverviewPage = lazy(() => import("@/pages/FinepOverviewPage"));
-const InovalinkValidationPage = lazy(() => import("@/pages/InovalinkValidationPage"));
 const InpiOverviewPage = lazy(() => import("@/pages/InpiOverviewPage"));
 const PessoaDetailPage = lazy(() => import("@/pages/PessoaDetailPage"));
 const PessoaSearchPage = lazy(() => import("@/pages/PessoaSearchPage"));
@@ -34,7 +33,6 @@ export default function App() {
                   <Route path="/pessoa/detalhe" element={<PessoaDetailPage />} />
                   <Route path="/pessoa/:cpf" element={<PessoaDetailPage />} />
                   <Route path="/finep" element={<FinepOverviewPage />} />
-                  <Route path="/inovalink" element={<InovalinkValidationPage />} />
                   <Route path="/inpi" element={<InpiOverviewPage />} />
                   <Route path="/cnpj/:cnpjBasico" element={<EmpresaDetailPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
