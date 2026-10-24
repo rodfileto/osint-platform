@@ -19,8 +19,8 @@ x-airflow-common:
     - ./pipelines/logs:/opt/airflow/logs
     - ./pipelines/plugins:/opt/airflow/plugins
     - ./pipelines/scripts:/opt/airflow/scripts
-    - ${AIRFLOW_DATA_HOST_PATH:-/mnt/data10tb/osint/pipelines/data}:/opt/airflow/data
-    - ${AIRFLOW_TEMP_SSD_HOST_PATH:-/srv/osint/airflow/temp_ssd}:/opt/airflow/temp_ssd
+    - ${AIRFLOW_DATA_HOST_PATH:-./data/airflow/data}:/opt/airflow/data
+    - ${AIRFLOW_TEMP_SSD_HOST_PATH:-./data/airflow/temp_ssd}:/opt/airflow/temp_ssd
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -34,29 +34,29 @@ services:
     command:
       - postgres
       - -c
-      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-16GB}
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-2GB}
       - -c
-      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-48GB}
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-8GB}
       - -c
-      - work_mem=${POSTGRES_WORK_MEM:-64MB}
+      - work_mem=${POSTGRES_WORK_MEM:-32MB}
       - -c
-      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-2GB}
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-1GB}
       - -c
       - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-1.1}
       - -c
       - effective_io_concurrency=${POSTGRES_EFFECTIVE_IO_CONCURRENCY:-200}
       - -c
-      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-4}
       - -c
-      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-8}
+      - max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-4}
       - -c
-      - max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-4}
+      - max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
       - -c
-      - wal_buffers=${POSTGRES_WAL_BUFFERS:-64MB}
+      - wal_buffers=${POSTGRES_WAL_BUFFERS:-16MB}
       - -c
-      - min_wal_size=${POSTGRES_MIN_WAL_SIZE:-1GB}
+      - min_wal_size=${POSTGRES_MIN_WAL_SIZE:-512MB}
       - -c
-      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-4GB}
+      - max_wal_size=${POSTGRES_MAX_WAL_SIZE:-2GB}
       - -c
       - checkpoint_completion_target=${POSTGRES_CHECKPOINT_COMPLETION_TARGET:-0.9}
       - -c
@@ -70,12 +70,12 @@ services:
       TZ: ${TZ:-America/Sao_Paulo}
       PGTZ: ${TZ:-America/Sao_Paulo}
     volumes:
-      - ${POSTGRES_DATA_HOST_PATH:-/srv/osint/postgres/data}:/var/lib/postgresql/data
+      - ${POSTGRES_DATA_HOST_PATH:-./data/postgres}:/var/lib/postgresql/data
     ports:
       - ${POSTGRES_EXPOSE_PORT:-5432}:5432
-    shm_size: ${POSTGRES_SHM_SIZE:-17g}
+    shm_size: ${POSTGRES_SHM_SIZE:-2g}
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -87,7 +87,7 @@ services:
       - ${NEO4J_HTTP_PORT:-7474}:7474
       - ${NEO4J_BOLT_PORT:-7687}:7687
     volumes:
-      - ${NEO4J_DATA_HOST_PATH:-/srv/osint/neo4j/data}:/data
+      - ${NEO4J_DATA_HOST_PATH:-./data/neo4j}:/data
       - ./infrastructure/neo4j/plugins:/plugins
     environment:
       NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
@@ -96,10 +96,10 @@ services:
       NEO4J_apoc_import_file_use__neo4j__config: 'true'
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-6g}
-      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-4g}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-4g}
-      NEO4J_dbms_memory_transaction_total_max: ${NEO4J_TX_MEMORY:-2g}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-2g}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-2g}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-2g}
+      NEO4J_dbms_memory_transaction_total_max: ${NEO4J_TX_MEMORY:-1g}
       NEO4J_db_tx__log_rotation_retention__policy: ${NEO4J_TX_LOG_RETENTION_POLICY:-2 files}
       NEO4J_db_checkpoint_interval_tx: ${NEO4J_CHECKPOINT_INTERVAL_TX:-50}
       TZ: ${TZ:-America/Sao_Paulo}
@@ -111,7 +111,7 @@ services:
       - ${REDIS_EXPOSE_PORT:-6380}:6379
     command: redis-server --appendonly yes
     volumes:
-      - ${REDIS_DATA_HOST_PATH:-./infrastructure/redis/data}:/data
+      - ${REDIS_DATA_HOST_PATH:-./data/redis}:/data
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
@@ -158,7 +158,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       TZ: ${TZ:-America/Sao_Paulo}
     volumes:
-      - ${MINIO_DATA_HOST_PATH:-/mnt/data10tb/osint/minio}:/data
+      - ${MINIO_DATA_HOST_PATH:-./data/minio}:/data
     ports:
       - ${MINIO_API_PORT:-9000}:9000
       - ${MINIO_CONSOLE_PORT:-9001}:9001
@@ -242,7 +242,19 @@ services:
     <<: *airflow-common
     profiles:
       - airflow
-    command: version
+    # Docker creates missing bind-mount dirs as root, which the non-root Airflow
+    # services cannot write to. Data dirs are only re-owned at the top level and
+    # only when root owns them, so existing data keeps its ownership.
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs
+        chown -R "${AIRFLOW_UID:-50000}:0" /opt/airflow/logs
+        for dir in /opt/airflow/data /opt/airflow/temp_ssd; do
+          if [ "$$(stat -c %u "$$dir")" = 0 ]; then chown "${AIRFLOW_UID:-50000}:0" "$$dir"; fi
+        done
+        exec /usr/bin/dumb-init -- /entrypoint airflow version
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'

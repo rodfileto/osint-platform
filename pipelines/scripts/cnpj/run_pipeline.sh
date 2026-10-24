@@ -13,17 +13,22 @@
 
 set -euo pipefail
 
-AIRFLOW_CONTAINER="osint-platform-airflow-webserver-1"
-RAW_DATA_DIR="${CNPJ_RAW_DATA_DIR:-${AIRFLOW_DATA_HOST_PATH:-/mnt/data10tb/osint/pipelines/data}/cnpj/raw}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 POLL_INTERVAL=30
 
-[[ -d "$RAW_DATA_DIR" ]] || {
-    echo "Diretório de dados não encontrado: $RAW_DATA_DIR" >&2
-    echo "Defina CNPJ_RAW_DATA_DIR ou AIRFLOW_DATA_HOST_PATH corretamente." >&2
-    exit 1
+compose() {
+    docker compose --env-file "$ROOT_DIR/.env" -f "$ROOT_DIR/docker-compose.yml" -f "$ROOT_DIR/compose.prod.yml" "$@"
 }
 
-REFERENCE_MONTH="${1:-$(ls "$RAW_DATA_DIR" | grep -E '^[0-9]{4}-[0-9]{2}$' | sort | tail -1)}"
+psql_value() {
+    compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "$1"' _ "$1" | tr -d ' \n'
+}
+
+REFERENCE_MONTH="${1:-$(psql_value "SELECT max(reference_month) FROM cnpj.download_manifest;")}"
+[[ -n "$REFERENCE_MONTH" ]] || {
+    echo "No month in cnpj.download_manifest. Run the cnpj_download DAG first, or pass a month (YYYY-MM)." >&2
+    exit 1
+}
 FORCE_REPROCESS="${2:-false}"
 
 # ---------------------------------------------------------------------------
@@ -52,15 +57,13 @@ echo ""
 
 # Dispara cnpj_transform
 log "Disparando cnpj_transform..."
-docker exec "$AIRFLOW_CONTAINER" airflow dags trigger cnpj_transform \
+compose exec -T airflow-webserver airflow dags trigger cnpj_transform \
     --conf "{\"reference_month\": \"${REFERENCE_MONTH}\", \"process_empresas\": true, \"process_estabelecimentos\": true, \"force_reprocess\": ${FORCE_REPROCESS}}" \
     > /dev/null 2>&1 || true
 
 # Aguarda até 30s o run aparecer no banco (evita race condition)
 sleep 3
-run_id=$(docker exec osint_postgres psql -U osint_admin -d osint_metadata -t -c \
-    "SELECT run_id FROM dag_run WHERE dag_id='cnpj_transform' ORDER BY execution_date DESC LIMIT 1;" \
-    | tr -d ' \n')
+run_id=$(psql_value "SELECT run_id FROM dag_run WHERE dag_id='cnpj_transform' ORDER BY execution_date DESC LIMIT 1;")
 
 [[ -z "$run_id" ]] && fail "Não foi possível obter o run_id da cnpj_transform"
 
@@ -74,9 +77,7 @@ echo ""
 # (cada DAG usa wait_for_completion=True para o próximo)
 t0=$(date +%s)
 while true; do
-    state=$(docker exec osint_postgres psql -U osint_admin -d osint_metadata -t -c \
-        "SELECT state FROM dag_run WHERE dag_id='cnpj_transform' AND run_id='${run_id}';" \
-        | tr -d ' \n')
+    state=$(psql_value "SELECT state FROM dag_run WHERE dag_id='cnpj_transform' AND run_id='${run_id}';")
 
     [[ -z "$state" ]] && state="unknown"
 

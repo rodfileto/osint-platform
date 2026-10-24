@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-HOST_CNPJ_RAW_DIR="${CNPJ_RAW_DATA_DIR:-${AIRFLOW_DATA_HOST_PATH:-/mnt/data10tb/osint/pipelines/data}/cnpj/raw}"
+HOST_CNPJ_RAW_DIR="${CNPJ_RAW_DATA_DIR:-${AIRFLOW_DATA_HOST_PATH:-./data/airflow/data}/cnpj/raw}"
 DOCKER_CMD="${DOCKER_CMD:-docker}"
 
 echo "=== CNPJ Download Manifest Population ==="
