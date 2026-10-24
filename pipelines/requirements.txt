@@ -9,7 +9,7 @@ numpy>=1.26.0
 
 # Database connectivity
 psycopg2-binary>=2.9.0
-sqlalchemy>=1.4.36,<2.0
+sqlalchemy[asyncio]>=1.4.36,<2.0
 
 # Neo4j graph database
 neo4j>=5.0.0
