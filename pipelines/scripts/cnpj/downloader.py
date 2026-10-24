@@ -9,6 +9,7 @@ Website: https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9
 """
 
 import os
+import sys
 import re
 import logging
 from datetime import datetime
@@ -290,7 +291,7 @@ class CNPJDownloader:
         self,
         file_info: Dict[str, any],
         force: bool = False,
-        show_progress: bool = True
+        show_progress: bool = sys.stderr.isatty()
     ) -> Path:
         """
         Download a single file.
@@ -374,7 +375,7 @@ class CNPJDownloader:
         self,
         file_info: Dict[str, any],
         force: bool = False,
-        show_progress: bool = True,
+        show_progress: bool = sys.stderr.isatty(),
     ) -> Dict[str, any]:
         """Stream a single Receita ZIP directly to MinIO without writing to local disk."""
         from botocore.exceptions import ClientError
@@ -428,12 +429,16 @@ class CNPJDownloader:
                 )
 
             try:
+                from boto3.s3.transfer import TransferConfig
+
+                # put_object needs a seekable body to sign it over HTTP; upload_fileobj
+                # buffers the network stream into multipart chunks instead.
                 body = _ProgressStream(response.raw, progress_bar)
-                s3.put_object(
-                    Bucket=bucket,
-                    Key=key,
-                    Body=body,
-                    ContentLength=expected_size,
+                s3.upload_fileobj(
+                    body,
+                    bucket,
+                    key,
+                    Config=TransferConfig(multipart_chunksize=64 * 1024 * 1024, max_concurrency=4),
                 )
             finally:
                 if progress_bar is not None:

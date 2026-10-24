@@ -367,7 +367,11 @@ def repair_incomplete_months(**context):
                 'success': False,
                 'error': str(e)
             })
-    
+
+    failed = [r['month'] for r in results if not r['success']]
+    if failed:
+        raise RuntimeError(f"Months still incomplete in MinIO after repair: {failed}")
+
     return results
 
 
