@@ -135,8 +135,8 @@ def _vsmallint(s: pd.Series) -> list[Optional[int]]:
 
 def _vdate(s: pd.Series) -> list[Optional[date]]:
     """Converte Series de strings para date; erros e NaN → None."""
-    # errors='coerce' turns blanks and unparseable values into NaT automatically
-    parsed = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    # INPI publishes every date column as YYYY-MM-DD; blanks and bad values become NaT
+    parsed = pd.to_datetime(s, errors="coerce", format="ISO8601")
     return [v.date() if pd.notna(v) else None for v in parsed]
 
 
@@ -188,7 +188,10 @@ def _vcnpj_basico_pairs(cgccpf_s: pd.Series, tipo_s: pd.Series) -> list[Optional
 def get_snapshot_info() -> dict[str, dict]:
     """
     Retorna {dataset_name: {id, minio_key, minio_bucket, snapshot_date}}
-    para o snapshot mais recente de cada dataset com status='downloaded'.
+    para o snapshot mais recente de cada dataset, já carregado ou não.
+
+    A DAG trunca todas as tabelas antes de carregar, então datasets sem
+    snapshot novo precisam ser recarregados a partir do último snapshot.
     """
     conn = _get_db_connection()
     try:
@@ -197,7 +200,7 @@ def get_snapshot_info() -> dict[str, dict]:
                 SELECT DISTINCT ON (dataset_name)
                     id, dataset_name, minio_key, minio_bucket, snapshot_date
                 FROM inpi.download_manifest
-                WHERE processing_status = 'downloaded'
+                WHERE processing_status IN ('downloaded', 'loaded')
                 ORDER BY dataset_name, snapshot_date DESC, download_date DESC
             """)
             rows = cur.fetchall()
@@ -709,6 +712,7 @@ def load_prioridades(snapshot_info: dict, snapshot_date: date) -> int:
 
     total = 0
     skipped = 0
+    skipped_missing_key = 0
     conn = _get_db_connection()
     try:
         valid_ids = _fetch_valid_ids(conn)
@@ -727,6 +731,10 @@ def load_prioridades(snapshot_info: dict, snapshot_date: date) -> int:
             before = len(rows)
             rows = [r for r in rows if r[0] in valid_ids]
             skipped += before - len(rows)
+            # pais/numero are part of the primary key; the source has a few rows without a country
+            before = len(rows)
+            rows = [r for r in rows if r[1] is not None and r[2] is not None]
+            skipped_missing_key += before - len(rows)
             with conn.cursor() as cur:
                 _bulk_insert(conn, cur, insert_sql, rows)
             total += len(rows)
@@ -736,7 +744,10 @@ def load_prioridades(snapshot_info: dict, snapshot_date: date) -> int:
     finally:
         conn.close()
 
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
+    logger.info(
+        f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK, "
+        f"{skipped_missing_key:,} sem país ou número de prioridade)"
+    )
     return total
 
 
