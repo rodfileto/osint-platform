@@ -124,13 +124,20 @@ sudo systemctl enable osint-platform-airflow.service
 sudo systemctl start osint-platform-airflow.service
 ```
 
-### Executar Pipeline CNPJ Completo
+### Primeira carga de dados
+
+O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as que só são acionadas por outras DAGs, e dispare os downloads:
 
 ```bash
-# Detecta o mês mais recente e executa a cadeia:
-# transform → load_postgres → matview → neo4j
-./pipelines/scripts/cnpj/run_pipeline.sh
+C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
+$C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
+$C exec airflow-scheduler airflow dags trigger finep_download   # aciona as 7 DAGs de carga FINEP
+$C exec airflow-scheduler airflow dags trigger inpi_download    # aciona inpi_load_postgres -> inpi_load_neo4j
+$C exec airflow-scheduler airflow dags trigger cnpj_download    # release mensal mais recente para o MinIO
+./pipelines/scripts/cnpj/run_pipeline.sh                          # depois que cnpj_download terminar
 ```
+
+O release do CNPJ tem cerca de 7 GB e o servidor da Receita Federal entrega por volta de 2,5 MB/s, então o download leva cerca de uma hora. Depois, `run_pipeline.sh` executa a cadeia transform → load_postgres → matview → neo4j para esse mês. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 
 ### Ambiente Dev com Amostra Reduzida
 
@@ -150,9 +157,7 @@ Para reduzir risco operacional, o prod-like não aplica mais migrations implicit
 
 ### Reset Completo do Ambiente
 
-```bash
-./reset-docker-from-scratch.sh
-```
+Veja [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md).
 
 ---
 
@@ -167,3 +172,7 @@ Para reduzir risco operacional, o prod-like não aplica mais migrations implicit
 | [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md) | Troubleshooting e reset detalhado dos containers |
 | [infrastructure/systemd/osint-platform-local.service](infrastructure/systemd/osint-platform-local.service) | Template de unidade systemd para subir o stack local-production no boot |
 | [infrastructure/systemd/osint-platform-airflow.service](infrastructure/systemd/osint-platform-airflow.service) | Template de unidade systemd para subir apenas o grupo do Airflow |
+
+## Licença
+
+Distribuído sob a [Apache License 2.0](LICENSE). Os datasets continuam sujeitos aos termos de seus publicadores.

@@ -131,7 +131,24 @@ Load the canonical Brazilian geography (states, municipalities, CNPJ municipalit
 sh infrastructure/postgres/run-geo-bootstrap.sh
 ```
 
-The Keycloak realm imports a local-only default user (see `infrastructure/keycloak/realm/`). Change it before exposing the stack anywhere.
+### Logging in
+
+Open `http://localhost:3000` and sign in with the local user the Keycloak realm imports: `osint-admin` / `osint123`. Change it (see `infrastructure/keycloak/realm/`) before exposing the stack anywhere.
+
+### First data load
+
+The database starts empty and every DAG is created paused. Unpause them all, including the ones that are only triggered by other DAGs, then start the downloads:
+
+```bash
+C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
+$C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
+$C exec airflow-scheduler airflow dags trigger finep_download   # chains into the 7 FINEP loader DAGs
+$C exec airflow-scheduler airflow dags trigger inpi_download    # chains into inpi_load_postgres -> inpi_load_neo4j
+$C exec airflow-scheduler airflow dags trigger cnpj_download    # latest monthly release into MinIO
+./pipelines/scripts/cnpj/run_pipeline.sh                          # once cnpj_download is done
+```
+
+The CNPJ release is about 7 GB and the Receita Federal server serves roughly 2.5 MB/s, so its download takes about an hour. `run_pipeline.sh` then runs transform, PostgreSQL load, materialized-view refresh and Neo4j load for that month. Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
 
 ## Data sources
 
@@ -155,6 +172,10 @@ The shareholder records include names of real people, which are personal data un
 | [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md) | Troubleshooting and a full container reset |
 
 Most of the documentation in `docs/` is in Portuguese.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE). The datasets remain subject to the terms of their publishers.
 
 ## Author
 

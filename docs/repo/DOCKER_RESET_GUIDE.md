@@ -17,40 +17,26 @@ Você estava enfrentando dificuldades para reiniciar os containers Docker do zer
 
 4. **README desatualizado**: Instruções não correspondiam aos scripts reais
 
-## ✅ Solução Implementada
+## ✅ Reset Completo (fluxo atual)
 
-Foi criado um script unificado e robusto: **`reset-docker-from-scratch.sh`**
-
-### Recursos do Novo Script
-
-- ✅ **Cleanup completo**: Remove containers, volumes e dados
-- ✅ **Retry logic inteligente**: Aguarda bancos ficarem prontos de verdade (até 60s)
-- ✅ **Criação automática**: Schemas + tabelas + constraints + indexes
-- ✅ **Verificação pós-instalação**: Confirma PKs, FKs e conexões
-- ✅ **Interativo**: Pergunta confirmação e opção de iniciar Airflow
-- ✅ **Error handling**: Exit on error, mensagens claras
-
----
-
-## 🚀 Como Usar
-
-### Reset Completo (Recomendado)
+O antigo `reset-docker-from-scratch.sh` foi removido. O reset completo usa o compose e os diretórios configurados no `.env`:
 
 ```bash
-# Na raiz do projeto
-./reset-docker-from-scratch.sh
+C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml --profile airflow"
+
+# 1. Para tudo e remove o volume nomeado do Keycloak
+$C down -v --remove-orphans
+
+# 2. Apaga os dados derivados (caminhos *_HOST_PATH do .env; padrão ./data/<serviço>)
+#    Mantenha o bronze (MinIO osint-raw) se não quiser baixar tudo de novo.
+sudo rm -rf ./data/postgres ./data/neo4j ./data/redis ./data/airflow/temp_ssd
+
+# 3. Sobe do zero e aplica as migrations
+./scripts/start-prod-like.sh --apply-migrations --with-airflow
+sh infrastructure/postgres/run-geo-bootstrap.sh
 ```
 
-O script irá:
-1. Solicitar confirmação
-2. Limpar tudo (containers + volumes)
-3. Recriar do zero
-4. Aguardar inicialização (com retry)
-5. Criar schemas e tabelas
-6. Verificar instalação
-7. Opcionalmente iniciar Airflow
-
-**Tempo estimado**: 2-3 minutos
+Depois, siga a seção "First data load" do [README](../../README.md). As DAGs de download registram o que já existe no bronze em vez de baixar novamente.
 
 ---
 
@@ -239,7 +225,6 @@ docker rm -f $(docker ps -aq)  # Remove TODOS containers (cuidado!)
 
 | Arquivo | Descrição |
 |---------|-----------|
-| `reset-docker-from-scratch.sh` | **Script principal** - Reset completo automatizado |
 | `infrastructure/postgres/README.md` | Documentação detalhada PostgreSQL |
 | `infrastructure/postgres/run-flyway.sh` | Executa Flyway no ambiente escolhido, com confirmação explícita para mutações em `prod-like` |
 | `dev/scripts/run-flyway.sh` | Runner Flyway do ambiente dev |

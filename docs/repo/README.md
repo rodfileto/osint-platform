@@ -24,4 +24,3 @@ This folder contains the canonical repository-level documentation that used to l
 ## Notes
 
 - [README.md](../../README.md) remains the root entry point for the repository.
-- [docs/context/CONTEXT_INDEX.md](../context/CONTEXT_INDEX.md) contains the copied Markdown bundle for context gathering.

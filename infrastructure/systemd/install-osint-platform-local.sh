@@ -3,6 +3,7 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+REPO_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 UNIT_NAME=osint-platform-local.service
 SOURCE_UNIT="$SCRIPT_DIR/$UNIT_NAME"
 TARGET_UNIT="/etc/systemd/system/$UNIT_NAME"
@@ -20,8 +21,13 @@ if [ ! -f "$AIRFLOW_SOURCE_UNIT" ]; then
   exit 1
 fi
 
-install -m 0644 "$SOURCE_UNIT" "$TARGET_UNIT"
-install -m 0644 "$AIRFLOW_SOURCE_UNIT" "$AIRFLOW_TARGET_UNIT"
+install_unit() {
+  sed "s#@REPO_DIR@#$REPO_DIR#g" "$1" > "$2"
+  chmod 0644 "$2"
+}
+
+install_unit "$SOURCE_UNIT" "$TARGET_UNIT"
+install_unit "$AIRFLOW_SOURCE_UNIT" "$AIRFLOW_TARGET_UNIT"
 systemctl daemon-reload
 systemctl enable "$UNIT_NAME"
 systemctl enable "$AIRFLOW_UNIT_NAME"
