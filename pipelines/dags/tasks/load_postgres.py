@@ -86,6 +86,11 @@ def _pg_params() -> dict:
     }
 
 
+def _parquet_columns(path: str) -> list[str]:
+    with duckdb.connect() as duck:
+        return [row[0] for row in duck.execute(f"DESCRIBE SELECT * FROM '{path}'").fetchall()]
+
+
 def _stage(table: str, files: list[str], reference_month: str) -> dict[str, int]:
     """Copy every Parquet file into cnpj.<table>_staging through DuckDB; returns rows per file."""
     spill_dir = TEMP_SSD_PATH / "duckdb_tmp"
@@ -98,7 +103,7 @@ def _stage(table: str, files: list[str], reference_month: str) -> dict[str, int]
         duck.execute(f"ATTACH '{dsn}' AS pg (TYPE POSTGRES)")
         month_cols, month_vals = ("", "") if table in REFERENCE_TABLES else (", reference_month", f", '{reference_month}'")
         for path in files:
-            cols = ", ".join(f'"{c[0]}"' for c in duck.execute(f"DESCRIBE SELECT * FROM '{path}'").fetchall())
+            cols = ", ".join(_parquet_columns(path))
             start = time.time()
             duck.execute(f"INSERT INTO pg.cnpj.{table}_staging ({cols}{month_cols}) SELECT {cols}{month_vals} FROM '{path}'")
             rows_per_file[path] = duck.execute(f"SELECT count(*) FROM '{path}'").fetchone()[0]
@@ -118,12 +123,17 @@ def load_table(table: str, reference_month: str) -> int:
         raise FileNotFoundError(f"No {pattern} for {reference_month} in {PROCESSED_PATH}")
     logger.info(f"Loading cnpj.{table} from {len(files)} file(s) for {reference_month}")
 
+    # Staging holds only the loaded columns: DuckDB writes NULL into any other column, which
+    # would bypass defaults such as socio.id.
+    columns = _parquet_columns(files[0]) + ([] if table in REFERENCE_TABLES else ["reference_month"])
+    col_list = ", ".join(columns)
+
     conn = psycopg2.connect(**_pg_params())
     try:
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS cnpj.{table}_staging")
-            cur.execute(f"CREATE UNLOGGED TABLE cnpj.{table}_staging (LIKE cnpj.{table} INCLUDING DEFAULTS)")
+            cur.execute(f"CREATE UNLOGGED TABLE cnpj.{table}_staging AS SELECT {col_list} FROM cnpj.{table} WITH NO DATA")
             for name, _ in HEAVY_INDEXES.get(table, []):
                 cur.execute(f"DROP INDEX IF EXISTS cnpj.{name}")
 
@@ -132,22 +142,20 @@ def load_table(table: str, reference_month: str) -> int:
         conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'cnpj' AND table_name = %s AND column_name <> 'created_at' "
-                "ORDER BY ordinal_position",
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = 'cnpj' AND table_name = %s AND column_name = 'updated_at'",
                 (table,),
             )
-            columns = [row[0] for row in cur.fetchall()]
-            col_list = ", ".join(columns)
+            has_updated_at = cur.fetchone() is not None
             staged = sum(rows_per_file.values())
             if key is None:
                 with _phase(f"replacing {reference_month} in cnpj.{table} with {staged:,} staged rows"):
                     cur.execute(f"DELETE FROM cnpj.{table} WHERE reference_month = %s", (reference_month,))
                     cur.execute(f"INSERT INTO cnpj.{table} ({col_list}) SELECT {col_list} FROM cnpj.{table}_staging")
             else:
-                updates = ", ".join(
-                    "updated_at = CURRENT_TIMESTAMP" if c == "updated_at" else f"{c} = EXCLUDED.{c}" for c in columns
-                )
+                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in columns)
+                if has_updated_at:
+                    updates += ", updated_at = CURRENT_TIMESTAMP"
                 # Receita occasionally publishes a key twice (e.g. a real company plus an empty
                 # placeholder row); keep the most complete row per key.
                 with _phase(f"deduplicating and upserting {staged:,} staged rows into cnpj.{table}"):
