@@ -1,124 +1,145 @@
-# Unified OSINT Platform
+# OSINT Platform
 
-Plataforma de inteligência OSINT multi-engine para análise de dados públicos brasileiros (CNPJ, sanções, contratos).
+Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos brasileiros. Ela ingere o cadastro federal de empresas (CNPJ), o fomento à inovação da FINEP e as patentes do INPI. Limpa os dados em escala e os disponibiliza como tabelas relacionais pesquisáveis e como um grafo de relações entre empresas e sócios.
 
-## Estrutura do Projeto
+[Read in English](README.md)
+
+**Destaques**
+
+- **ETL orquestrado:** DAGs do Apache Airflow para cada fonte, do download mensal agendado à transformação, carga, refresh de materialized views e carga do grafo.
+- **Processamento em larga escala:** o cadastro CNPJ tem dezenas de milhões de empresas e estabelecimentos. O DuckDB SQL transforma um arquivo de ~5 milhões de linhas em 3 a 4 segundos (cerca de 4 milhões de linhas/s), e o Parquet o reduz em cerca de 70%.
+- **Armazenamento em camadas:** ZIPs e CSVs brutos chegam ao MinIO (API S3) e são limpos em Parquet, depois carregados no PostgreSQL/PostGIS para busca e no Neo4j para redes.
+- **Idempotente e rastreável:** manifestos de download registram cada arquivo e mês de referência, então nada é baixado ou reprocessado duas vezes. Mudanças na fonte são detectadas com verificações de ETag/Last-Modified.
+- **Schema como código:** migrations Flyway para cada schema de domínio (`cnpj`, `finep`, `inpi`, `geo`), além de scripts Cypher para constraints e índices do Neo4j.
+- **NLP:** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. Um grafo de similaridade k-NN entre projetos é gravado no Neo4j.
+- **Full stack:** backend FastAPI, frontend React + Vite (grafos de rede com Cytoscape, mapas com Leaflet, ApexCharts) e autenticação Keycloak (OIDC).
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    subgraph Sources["Fontes públicas"]
+        RF["Receita Federal<br/>cadastro CNPJ"]
+        FINEP["FINEP<br/>planilhas de fomento"]
+        INPI["INPI<br/>dados abertos de patentes"]
+    end
+
+    subgraph Airflow["Apache Airflow"]
+        DL["DAGs de download<br/>(cron mensal + manifesto)"]
+        TR["transformação<br/>(DuckDB SQL)"]
+        LD["DAGs de carga"]
+        NLP["DAG de tópicos NLP<br/>(BERTopic)"]
+    end
+
+    RAW[("MinIO / S3<br/>ZIP, CSV, XLSX brutos")]
+    PQ[("Parquet<br/>camada processada")]
+    PG[("PostgreSQL + PostGIS<br/>cnpj, finep, inpi, geo")]
+    NEO[("Neo4j<br/>empresas, sócios,<br/>patentes, projetos similares")]
+    API["Backend FastAPI"]
+    UI["Frontend React<br/>busca, redes, mapas"]
+    KC["Keycloak (OIDC)"]
+
+    RF & FINEP & INPI --> DL --> RAW --> TR --> PQ --> LD
+    LD --> PG
+    LD --> NEO
+    PG --> NLP --> NEO
+    PG & NEO --> API --> UI
+    KC -. tokens .-> UI
+    KC -. valida .-> API
+```
+
+### O pipeline CNPJ
+
+Uma DAG, `cnpj_pipeline`, roda mensalmente (no dia 2, às 02:00):
+
+| Etapa | Tarefas | O que faz |
+|---|---|---|
+| Download | `download_release`, `update_manifest` | Transmite os ZIPs do release mais recente direto para o MinIO (`osint-raw/cnpj/raw/{AAAA-MM}/`) e os registra em `cnpj.download_manifest` |
+| Seleção | `select_month` | Escolhe o mês a processar e pula o resto da execução se ele já estiver carregado |
+| Transformação | `transform_file` (uma por ZIP) | Baixa o ZIP do MinIO, extrai, limpa e valida em DuckDB SQL puro, gravando Parquet |
+| Carga | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Faz o staging de cada tabela, remove duplicatas e faz upsert no schema `cnpj` |
+| Índice de busca | `refresh_search_views` | Atualiza as materialized views `cnpj.mv_company_search` |
+| Grafo | `load_neo4j_empresas`, `load_neo4j_socios` | Carrega os nós `Empresa` e de sócios (`Pessoa`) e suas relações |
+
+Uma execução mensal leva cerca de 1,5 hora quando o release já está no MinIO (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa)). Para processar um mês específico de novo:
+
+```bash
+airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'
+```
+
+FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas para cada dataset. Veja [`pipelines/dags/README_CNPJ_DAG.md`](pipelines/dags/README_CNPJ_DAG.md) para detalhes.
+
+## Stack técnico
+
+| Camada | Ferramentas |
+|---|---|
+| Orquestração | Apache Airflow 2.10 |
+| Processamento | Python, DuckDB, pandas, PyArrow / Parquet |
+| Armazenamento | PostgreSQL 16 + PostGIS, Neo4j 5 (APOC), MinIO (S3) |
+| Gestão de schema | Flyway, scripts de inicialização Cypher |
+| NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |
+| Backend | FastAPI, SQLAlchemy / asyncpg, driver Neo4j |
+| Frontend | React 19, Vite, TypeScript, Cytoscape.js, Leaflet, ApexCharts |
+| Autenticação | Keycloak 26 (OIDC) |
+| Operação | Docker Compose (base compartilhada mais overrides de dev e prod-like), unidades systemd, GitHub Actions |
+
+## Estrutura do repositório
 
 | Diretório | Papel |
-|-----------|-------|
-| `/backend` | API Django — gateway stateless, sem lógica de ETL |
-| `/frontend` | React + Vite — dashboard de busca e visualização |
-| `/pipelines` | Airflow DAGs e scripts ETL (DuckDB, Python) |
-| `/infrastructure` | Configurações de PostgreSQL, Neo4j, Airflow |
-| `/data` | Dados raw e processados (CNPJ Parquet/ZIP) |
+|---|---|
+| [`pipelines/`](pipelines/) | DAGs do Airflow (`dags/`) e os scripts de ETL que elas chamam (`scripts/`): downloaders, limpeza, cargas e o pipeline de NLP |
+| [`backend/`](backend/) | API FastAPI: um gateway stateless sobre PostgreSQL e Neo4j, sem lógica de ETL |
+| [`frontend/`](frontend/) | Dashboard React + Vite: busca de empresas e pessoas, grafos de rede, visões FINEP e INPI |
+| [`infrastructure/`](infrastructure/) | Migrations do PostgreSQL, schema do Neo4j, imagem do Airflow, realm do Keycloak, unidades systemd |
+| [`dev/`](dev/) | Uma réplica leve do stack com um pequeno dataset de amostra determinístico |
+| [`docs/`](docs/) | Notas de arquitetura e implementação |
 
-## Pré-requisitos
+## Primeiros passos
 
-- Docker & Docker Compose
-- Cerca de 100 GB de disco para o mês mais recente do CNPJ mais INPI e FINEP (150 GB recomendado para folga)
-- As configurações de memória padrão são dimensionadas para uma máquina de 32 GB (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa))
+Requisitos: Docker e Docker Compose. Carregar o mês mais recente do CNPJ mais INPI e FINEP exige cerca de 100 GB de disco (150 GB recomendado para folga), e as configurações de memória padrão são dimensionadas para uma máquina de 32 GB; veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa). A réplica de dev roda com bem menos.
 
-## Ambiente Python (dev)
+### Réplica de dev (dados de amostra)
 
-Para evitar conflito entre dependências do Django (`backend`) e Airflow/ETL (`pipelines`), use ambientes separados:
-
-- `backend/.venv`
-- `pipelines/.venv`
-
-Bootstrap rápido:
+A forma mais rápida de experimentar. Usa portas separadas e dados de amostra de CNPJ, Neo4j e FINEP:
 
 ```bash
-chmod +x ./setup-python-envs.sh
-./setup-python-envs.sh
+cp dev/.env.example dev/.env
+chmod +x dev/scripts/*.sh
+./dev/scripts/start.sh                 # apenas o stack da aplicação
+./dev/scripts/start.sh --with-airflow  # mais a UI e os workers do Airflow
 ```
 
-No VS Code, selecione o interpretador conforme o contexto:
+Veja [`dev/README.md`](dev/README.md).
 
-- Backend: `backend/.venv/bin/python`
-- Pipelines: `pipelines/.venv/bin/python`
-
-## Quick Start
-
-```bash
-# 1. Configurar variáveis de ambiente
-cp .env.example .env
-
-# 2. Subir stack principal (decisão explícita sobre migrations)
-./scripts/start-prod-like.sh --apply-migrations
-```
-
-Por padrão, os dados de todos os serviços (PostgreSQL, Neo4j, MinIO, Airflow) ficam em `./data/` dentro do repositório, e a memória está dimensionada para um host de 16-32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL e do Neo4j; o `.env.example` traz o perfil de 64 GB.
-
-O `Quick Start` do compose raiz sobe o stack principal do produto: frontend, backend, PostgreSQL, Neo4j, MinIO e Flyway. Airflow fica fora do startup padrão e pode ser iniciado separadamente com o profile `airflow`.
-
-### Ambiente Local Production-Like
-
-Para rodar localmente com Django em Gunicorn, frontend em build de producao, WhiteNoise para static e MinIO para media/exports, use o compose raiz do projeto:
+### Stack local production-like
 
 ```bash
 cp .env.example .env
 ./scripts/start-prod-like.sh --apply-migrations
 ```
 
-URLs esperadas nesse modo:
+Por padrão, os dados de todos os serviços (PostgreSQL, Neo4j, MinIO, Airflow) ficam em `./data/` dentro do repositório, e as configurações de memória são dimensionadas para uma máquina de 32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL e do Neo4j; o `.env.example` traz o perfil de 64 GB.
 
-- Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8000`
-- Keycloak: `http://localhost:8081`
-- MinIO Console: `http://localhost:9001`
+Isso sobe o frontend (`http://localhost:3000`), o backend (`http://localhost:8000`), o Keycloak (`http://localhost:8081`), o console do MinIO (`http://localhost:9001`), PostgreSQL, Neo4j e Flyway. Migrations nunca são aplicadas implicitamente: o script exige `--apply-migrations` ou `--skip-migrations`.
 
-Nesse modo:
-
-- static do Django sai via WhiteNoise
-- media e exports gerados pelo backend usam MinIO via API S3
-- login do frontend usa Keycloak via OIDC com bearer token para a API FastAPI
-- `KEYCLOAK_URL` controla o acesso local ao Keycloak; `KEYCLOAK_PUBLIC_URL` e `VITE_KEYCLOAK_URL` so devem apontar para o dominio publico quando o tunnel estiver habilitado
-- dados locais do Keycloak ficam em um volume Docker gerenciado pelo compose
-- o ambiente dev continua isolado em `dev/`
-- Airflow fica separado do startup padrão e não sobe junto com o app
-- o startup prod-like exige decisão explícita sobre Flyway via `--apply-migrations` ou `--skip-migrations`
-
-Credenciais locais importadas por padrao no realm bootstrap:
-
-- usuario: `osint-admin`
-- senha: `osint123`
-
-Para subir Airflow separadamente quando precisar:
+O Airflow fica fora do startup padrão e pode ser iniciado separadamente:
 
 ```bash
 ./scripts/start-prod-like.sh --skip-migrations --with-airflow
 ```
 
-Ou, se o app já estiver de pé:
+A geografia brasileira (estados e municípios do IBGE) é carregada automaticamente no schema `geo`: o serviço `geo-bootstrap` roda antes do backend a cada start e baixa as geometrias só na primeira vez. O `cnpj_pipeline` reconstrói o mapeamento de municípios do CNPJ após cada carga do CNPJ.
 
-```bash
-docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml --profile airflow up -d airflow-init airflow-webserver airflow-scheduler airflow-triggerer
-```
-
-Para parar apenas o grupo do Airflow:
-
-```bash
-docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop airflow-webserver airflow-scheduler airflow-triggerer
-```
-
-A geografia brasileira (estados e municípios do IBGE) é carregada automaticamente no schema `geo`: o serviço `geo-bootstrap` roda antes do backend a cada start e baixa as geometrias só na primeira vez. O `cnpj_pipeline` reconstrói o mapeamento de municípios do CNPJ após cada carga.
-
-Esse comando executa o loader compartilhado em [pipelines/scripts/geo/load_br_geo_reference.py](pipelines/scripts/geo/load_br_geo_reference.py) contra o stack raiz e atualiza `geo.br_state`, `geo.br_municipality`, `geo.cnpj_br_municipality_map` e `geo.v_cnpj_br_municipality`.
-
-Para inicializar automaticamente no boot via systemd:
+Para subir o stack no boot, instale as unidades systemd (elas são geradas com o caminho deste repositório):
 
 ```bash
 sudo sh infrastructure/systemd/install-osint-platform-local.sh --start
+sudo systemctl enable --now osint-platform-airflow.service   # opcional: Airflow no boot também
 ```
 
-Isso instala [infrastructure/systemd/osint-platform-local.service](infrastructure/systemd/osint-platform-local.service) e [infrastructure/systemd/osint-platform-airflow.service](infrastructure/systemd/osint-platform-airflow.service) em `/etc/systemd/system/`, executa `systemctl daemon-reload`, habilita o serviço principal para boot e inicia o stack principal imediatamente.
+### Login
 
-Se você quiser Airflow no boot também, habilite separadamente:
-
-```bash
-sudo systemctl enable osint-platform-airflow.service
-sudo systemctl start osint-platform-airflow.service
-```
+Abra `http://localhost:3000` e entre com o usuário local que o realm do Keycloak importa: `osint-admin` / `osint123`. Troque-o (veja `infrastructure/keycloak/realm/`) antes de expor o stack em qualquer lugar.
 
 ### Primeira carga de dados
 
@@ -129,9 +150,9 @@ C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
 
-`cnpj_pipeline` faz download → transform → PostgreSQL → views de busca → Neo4j, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes, carrega e monta o grafo de patentes.
+`cnpj_pipeline` faz download → transformação → PostgreSQL → views de busca → Neo4j, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes, carrega e monta o grafo de patentes.
 
-Para reprocessar um mês: `airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'`. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
+Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 
 ### Quanto tempo leva uma carga completa
 
@@ -159,43 +180,35 @@ Espaço em disco após essa carga:
 | Parquet do CNPJ no volume temporário do Airflow | 5,2 GB |
 | PostgreSQL: `cnpj` 72 GB (tabelas, índices e views de busca), `inpi` 4 GB, `finep` e `geo` abaixo de 100 MB | 76 GB |
 | Espaço temporário de ordenação durante a carga de empresas | cerca de 6 GB |
+| **Total** | **cerca de 97 GB**: 91 GB armazenados, mais cerca de 6 GB usados só durante a carga |
 
 O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criação de índices e o refresh das views no PostgreSQL.
 
-### Ambiente Dev com Amostra Reduzida
+## Fontes de dados
 
-Para subir uma réplica leve do stack completo, com portas separadas e base de amostra para CNPJ, Neo4j e FINEP:
+Todos os dados vêm de portais brasileiros de dados abertos:
 
-```bash
-cp dev/.env.example dev/.env
-chmod +x dev/scripts/*.sh
-./dev/scripts/start.sh
-```
+- **CNPJ:** o cadastro de empresas da Receita Federal (empresas, estabelecimentos, sócios)
+- **FINEP:** planilhas públicas de contratações e liberações (`download.finep.gov.br`)
+- **INPI:** dados de patentes em [dadosabertos.inpi.gov.br](https://dadosabertos.inpi.gov.br/index/patentes/)
+- **Geografia:** limites do IBGE via [geobr](https://github.com/ipeaGIT/geobr)
 
-Documentação específica: [dev/README.md](dev/README.md)
-
-O compose raiz agora define apenas a base compartilhada. As diferenças de execução ficam em [compose.prod.yml](compose.prod.yml) e [compose.dev.yml](compose.dev.yml), reduzindo drift entre dev e prod-like para serviços como Flyway e dependências de infraestrutura.
-
-Para reduzir risco operacional, o prod-like não aplica mais migrations implicitamente pelo startup do backend. O runner [scripts/start-prod-like.sh](scripts/start-prod-like.sh) exige uma decisão explícita: `--apply-migrations` ou `--skip-migrations`.
-
-### Reset Completo do Ambiente
-
-Veja [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md).
-
----
+Os registros de sócios incluem nomes de pessoas reais, que são dados pessoais pela LGPD mesmo sendo publicados abertamente. O repositório não contém datasets reais: as seeds de dev usam pessoas fictícias.
 
 ## Documentação
 
 | Documento | Conteúdo |
-|-----------|---------|
-| [docs/repo/ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md) | Stack, decisões arquiteturais, estratégia de storage |
+|---|---|
+| [docs/repo/ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md) | Stack, decisões arquiteturais, estratégia de armazenamento |
 | [docs/repo/IMPLEMENTATION_STEPS.md](docs/repo/IMPLEMENTATION_STEPS.md) | Ambiente, hardware, status de implementação, comandos operacionais |
-| [infrastructure/postgres/README.md](infrastructure/postgres/README.md) | Setup PostgreSQL, schemas CNPJ, MatViews no SSD |
-| [pipelines/dags/cnpj/](pipelines/dags/cnpj/) | DAGs do pipeline CNPJ (`transform → postgres → matview → neo4j`) |
-| [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md) | Troubleshooting e reset detalhado dos containers |
-| [infrastructure/systemd/osint-platform-local.service](infrastructure/systemd/osint-platform-local.service) | Template de unidade systemd para subir o stack local-production no boot |
-| [infrastructure/systemd/osint-platform-airflow.service](infrastructure/systemd/osint-platform-airflow.service) | Template de unidade systemd para subir apenas o grupo do Airflow |
+| [pipelines/dags/README_CNPJ_DAG.md](pipelines/dags/README_CNPJ_DAG.md) | As DAGs do CNPJ em detalhe, com benchmarks |
+| [infrastructure/postgres/README.md](infrastructure/postgres/README.md) | Setup do PostgreSQL, schemas do CNPJ, materialized views |
+| [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md) | Troubleshooting e reset completo dos containers |
 
 ## Licença
 
 Distribuído sob a [Apache License 2.0](LICENSE). Os datasets continuam sujeitos aos termos de seus publicadores.
+
+## Autor
+
+Rodrigo Fileto Cuerci Maciel ([@rodfileto](https://github.com/rodfileto))

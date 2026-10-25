@@ -118,7 +118,7 @@ cp .env.example .env
 ./scripts/start-prod-like.sh --apply-migrations
 ```
 
-By default all service data (PostgreSQL, Neo4j, MinIO, Airflow) lives under `./data/` in the repo, and memory settings suit a 16-32 GB host. To load the full datasets, point the `*_HOST_PATH` variables in `.env` at larger disks and raise the PostgreSQL and Neo4j memory values; `.env.example` lists the 64 GB profile.
+By default all service data (PostgreSQL, Neo4j, MinIO, Airflow) lives under `./data/` in the repo, and the memory settings are sized for a 32 GB machine. To load the full datasets, point the `*_HOST_PATH` variables in `.env` at larger disks and raise the PostgreSQL and Neo4j memory values; `.env.example` lists the 64 GB profile.
 
 This starts the frontend (`http://localhost:3000`), backend (`http://localhost:8000`), Keycloak (`http://localhost:8081`), MinIO console (`http://localhost:9001`), PostgreSQL, Neo4j and Flyway. Migrations are never applied implicitly: the script requires `--apply-migrations` or `--skip-migrations`.
 
@@ -129,6 +129,13 @@ Airflow is kept out of the default startup and can be started separately:
 ```
 
 The Brazilian geography (IBGE states and municipalities) loads into the `geo` schema automatically: the `geo-bootstrap` service runs before the backend on every start and downloads the geometries only the first time. `cnpj_pipeline` rebuilds the CNPJ municipality mapping after each CNPJ load.
+
+To start the stack at boot, install the systemd units (they are rendered with this repository's path):
+
+```bash
+sudo sh infrastructure/systemd/install-osint-platform-local.sh --start
+sudo systemctl enable --now osint-platform-airflow.service   # optional: Airflow at boot too
+```
 
 ### Logging in
 
@@ -173,6 +180,7 @@ Disk used after that load:
 | CNPJ Parquet on the Airflow temp volume | 5.2 GB |
 | PostgreSQL: `cnpj` 72 GB (tables, indexes and search views), `inpi` 4 GB, `finep` and `geo` under 100 MB | 76 GB |
 | Temporary sort space while loading companies | about 6 GB |
+| **Total** | **about 97 GB**: 91 GB stored, plus about 6 GB used only during the load |
 
 The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upserts, index builds and view refreshes.
 
