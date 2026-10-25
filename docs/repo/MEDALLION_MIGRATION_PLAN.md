@@ -146,6 +146,9 @@ cnpj_silver_backfill (manual; params: from_month, to_month, force)
 - **Verify:** compare network responses on sample companies; p95 benchmark on the companies with the most partners (record numbers in this doc).
 
 ### Step 5: Remove Neo4j
+
+> Replaced by [NEO4J_REMOVAL_PLAN.md](NEO4J_REMOVAL_PLAN.md), written against the current single-DAG pipelines. The list below names files that no longer exist.
+
 - Pipelines: delete `cnpj_load_neo4j`, `inpi_load_neo4j`, `neo4j_schema.py`, the Neo4j parts of `load_tasks.py`, `inpi/neo4j_loader.py`, `delete_estabelecimentos_neo4j.py`, `create_neo4j_indexes.py`.
 - FINEP NLP: write the k-NN `SIMILAR_TO` edges to a new `finep.nlp_project_similarity` table instead of Neo4j.
 - Backend: remove the Neo4j driver, settings and the `neo4j` dependency.
