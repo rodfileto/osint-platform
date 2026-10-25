@@ -171,11 +171,11 @@ def get_last_download_info(dataset_name: str) -> Optional[dict]:
         with conn.cursor(cursor_factory=DictCursor) as cur:
             cur.execute(
                 """
-                SELECT http_etag, http_last_modified, snapshot_date,
+                SELECT id, http_etag, http_last_modified, snapshot_date,
                        file_checksum_sha256, file_size_bytes
                 FROM inpi.download_manifest
                 WHERE dataset_name = %s
-                  AND processing_status = 'downloaded'
+                  AND processing_status IN ('downloaded', 'loaded')
                 ORDER BY snapshot_date DESC, download_date DESC
                 LIMIT 1
                 """,
@@ -233,6 +233,7 @@ def download_and_upload_to_minio(
     url: str,
     snapshot_date: date,
     force: bool = False,
+    previous_checksum: Optional[str] = None,
 ) -> dict:
     """
     Orquestra o download de um dataset INPI e o upload para o MinIO.
@@ -258,6 +259,10 @@ def download_and_upload_to_minio(
 
     file_size = len(content)
     checksum = _sha256_stream(content)
+    # INPI regenerates its exports daily, so the ETag changes even when the data does not.
+    if checksum == previous_checksum and not force:
+        logger.info(f"[{dataset_name}] Conteúdo idêntico ao último snapshot — upload ignorado.")
+        return {"unchanged": True, "checksum": checksum, "file_size": file_size}
     logger.info(f"[{dataset_name}] Baixado: {file_size:,} bytes | SHA-256: {checksum[:16]}...")
 
     # Inspecionar cabeçalho CSV
@@ -515,12 +520,14 @@ def collect_dataset(
         }
 
     # 2b. Download → MinIO
+    last = get_last_download_info(dataset_name)
     try:
         result = download_and_upload_to_minio(
             dataset_name=dataset_name,
             url=url,
             snapshot_date=snapshot_date,
             force=force,
+            previous_checksum=last["file_checksum_sha256"] if last else None,
         )
     except Exception as exc:
         error_msg = str(exc)
@@ -530,6 +537,19 @@ def collect_dataset(
         except Exception as db_exc:
             logger.error(f"[{dataset_name}] Falha também ao registrar erro no manifesto: {db_exc}")
         raise
+
+    if result.get("unchanged"):
+        conn = _get_db_connection()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE inpi.download_manifest SET http_etag = %s, http_last_modified = %s, updated_at = now() "
+                    "WHERE id = %s",
+                    (remote_headers.get("etag"), remote_headers.get("last_modified"), last["id"]),
+                )
+        finally:
+            conn.close()
+        return {"dataset_name": dataset_name, "skipped": True, "reason": "content unchanged"}
 
     # 3. Registrar manifesto
     try:

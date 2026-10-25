@@ -122,15 +122,14 @@ sudo systemctl start osint-platform-airflow.service
 
 ### Primeira carga de dados
 
-O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as cargas INPI que só são acionadas por outras DAGs, e dispare os downloads:
+O banco começa vazio e todas as DAGs são criadas pausadas. Cada fonte tem uma DAG de pipeline, e despausá-la já inicia a primeira execução:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
-$C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
-$C exec airflow-scheduler airflow dags trigger finep_pipeline   # download -> 7 tabelas FINEP
-$C exec airflow-scheduler airflow dags trigger inpi_download    # aciona inpi_load_postgres -> inpi_load_neo4j
-$C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
+for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
+
+`cnpj_pipeline` faz download → transform → PostgreSQL → views de busca → Neo4j, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes, carrega e monta o grafo de patentes.
 
 O release do CNPJ tem cerca de 7 GB e o servidor da Receita Federal entrega por volta de 2,5 MB/s, então o download leva cerca de uma hora; `cnpj_pipeline` transforma e carrega o mês na mesma execução. Para reprocessar um mês: `airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'`. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 

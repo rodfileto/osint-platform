@@ -16,13 +16,13 @@ Pipelines never serve HTTP; the API never runs ETL. The API only reads what the 
 
 ## Pipelines
 
-INPI uses a DAG chain linked with `TriggerDagRunOperator`; CNPJ and FINEP each run as one DAG. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
+Each source runs as one DAG: `cnpj_pipeline`, `finep_pipeline` and `inpi_pipeline`. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
 
 | Source | Chain | Schedule |
 |---|---|---|
 | CNPJ (Receita Federal) | One DAG, `cnpj_pipeline`: download → select month → transform (one task per ZIP) → load each table → refresh search views → Neo4j. A month that is already loaded is skipped. | Monthly, 2nd at 02:00 |
 | FINEP | One DAG, `finep_pipeline`: download both spreadsheets → load the 7 tables (each only when a newer file arrived); `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
-| INPI | `inpi_download` → `inpi_load_postgres` → `inpi_load_neo4j` | Weekly, Monday 05:00 |
+| INPI | One DAG, `inpi_pipeline`: download the 10 CSVs (a snapshot is stored only when its content changed) → stage each table → publish all tables in one transaction → search view → Neo4j | Weekly, Monday 05:00 |
 
 Schedule times are in Airflow's default timezone, America/Sao_Paulo. CNPJ transforms run in DuckDB SQL: ZIPs are extracted to CSV staging and written as Parquet, then bulk-loaded.
 
@@ -45,7 +45,7 @@ One database, one schema per domain, managed by Flyway (`infrastructure/postgres
 |---|---|
 | `cnpj` | Companies, establishments, partners, reference tables, download manifest, search materialized views |
 | `finep` | Contracts, disbursements, NLP topics, download manifest |
-| `inpi` | 10 patent tables, `mv_patent_search`, download manifest |
+| `inpi` | 10 patent tables (applicants keep holder history: one row per holder with `data_inicio` / `data_fim`), `mv_patent_search`, download manifest |
 | `geo` | IBGE states and municipalities, CNPJ municipality mapping (the `geo-bootstrap` service loads the geometries; `cnpj_pipeline` rebuilds the mapping) |
 | `public` | Airflow metadata and the Flyway history |
 

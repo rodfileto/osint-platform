@@ -1,888 +1,273 @@
 """
-INPI Patents Postgres Loader
+INPI patent CSVs (MinIO snapshots) → inpi.* tables.
 
-Carrega os 10 CSVs de patentes do INPI (armazenados no MinIO pelo
-inpi_download DAG) nas tabelas do schema inpi no PostgreSQL.
-
-Estratégia de carga:
-  TRUNCATE inpi.patentes_dados_bibliograficos CASCADE
-    → limpa todas as 10 tabelas em cascata (chaves estrangeiras)
-  INSERT dados_bibliograficos (tabela pai)
-  INSERT das 9 tabelas filhas (em qualquer ordem após o pai)
-  REFRESH MATERIALIZED VIEW CONCURRENTLY inpi.mv_patent_search
-
-Transformações aplicadas no load:
-  tipo_patente      ← regex sobre numero_inpi (prefixo alfabético: PI, MU, PP…)
-  sigilo            ← float > 0 → True, senão False
-  cnpj_basico_resolved ← LEFT(cgccpf, 8) quando tipo = pessoa jurídica e valor
-                         é CNPJ numérico de 14 dígitos; NULL caso contrário
-
-Codificação CSV:
-  Tenta UTF-8 / UTF-8-BOM primeiro; fallback para Latin-1 (ISO-8859-1).
+Each table is staged on its own: DuckDB reads the CSV, drops exact repeats (INPI's exports
+repeat rows heavily) and writes inpi.<table>_staging. publish() then replaces all ten tables
+in one transaction, keeping only rows whose patent exists in patentes_dados_bibliograficos.
 """
 
-from __future__ import annotations
-
-import io
 import logging
 import os
-import re
-from datetime import date, datetime, timezone
+import tempfile
+import time
+from dataclasses import dataclass
 from typing import Optional
 
-import pandas as pd
+import duckdb
 import psycopg2
-import psycopg2.extras
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 50_000   # linhas por batch de INSERT
+PARENT = "patentes_dados_bibliograficos"
 
 
-# ---------------------------------------------------------------------------
-# Infraestrutura: banco e MinIO
-# ---------------------------------------------------------------------------
-
-def _get_db_connection():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "postgres"),
-        port=int(os.getenv("POSTGRES_PORT", "5432")),
-        database=os.getenv("POSTGRES_DB", "osint_metadata"),
-        user=os.getenv("POSTGRES_USER", "osint_admin"),
-        password=os.getenv("POSTGRES_PASSWORD", "osint_secure_password"),
-    )
+def _str(col: str) -> str:
+    return f"NULLIF(TRIM({col}), '')"
 
 
-def _get_minio_client():
-    import boto3  # type: ignore[import-untyped]
-    from botocore.client import Config  # type: ignore[import-untyped]
-
-    endpoint_url = os.getenv(
-        "MINIO_ENDPOINT_URL", os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-    )
-    access_key = os.getenv("MINIO_ROOT_USER", os.getenv("MINIO_ACCESS_KEY"))
-    secret_key = os.getenv("MINIO_ROOT_PASSWORD", os.getenv("MINIO_SECRET_KEY"))
-
-    if not access_key or not secret_key:
-        raise RuntimeError(
-            "MinIO credentials not set. "
-            "Expected MINIO_ROOT_USER/MINIO_ROOT_PASSWORD (or MINIO_ACCESS_KEY/MINIO_SECRET_KEY)."
-        )
-
-    session = boto3.session.Session()
-    return session.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=os.getenv("MINIO_REGION", "us-east-1"),
-        config=Config(signature_version="s3v4"),
-    )
+def _int(col: str) -> str:
+    return f"TRY_CAST(TRY_CAST({_str(col)} AS DOUBLE) AS BIGINT)"
 
 
-def _read_csv_from_minio(minio_info: dict) -> bytes:
-    s3 = _get_minio_client()
-    bucket = minio_info["minio_bucket"]
-    key = minio_info["minio_key"]
-    logger.info(f"Lendo s3://{bucket}/{key}")
-    resp = s3.get_object(Bucket=bucket, Key=key)
-    return resp["Body"].read()
+def _date(col: str) -> str:
+    return f"TRY_CAST({_str(col)} AS DATE)"
 
 
-def _read_csv_chunks(content: bytes, **kwargs):
-    """
-    Lê CSV em chunks com detecção automática de encoding.
-    Tenta UTF-8-BOM e UTF-8 antes de usar Latin-1 como fallback.
-    """
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            content[:4096].decode(encoding)
-            return pd.read_csv(io.BytesIO(content), encoding=encoding, **kwargs)
-        except UnicodeDecodeError:
-            continue
-    return pd.read_csv(io.BytesIO(content), encoding="latin-1", **kwargs)
+def _cnpj_basico(document: str, person_type: str) -> str:
+    """First 8 digits of a 14-digit CNPJ, only for legal entities."""
+    return (f"CASE WHEN lower({person_type}) LIKE '%jur%' AND regexp_full_match(TRIM({document}), '\\d{{14}}') "
+            f"THEN left(TRIM({document}), 8) END")
 
 
-# ---------------------------------------------------------------------------
-# Helpers de transformação vetorizada
-# ---------------------------------------------------------------------------
-
-def _vstr(s: pd.Series) -> list[Optional[str]]:
-    """Limpa strings: NaN e '' → None, demais → strip."""
-    def _clean(x):
-        if pd.isna(x):
-            return None
-        v = str(x).strip()
-        return v if v else None
-    return list(s.apply(_clean))
+@dataclass(frozen=True)
+class Table:
+    columns: dict[str, str]                # table column → DuckDB expression over the CSV columns
+    key: Optional[tuple[str, ...]] = None  # natural key: keep the most complete row per key
+    parents: tuple[str, ...] = ("codigo_interno",)  # columns that must exist in the parent table
 
 
-def _vint(s: pd.Series) -> list[Optional[int]]:
-    """Converte Series de strings para int; NaN/inválido → None."""
-    def _conv(x):
-        if pd.isna(x):
-            return None
-        try:
-            return int(float(str(x).strip()))
-        except (TypeError, ValueError):
-            return None
-    return list(s.apply(_conv))
+TABLES = {
+    PARENT: Table(
+        columns={
+            "codigo_interno": _int("codigo_interno"),
+            "numero_inpi": _str("numero_inpi"),
+            "tipo_patente": f"NULLIF(upper(regexp_extract(TRIM(numero_inpi), '^([A-Za-z]+)', 1)), '')",
+            "data_deposito": _date("data_deposito"),
+            "data_protocolo": _date("data_protocolo"),
+            "data_publicacao": _date("data_publicacao"),
+            "numero_pct": _str("numero_pct"),
+            "numero_wo": _str("numero_wo"),
+            "data_publicacao_wo": _date("data_publicacao_wo"),
+            "data_entrada_fase_nacional": _date("data_entrada_fase_nacional"),
+            "sigilo": "COALESCE(TRY_CAST(sigilo AS DOUBLE) > 0, false)",
+        },
+        key=("codigo_interno",),
+        parents=(),
+    ),
+    "patentes_conteudo": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "numero_inpi": _str("numero_inpi"),
+                 "titulo": _str("titulo"), "resumo": _str("resumo")},
+        key=("codigo_interno",),
+    ),
+    "patentes_inventores": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "ordem": _int("ordem"),
+                 "autor": _str("autor"), "pais": _str("pais"), "estado": _str("estado")},
+    ),
+    # Successive holders of the same position are separate rows (data_inicio / data_fim).
+    "patentes_depositantes": Table(
+        columns={
+            "codigo_interno": _int("codigo_interno"),
+            "ordem": _int("ordem"),
+            "pais": _str("pais"),
+            "estado": _str("estado"),
+            "depositante": _str("depositante"),
+            "cgccpfdepositante": _str("cgccpfdepositante"),
+            "tipopessoadepositante": _str("tipopessoadepositante"),
+            "data_inicio": _date("data_inicio_depositante"),
+            "data_fim": _date("data_fim_depositante"),
+            "cnpj_basico_resolved": _cnpj_basico("cgccpfdepositante", "tipopessoadepositante"),
+        },
+    ),
+    "patentes_classificacao_ipc": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "ordem": _int("ordem"),
+                 "simbolo": _str("simbolo"), "versao": _str("versao")},
+    ),
+    "patentes_despachos": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "numero_rpi": _int("numero_rpi"),
+                 "data_rpi": _date("data_rpi"), "codigo_despacho": _str("codigo_despacho"),
+                 "complemento_despacho": _str("complemento_despacho")},
+    ),
+    "patentes_procuradores": Table(
+        columns={
+            "codigo_interno": _int("codigo_interno"),
+            "procurador": _str("procurador"),
+            "cgccpfprocurador": _str("cgccpfprocurador"),
+            "tipopessoaprocurador": _str("tipopessoaprocurador"),
+            "data_inicio": _date("data_inicio_procurador"),
+            "cnpj_basico_resolved": _cnpj_basico("cgccpfprocurador", "tipopessoaprocurador"),
+        },
+    ),
+    "patentes_prioridades": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "pais_prioridade": _str("pais_prioridade"),
+                 "numero_prioridade": _str("numero_prioridade"), "data_prioridade": _date("data_prioridade")},
+    ),
+    "patentes_vinculos": Table(
+        columns={"codigo_interno_derivado": _int("codigo_interno_derivado"),
+                 "codigo_interno_origem": _int("codigo_interno_origem"),
+                 "data_vinculo": _date("data_vinculo"), "tipo_vinculo": _str("tipo_vinculo")},
+        key=("codigo_interno_derivado", "codigo_interno_origem", "tipo_vinculo"),
+        parents=("codigo_interno_derivado", "codigo_interno_origem"),
+    ),
+    "patentes_renumeracoes": Table(
+        columns={"codigo_interno": _int("codigo_interno"), "numero_inpi_original": _str("numero_inpi_original")},
+        key=("codigo_interno", "numero_inpi_original"),
+    ),
+}
 
 
-def _vsmallint(s: pd.Series) -> list[Optional[int]]:
-    return _vint(s)
+def _pg_params() -> dict:
+    return {
+        "host": os.getenv("POSTGRES_HOST", "postgres"),
+        "port": os.getenv("POSTGRES_PORT", "5432"),
+        "dbname": os.getenv("POSTGRES_DB", "osint_metadata"),
+        "user": os.getenv("POSTGRES_USER", "osint_admin"),
+        "password": os.getenv("POSTGRES_PASSWORD"),
+    }
 
 
-def _vdate(s: pd.Series) -> list[Optional[date]]:
-    """Converte Series de strings para date; erros e NaN → None."""
-    # INPI publishes every date column as YYYY-MM-DD; blanks and bad values become NaT
-    parsed = pd.to_datetime(s, errors="coerce", format="ISO8601")
-    return [v.date() if pd.notna(v) else None for v in parsed]
+def _connect():
+    return psycopg2.connect(**_pg_params())
 
 
-def _vsigilo(s: pd.Series) -> list[bool]:
-    """Converte campo float-like para bool: valor > 0 → True."""
-    def _conv(x):
-        try:
-            return float(x) > 0
-        except (TypeError, ValueError):
-            return False
-    return list(s.apply(_conv))
-
-
-def _vtipo_patente(s: pd.Series) -> list[Optional[str]]:
-    """Extrai prefixo alfabético do numero_inpi: PI, MU, PP, MI, DI…"""
-    def _extract(x):
-        if not isinstance(x, str):
-            return None
-        m = re.match(r"^([A-Za-z]+)", x.strip())
-        return m.group(1).upper() if m else None
-    return list(s.apply(_extract))
-
-
-def _vcnpj_basico_pairs(cgccpf_s: pd.Series, tipo_s: pd.Series) -> list[Optional[str]]:
-    """Versão iterativa de _vcnpj_basico para uso com duas colunas."""
-    result = []
-    for cgccpf, tipo in zip(cgccpf_s, tipo_s):
-        if not isinstance(tipo, str):
-            result.append(None)
-            continue
-        if "jur" not in tipo.lower():
-            result.append(None)
-            continue
-        if not isinstance(cgccpf, str):
-            result.append(None)
-            continue
-        cgccpf_s_val = cgccpf.strip()
-        if re.match(r"^\d{14}$", cgccpf_s_val):
-            result.append(cgccpf_s_val[:8])
-        else:
-            result.append(None)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Manifesto: leitura e atualização
-# ---------------------------------------------------------------------------
-
-def get_snapshot_info() -> dict[str, dict]:
-    """
-    Retorna {dataset_name: {id, minio_key, minio_bucket, snapshot_date}}
-    para o snapshot mais recente de cada dataset, já carregado ou não.
-
-    A DAG trunca todas as tabelas antes de carregar, então datasets sem
-    snapshot novo precisam ser recarregados a partir do último snapshot.
-    """
-    conn = _get_db_connection()
+def latest_snapshots() -> dict[str, dict]:
+    """{dataset_name: {id, minio_bucket, minio_key, snapshot_date, processing_status}} for the newest snapshot."""
+    conn = _connect()
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        with conn.cursor() as cur:
             cur.execute("""
                 SELECT DISTINCT ON (dataset_name)
-                    id, dataset_name, minio_key, minio_bucket, snapshot_date
+                    dataset_name, id, minio_bucket, minio_key, snapshot_date, processing_status
                 FROM inpi.download_manifest
                 WHERE processing_status IN ('downloaded', 'loaded')
                 ORDER BY dataset_name, snapshot_date DESC, download_date DESC
             """)
-            rows = cur.fetchall()
-        return {row["dataset_name"]: dict(row) for row in rows}
+            names = [d[0] for d in cur.description]
+            return {row[0]: dict(zip(names, row)) for row in cur.fetchall()}
     finally:
         conn.close()
 
 
-def check_snapshot_available() -> bool:
-    """
-    Retorna True se há pelo menos um dataset com status='downloaded'.
-    Usado como condição no ShortCircuitOperator.
-    """
-    conn = _get_db_connection()
+def has_pending_snapshot() -> bool:
+    """True when the newest snapshot of some dataset has not been loaded yet."""
+    snapshots = latest_snapshots()
+    pending = sorted(n for n, s in snapshots.items() if s["processing_status"] == "downloaded")
+    logger.info(f"{len(snapshots)} datasets with snapshots; not yet loaded: {pending or 'none'}")
+    return bool(pending)
+
+
+def stage_table(table: str) -> int:
+    """Read the newest snapshot of the table's CSV into inpi.<table>_staging."""
+    from inpi.downloader import _get_minio_s3_client
+
+    spec = TABLES[table]
+    snapshot = latest_snapshots().get(table)
+    if snapshot is None:
+        raise RuntimeError(f"No snapshot of {table} has been downloaded")
+
+    columns = list(spec.columns) + ["snapshot_date"]
+    selects = [f"{expr} AS {col}" for col, expr in spec.columns.items()]
+    selects.append(f"DATE '{snapshot['snapshot_date']}' AS snapshot_date")
+
+    with tempfile.TemporaryDirectory(dir="/opt/airflow/temp_ssd") as work:
+        csv_path = os.path.join(work, "data.csv")
+        _get_minio_s3_client().download_file(snapshot["minio_bucket"], snapshot["minio_key"], csv_path)
+
+        duck = duckdb.connect(config={"temp_directory": work, "memory_limit": "4GB"})
+        try:
+            source = f"read_csv('{csv_path}', all_varchar=true, header=true)"
+            duck.execute(f"""
+                CREATE TABLE distinct_rows AS
+                SELECT DISTINCT {', '.join(selects)} FROM {source}
+                WHERE {next(iter(spec.columns.values()))} IS NOT NULL
+            """)
+            raw = duck.execute(f"SELECT count(*) FROM {source}").fetchone()[0]
+            distinct = duck.execute("SELECT count(*) FROM distinct_rows").fetchone()[0]
+            final = "distinct_rows"
+            note = ""
+            if spec.key:
+                key = ", ".join(spec.key)
+                completeness = " + ".join(f"({c} IS NOT NULL)::INT" for c in columns)
+                duck.execute(f"""
+                    CREATE TABLE keyed_rows AS
+                    SELECT DISTINCT ON ({key}) * FROM distinct_rows ORDER BY {key}, {completeness} DESC
+                """)
+                final = "keyed_rows"
+                kept = duck.execute("SELECT count(*) FROM keyed_rows").fetchone()[0]
+                note = f", {distinct - kept:,} rows sharing a key dropped (kept the most complete)"
+
+            conn = _connect()
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS inpi.{table}_staging")
+                # Only the loaded columns: DuckDB writes NULL into any other column, bypassing defaults.
+                cur.execute(f"CREATE UNLOGGED TABLE inpi.{table}_staging AS "
+                            f"SELECT {', '.join(columns)} FROM inpi.{table} WITH NO DATA")
+            conn.close()
+
+            duck.execute("INSTALL postgres; LOAD postgres; SET pg_null_byte_replacement=''")
+            dsn = " ".join(f"{k}={v}" for k, v in _pg_params().items())
+            duck.execute(f"ATTACH '{dsn}' AS pg (TYPE POSTGRES)")
+            start = time.time()
+            duck.execute(f"INSERT INTO pg.inpi.{table}_staging ({', '.join(columns)}) SELECT {', '.join(columns)} FROM {final}")
+            staged = duck.execute(f"SELECT count(*) FROM {final}").fetchone()[0]
+        finally:
+            duck.close()
+
+    logger.info(f"{table}: {raw:,} CSV rows, {raw - distinct:,} exact repeats dropped{note}; "
+                f"staged {staged:,} rows in {time.time() - start:.0f}s")
+    return staged
+
+
+def publish() -> dict[str, int]:
+    """Replace all ten tables with their staging tables in one transaction."""
+    snapshots = latest_snapshots()
+    conn = _connect()
+    counts = {}
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("TRUNCATE " + ", ".join(f"inpi.{t}" for t in TABLES))
+            for table, spec in TABLES.items():  # PARENT is first
+                columns = ", ".join(list(spec.columns) + ["snapshot_date"])
+                where = " AND ".join(
+                    f"EXISTS (SELECT 1 FROM inpi.{PARENT} p WHERE p.codigo_interno = s.{col})" for col in spec.parents
+                ) or "true"
+                start = time.time()
+                cur.execute(f"INSERT INTO inpi.{table} ({columns}) SELECT {columns} FROM inpi.{table}_staging s WHERE {where}")
+                counts[table] = cur.rowcount
+                cur.execute(f"SELECT count(*) FROM inpi.{table}_staging")
+                orphans = cur.fetchone()[0] - counts[table]
+                logger.info(f"{table}: {counts[table]:,} rows ({orphans:,} without a known patent) in {time.time() - start:.0f}s")
+                cur.execute(f"DROP TABLE inpi.{table}_staging")
+            cur.execute(
+                "UPDATE inpi.download_manifest SET processing_status = 'loaded', updated_at = now() WHERE id = ANY(%s)",
+                ([s["id"] for s in snapshots.values()],),
+            )
+    finally:
+        conn.close()
+    return counts
+
+
+def refresh_search_view() -> None:
+    conn = _connect()
+    conn.autocommit = True
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM inpi.download_manifest "
-                "WHERE processing_status = 'downloaded'"
-            )
-            row = cur.fetchone()
-            count = row[0] if row else 0
-        if count == 0:
-            logger.info("Nenhum download pendente — ShortCircuit irá encerrar a DAG.")
-            return False
-        logger.info(f"{count} registro(s) com status='downloaded' — prosseguindo com carga.")
-        return True
+            cur.execute("SELECT relispopulated FROM pg_class WHERE oid = 'inpi.mv_patent_search'::regclass")
+            concurrently = "CONCURRENTLY " if cur.fetchone()[0] else ""
+            start = time.time()
+            cur.execute(f"REFRESH MATERIALIZED VIEW {concurrently}inpi.mv_patent_search")
+            cur.execute("ANALYZE inpi.mv_patent_search")
+            cur.execute("SELECT count(*) FROM inpi.mv_patent_search")
+            logger.info(f"inpi.mv_patent_search: {cur.fetchone()[0]:,} patents, refreshed in {time.time() - start:.0f}s")
     finally:
         conn.close()
-
-
-def mark_datasets_loaded(manifest_ids: list[int], rows_loaded: int) -> None:
-    """Atualiza status de 'downloaded' para 'loaded' nos manifests indicados."""
-    if not manifest_ids:
-        return
-    conn = _get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE inpi.download_manifest
-                SET processing_status = 'loaded',
-                    row_count         = %s,
-                    updated_at        = CURRENT_TIMESTAMP
-                WHERE id = ANY(%s)
-                """,
-                (rows_loaded, manifest_ids),
-            )
-        conn.commit()
-        logger.info(f"Manifests {manifest_ids} atualizados para 'loaded'.")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def mark_all_loaded(snapshot_info: dict[str, dict], rows_per_dataset: dict[str, int]) -> None:
-    """
-    Marca todos os datasets do snapshot como 'loaded' na tabela de manifesto.
-    rows_per_dataset: {dataset_name: linhas_carregadas}
-    """
-    conn = _get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            for dataset_name, info in snapshot_info.items():
-                rows = rows_per_dataset.get(dataset_name, 0)
-                cur.execute(
-                    """
-                    UPDATE inpi.download_manifest
-                    SET processing_status = 'loaded',
-                        row_count         = %s,
-                        updated_at        = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    """,
-                    (rows, info["id"]),
-                )
-        conn.commit()
-        logger.info("Todos os manifests INPI atualizados para 'loaded'.")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# TRUNCATE
-# ---------------------------------------------------------------------------
-
-def truncate_all_tables() -> None:
-    """
-    Limpa todas as 10 tabelas de patentes via CASCADE na tabela pai.
-    Seguro chamar antes de qualquer carga: os filhos são apagados em cascata.
-    """
-    conn = _get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "TRUNCATE TABLE inpi.patentes_dados_bibliograficos CASCADE"
-            )
-        conn.commit()
-        logger.info("TRUNCATE CASCADE — todas as tabelas INPI limpas.")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Per-table loaders
-# ---------------------------------------------------------------------------
-
-def _bulk_insert(conn, cur, insert_sql: str, rows: list) -> None:
-    """Executa execute_values e commita."""
-    if not rows:
-        return
-    psycopg2.extras.execute_values(cur, insert_sql, rows, page_size=1000)
-    conn.commit()
-
-
-def _fetch_valid_ids(conn) -> frozenset:
-    """
-    Retorna frozenset com todos os codigo_interno presentes em
-    patentes_dados_bibliograficos. Usado para filtrar FK inválidas em
-    tabelas filhas — a fonte INPI pode conter referências que não estão
-    na tabela bibliográfica (dados históricos/depurados).
-    """
-    with conn.cursor() as cur:
-        cur.execute("SELECT codigo_interno FROM inpi.patentes_dados_bibliograficos")
-        return frozenset(row[0] for row in cur.fetchall())
-
-
-def load_dados_bibliograficos(snapshot_info: dict, snapshot_date: date) -> int:
-    """
-    Carrega patentes_dados_bibliograficos.
-    Deve ser a PRIMEIRA tabela carregada (pai das demais).
-    """
-    dataset = "patentes_dados_bibliograficos"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_dados_bibliograficos (
-            codigo_interno, numero_inpi, tipo_patente,
-            data_deposito, data_protocolo, data_publicacao,
-            numero_pct, numero_wo, data_publicacao_wo,
-            data_entrada_fase_nacional, sigilo, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno) DO NOTHING
-    """
-
-    total = 0
-    conn = _get_db_connection()
-    try:
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            numero_inpi = pd.Series(_vstr(chunk["numero_inpi"]))
-
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                numero_inpi,
-                _vtipo_patente(numero_inpi),
-                _vdate(chunk["data_deposito"]),
-                _vdate(chunk["data_protocolo"]),
-                _vdate(chunk["data_publicacao"]),
-                _vstr(chunk["numero_pct"]),
-                _vstr(chunk["numero_wo"]),
-                _vdate(chunk["data_publicacao_wo"]),
-                _vdate(chunk["data_entrada_fase_nacional"]),
-                _vsigilo(chunk["sigilo"]),
-                [snapshot_date] * len(chunk),
-            ))
-
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-            logger.info(f"[{dataset}] {total:,} linhas inseridas...")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas")
-    return total
-
-
-def load_conteudo(snapshot_info: dict, snapshot_date: date) -> int:
-    """Carrega patentes_conteudo (título e resumo)."""
-    dataset = "patentes_conteudo"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_conteudo (
-            codigo_interno, numero_inpi, titulo, resumo, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vstr(chunk["numero_inpi"]),
-                _vstr(chunk["titulo"]),
-                _vstr(chunk["resumo"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_inventores(snapshot_info: dict, snapshot_date: date) -> int:
-    """Carrega patentes_inventores."""
-    dataset = "patentes_inventores"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_inventores (
-            codigo_interno, ordem, autor, pais, estado, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno, ordem) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vsmallint(chunk["ordem"]),
-                _vstr(chunk["autor"]),
-                _vstr(chunk["pais"]),
-                _vstr(chunk["estado"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_depositantes(snapshot_info: dict, snapshot_date: date) -> int:
-    """
-    Carrega patentes_depositantes.
-    Nota: CSV tem data_inicio_depositante / data_fim_depositante;
-    a tabela usa data_inicio / data_fim.
-    Resolve cnpj_basico_resolved a partir de cgccpfdepositante + tipopessoadepositante.
-    """
-    dataset = "patentes_depositantes"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_depositantes (
-            codigo_interno, ordem, pais, estado,
-            depositante, cgccpfdepositante, tipopessoadepositante,
-            data_inicio, data_fim, cnpj_basico_resolved, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno, ordem) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            cgccpf_list = _vstr(chunk["cgccpfdepositante"])
-            tipo_list = _vstr(chunk["tipopessoadepositante"])
-            cnpj_resolved = _vcnpj_basico_pairs(
-                pd.Series(cgccpf_list), pd.Series(tipo_list)
-            )
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vsmallint(chunk["ordem"]),
-                _vstr(chunk["pais"]),
-                _vstr(chunk["estado"]),
-                _vstr(chunk["depositante"]),
-                cgccpf_list,
-                tipo_list,
-                _vdate(chunk["data_inicio_depositante"]),
-                _vdate(chunk["data_fim_depositante"]),
-                cnpj_resolved,
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_classificacao_ipc(snapshot_info: dict, snapshot_date: date) -> int:
-    """Carrega patentes_classificacao_ipc."""
-    dataset = "patentes_classificacao_ipc"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_classificacao_ipc (
-            codigo_interno, ordem, simbolo, versao, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno, ordem) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vsmallint(chunk["ordem"]),
-                _vstr(chunk["simbolo"]),
-                _vstr(chunk["versao"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_despachos(snapshot_info: dict, snapshot_date: date) -> int:
-    """
-    Carrega patentes_despachos.
-    PK é BIGSERIAL (auto-gerado) — não incluído no INSERT.
-    """
-    dataset = "patentes_despachos"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_despachos (
-            codigo_interno, numero_rpi, data_rpi,
-            codigo_despacho, complemento_despacho, snapshot_date
-        ) VALUES %s
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vint(chunk["numero_rpi"]),
-                _vdate(chunk["data_rpi"]),
-                _vstr(chunk["codigo_despacho"]),
-                _vstr(chunk["complemento_despacho"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-            logger.info(f"[{dataset}] {total:,} linhas inseridas...")
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_procuradores(snapshot_info: dict, snapshot_date: date) -> int:
-    """
-    Carrega patentes_procuradores.
-    PK é BIGSERIAL — não incluído no INSERT.
-    CSV tem data_inicio_procurador; tabela usa data_inicio.
-    Resolve cnpj_basico_resolved.
-    """
-    dataset = "patentes_procuradores"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_procuradores (
-            codigo_interno, procurador, cgccpfprocurador,
-            tipopessoaprocurador, data_inicio, cnpj_basico_resolved, snapshot_date
-        ) VALUES %s
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            cgccpf_list = _vstr(chunk["cgccpfprocurador"])
-            tipo_list = _vstr(chunk["tipopessoaprocurador"])
-            cnpj_resolved = _vcnpj_basico_pairs(
-                pd.Series(cgccpf_list), pd.Series(tipo_list)
-            )
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vstr(chunk["procurador"]),
-                cgccpf_list,
-                tipo_list,
-                _vdate(chunk["data_inicio_procurador"]),
-                cnpj_resolved,
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_prioridades(snapshot_info: dict, snapshot_date: date) -> int:
-    """Carrega patentes_prioridades (prioridades unionistas)."""
-    dataset = "patentes_prioridades"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_prioridades (
-            codigo_interno, pais_prioridade, numero_prioridade,
-            data_prioridade, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno, pais_prioridade, numero_prioridade) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    skipped_missing_key = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vstr(chunk["pais_prioridade"]),
-                _vstr(chunk["numero_prioridade"]),
-                _vdate(chunk["data_prioridade"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids]
-            skipped += before - len(rows)
-            # pais/numero are part of the primary key; the source has a few rows without a country
-            before = len(rows)
-            rows = [r for r in rows if r[1] is not None and r[2] is not None]
-            skipped_missing_key += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(
-        f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK, "
-        f"{skipped_missing_key:,} sem país ou número de prioridade)"
-    )
-    return total
-
-
-def load_vinculos(snapshot_info: dict, snapshot_date: date) -> int:
-    """
-    Carrega patentes_vinculos.
-    Ambas as colunas (derivado E origem) referenciam patentes_dados_bibliograficos.
-    Apenas vínculos onde ambos os códigos existem na tabela pai são inseridos.
-    """
-    dataset = "patentes_vinculos"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_vinculos (
-            codigo_interno_derivado, codigo_interno_origem,
-            data_vinculo, tipo_vinculo, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno_derivado, codigo_interno_origem, tipo_vinculo) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno_derivado"]),
-                _vint(chunk["codigo_interno_origem"]),
-                _vdate(chunk["data_vinculo"]),
-                _vstr(chunk["tipo_vinculo"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            # vinculos: both FK columns must be valid
-            rows = [r for r in rows if r[0] in valid_ids and r[1] in valid_ids]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-def load_renumeracoes(snapshot_info: dict, snapshot_date: date) -> int:
-    """Carrega patentes_renumeracoes (mapeamento de números antigos)."""
-    dataset = "patentes_renumeracoes"
-    content = _read_csv_from_minio(snapshot_info[dataset])
-
-    insert_sql = """
-        INSERT INTO inpi.patentes_renumeracoes (
-            codigo_interno, numero_inpi_original, snapshot_date
-        ) VALUES %s
-        ON CONFLICT (codigo_interno, numero_inpi_original) DO NOTHING
-    """
-
-    total = 0
-    skipped = 0
-    conn = _get_db_connection()
-    try:
-        valid_ids = _fetch_valid_ids(conn)
-        logger.info(f"[{dataset}] {len(valid_ids):,} codigo_interno válidos")
-        for chunk in _read_csv_chunks(
-            content, dtype=str, chunksize=CHUNK_SIZE, low_memory=False
-        ):
-            chunk.columns = [c.strip().lower() for c in chunk.columns]
-            rows = list(zip(
-                _vint(chunk["codigo_interno"]),
-                _vstr(chunk["numero_inpi_original"]),
-                [snapshot_date] * len(chunk),
-            ))
-            before = len(rows)
-            rows = [r for r in rows if r[0] in valid_ids and r[1] is not None]
-            skipped += before - len(rows)
-            with conn.cursor() as cur:
-                _bulk_insert(conn, cur, insert_sql, rows)
-            total += len(rows)
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    logger.info(f"[{dataset}] Carga concluída: {total:,} linhas ({skipped:,} ignoradas por FK)")
-    return total
-
-
-# ---------------------------------------------------------------------------
-# Materialized view
-# ---------------------------------------------------------------------------
-
-def refresh_matview() -> None:
-    """
-    Atualiza a materialized view mv_patent_search.
-    Usa REFRESH CONCURRENTLY nas cargas subsequentes (requer unique index — já criado).
-    Na primeira carga (view não populada), usa REFRESH simples.
-    """
-    # Query de inspeção em conexão separada (transação normal)
-    conn_check = _get_db_connection()
-    try:
-        with conn_check.cursor() as cur:
-            cur.execute(
-                "SELECT ispopulated FROM pg_matviews "
-                "WHERE schemaname = 'inpi' AND matviewname = 'mv_patent_search'"
-            )
-            row = cur.fetchone()
-            is_populated = row[0] if row else False
-    finally:
-        conn_check.close()
-
-    # REFRESH em conexão com autocommit=True definido ANTES de qualquer query
-    conn_refresh = _get_db_connection()
-    conn_refresh.autocommit = True
-    try:
-        with conn_refresh.cursor() as cur:
-            if is_populated:
-                logger.info("Atualizando mv_patent_search (CONCURRENTLY)...")
-                cur.execute(
-                    "REFRESH MATERIALIZED VIEW CONCURRENTLY inpi.mv_patent_search"
-                )
-            else:
-                logger.info("Populando mv_patent_search pela primeira vez...")
-                cur.execute(
-                    "REFRESH MATERIALIZED VIEW inpi.mv_patent_search"
-                )
-        logger.info("mv_patent_search atualizada com sucesso.")
-    finally:
-        conn_refresh.close()

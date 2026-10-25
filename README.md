@@ -136,15 +136,14 @@ Open `http://localhost:3000` and sign in with the local user the Keycloak realm 
 
 ### First data load
 
-The database starts empty and every DAG is created paused. Unpause them all, including the INPI loaders that are only triggered by other DAGs, then start the downloads:
+The database starts empty and every DAG is created paused. Each source has one pipeline DAG, and unpausing it starts its first run right away:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
-$C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
-$C exec airflow-scheduler airflow dags trigger finep_pipeline   # download -> 7 FINEP tables
-$C exec airflow-scheduler airflow dags trigger inpi_download    # chains into inpi_load_postgres -> inpi_load_neo4j
-$C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
+for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
+
+`cnpj_pipeline` runs download → transform → PostgreSQL → search views → Neo4j, `finep_pipeline` downloads both spreadsheets and loads the 7 FINEP tables, and `inpi_pipeline` downloads the 10 patent CSVs, loads them and builds the patent graph.
 
 The CNPJ release is about 7 GB and the Receita Federal server serves roughly 2.5 MB/s, so its download takes about an hour; `cnpj_pipeline` then transforms and loads it in the same run. Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
 
