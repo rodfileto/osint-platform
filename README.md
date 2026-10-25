@@ -61,7 +61,7 @@ One DAG, `cnpj_pipeline`, runs monthly (on the 2nd at 02:00):
 | Search index | `refresh_search_views` | Refreshes the `cnpj.mv_company_search` materialized views |
 | Graph | `load_neo4j_empresas`, `load_neo4j_socios` | Loads `Empresa` and shareholder (`Pessoa`) nodes and their relationships |
 
-Benchmark from one file (`Empresas0.zip`, ~5M rows): 2 to 5 s extract, 3 to 4 s DuckDB transform, 10 to 20 s Postgres load and 30 to 60 s Neo4j load. To process a specific month again:
+A monthly run takes about 1.5 hours once the release is in MinIO (see [How long a full load takes](#how-long-a-full-load-takes)). To process a specific month again:
 
 ```bash
 airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'
@@ -96,7 +96,7 @@ FINEP and INPI follow the same pattern: a downloader with a manifest, then loade
 
 ## Getting started
 
-Requirements: Docker and Docker Compose. The full CNPJ dataset needs 32 GB+ RAM (64 GB recommended) and 150 GB+ of disk. The dev replica runs on much less.
+Requirements: Docker and Docker Compose. Loading the latest CNPJ month plus INPI and FINEP needs about 100 GB of disk (150 GB recommended for headroom), and the default memory settings are sized for a 32 GB machine; see [How long a full load takes](#how-long-a-full-load-takes). The dev replica runs on much less.
 
 ### Dev replica (sample data)
 
@@ -145,7 +145,36 @@ for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-schedu
 
 `cnpj_pipeline` runs download → transform → PostgreSQL → search views → Neo4j, `finep_pipeline` downloads both spreadsheets and loads the 7 FINEP tables, and `inpi_pipeline` downloads the 10 patent CSVs, loads them and builds the patent graph.
 
-The CNPJ release is about 7 GB and the Receita Federal server serves roughly 2.5 MB/s, so its download takes about an hour; `cnpj_pipeline` then transforms and loads it in the same run. Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
+Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
+
+### How long a full load takes
+
+Measured with the default memory settings from `.env.example`, which are sized for a 32 GB machine (PostgreSQL `shared_buffers` 2 GB, DuckDB 4 GB per transform task); the containers used about 12 GB. The machine itself has 8 cores and 60 GB of RAM, with PostgreSQL on NVMe and MinIO on an HDD; the spare RAM serves as operating-system file cache, so a machine with only 32 GB may be somewhat slower. Loading the 2026-10 CNPJ release:
+
+| Step | Time |
+|---|---|
+| CNPJ download: about 7.3 GB, served by Receita Federal at roughly 2.5 MB/s | ~1 h |
+| CNPJ transform: 37 ZIPs to Parquet, 4 at a time | 8 min |
+| CNPJ load into PostgreSQL: companies 22 min, establishments 21, Simples 7, partners 5, municipality mapping 2 | ~57 min |
+| CNPJ search views (`mv_company_search`, active and inactive) | 20 min |
+| INPI: stage and publish the 10 patent tables, refresh the search view | ~10 min, plus downloading about 2.6 GB from INPI |
+| FINEP: both spreadsheets, 7 tables | under 1 min |
+| **First run from scratch** | **about 2.5 h**; the three pipelines run in parallel and CNPJ is the longest |
+| **Monthly CNPJ run with the release already in MinIO** | **about 1.5 h** |
+
+The times above exclude the Neo4j graph load, which is being removed. Skip it with `"load_neo4j": false`, for example `airflow dags trigger cnpj_pipeline --conf '{"load_neo4j": false}'` (the same param exists on `inpi_pipeline`).
+
+Disk used after that load:
+
+| Data | Size |
+|---|---|
+| CNPJ bronze in MinIO, per monthly release | 7.3 GB |
+| INPI bronze in MinIO, per snapshot (stored only when the content changes) | about 2.6 GB |
+| CNPJ Parquet on the Airflow temp volume | 5.2 GB |
+| PostgreSQL: `cnpj` 72 GB (tables, indexes and search views), `inpi` 4 GB, `finep` and `geo` under 100 MB | 76 GB |
+| Temporary sort space while loading companies | about 6 GB |
+
+The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upserts, index builds and view refreshes.
 
 ## Data sources
 

@@ -15,8 +15,8 @@ Plataforma de inteligência OSINT multi-engine para análise de dados públicos 
 ## Pré-requisitos
 
 - Docker & Docker Compose
-- 32 GB+ RAM (64 GB recomendado para dataset completo)
-- 150 GB+ de espaço em disco
+- Cerca de 100 GB de disco para o mês mais recente do CNPJ mais INPI e FINEP (150 GB recomendado para folga)
+- As configurações de memória padrão são dimensionadas para uma máquina de 32 GB (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa))
 
 ## Ambiente Python (dev)
 
@@ -131,7 +131,36 @@ for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-schedu
 
 `cnpj_pipeline` faz download → transform → PostgreSQL → views de busca → Neo4j, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes, carrega e monta o grafo de patentes.
 
-O release do CNPJ tem cerca de 7 GB e o servidor da Receita Federal entrega por volta de 2,5 MB/s, então o download leva cerca de uma hora; `cnpj_pipeline` transforma e carrega o mês na mesma execução. Para reprocessar um mês: `airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'`. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
+Para reprocessar um mês: `airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'`. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
+
+### Quanto tempo leva uma carga completa
+
+Medido com as configurações de memória padrão do `.env.example`, dimensionadas para uma máquina de 32 GB (`shared_buffers` do PostgreSQL 2 GB, DuckDB 4 GB por tarefa de transformação); os containers usaram cerca de 12 GB. A máquina tem 8 núcleos e 60 GB de RAM, com PostgreSQL em NVMe e MinIO em HDD; a RAM livre serve de cache de arquivos do sistema operacional, então uma máquina com apenas 32 GB pode ser um pouco mais lenta. Carregando o release 2026-10 do CNPJ:
+
+| Etapa | Tempo |
+|---|---|
+| Download do CNPJ: cerca de 7,3 GB, servidos pela Receita Federal a ~2,5 MB/s | ~1 h |
+| Transformação do CNPJ: 37 ZIPs para Parquet, 4 por vez | 8 min |
+| Carga do CNPJ no PostgreSQL: empresas 22 min, estabelecimentos 21, Simples 7, sócios 5, mapeamento de municípios 2 | ~57 min |
+| Views de busca do CNPJ (`mv_company_search`, ativas e inativas) | 20 min |
+| INPI: staging e publicação das 10 tabelas de patentes, refresh da view de busca | ~10 min, mais o download de cerca de 2,6 GB do INPI |
+| FINEP: as duas planilhas, 7 tabelas | menos de 1 min |
+| **Primeira execução do zero** | **cerca de 2,5 h**; os três pipelines rodam em paralelo e o CNPJ é o mais longo |
+| **Execução mensal do CNPJ com o release já no MinIO** | **cerca de 1,5 h** |
+
+Os tempos acima não incluem a carga do grafo no Neo4j, que está sendo removida. Para pulá-la, use `"load_neo4j": false`, por exemplo `airflow dags trigger cnpj_pipeline --conf '{"load_neo4j": false}'` (o mesmo parâmetro existe em `inpi_pipeline`).
+
+Espaço em disco após essa carga:
+
+| Dados | Tamanho |
+|---|---|
+| Bronze do CNPJ no MinIO, por release mensal | 7,3 GB |
+| Bronze do INPI no MinIO, por snapshot (gravado só quando o conteúdo muda) | cerca de 2,6 GB |
+| Parquet do CNPJ no volume temporário do Airflow | 5,2 GB |
+| PostgreSQL: `cnpj` 72 GB (tabelas, índices e views de busca), `inpi` 4 GB, `finep` e `geo` abaixo de 100 MB | 76 GB |
+| Espaço temporário de ordenação durante a carga de empresas | cerca de 6 GB |
+
+O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criação de índices e o refresh das views no PostgreSQL.
 
 ### Ambiente Dev com Amostra Reduzida
 
