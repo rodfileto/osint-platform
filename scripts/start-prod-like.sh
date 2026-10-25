@@ -352,10 +352,10 @@ fi
 
 echo
 echo "Prod-like stack is up."
-echo "Frontend: http://localhost:${FRONTEND_PORT:-3000}"
-echo "Backend:  http://localhost:${BACKEND_PORT:-8000}"
+echo "Frontend: http://localhost:$(env_value FRONTEND_PORT 3000)"
+echo "Backend:  http://localhost:$(env_value BACKEND_PORT 8000)"
 if [[ "$START_AIRFLOW" == "true" ]]; then
-    echo "Airflow:  http://localhost:${AIRFLOW_PORT:-8080}"
+    echo "Airflow:  http://localhost:$(env_value AIRFLOW_PORT 8080)"
 else
     echo "Airflow:  not started (use --with-airflow)"
 fi
@@ -364,6 +364,6 @@ if [[ "$START_CLOUDFLARED" == "true" ]]; then
 else
     echo "Tunnel:   not started (use --with-cloudflared)"
 fi
-echo "Neo4j:    http://localhost:${NEO4J_HTTP_PORT:-7474}"
-echo "MinIO:    http://localhost:${MINIO_CONSOLE_PORT:-9001}"
-echo "Keycloak: http://localhost:${KEYCLOAK_PORT:-8081}"
+echo "Neo4j:    http://localhost:$(env_value NEO4J_HTTP_PORT 7474)"
+echo "MinIO:    http://localhost:$(env_value MINIO_CONSOLE_PORT 9001)"
+echo "Keycloak: http://localhost:$(env_value KEYCLOAK_PORT 8081)"
