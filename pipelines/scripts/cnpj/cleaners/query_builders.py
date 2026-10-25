@@ -232,6 +232,7 @@ def build_empresas_query(csv_path: str, output_path: str) -> str:
         {empresas_cleaning_template()}
         FROM read_csv('{csv_path}', 
             delim=';',
+            encoding='latin-1',
             header=false,
             names=[{column_names}],
             all_varchar=true,
@@ -261,6 +262,7 @@ def build_estabelecimentos_query(csv_path: str, output_path: str) -> str:
         {estabelecimentos_cleaning_template()}
         FROM read_csv('{csv_path}', 
             delim=';',
+            encoding='latin-1',
             header=false,
             names=[{column_names}],
             all_varchar=true,
@@ -355,6 +357,7 @@ def build_socios_query(csv_path: str, output_path: str) -> str:
         {socios_cleaning_template()}
         FROM read_csv('{csv_path}',
             delim=';',
+            encoding='latin-1',
             header=false,
             names=[{column_names}],
             all_varchar=true,
@@ -428,6 +431,7 @@ def build_simples_query(csv_path: str, output_path: str) -> str:
         {simples_cleaning_template()}
         FROM read_csv('{csv_path}',
             delim=';',
+            encoding='latin-1',
             header=false,
             names=[{column_names}],
             all_varchar=true,
