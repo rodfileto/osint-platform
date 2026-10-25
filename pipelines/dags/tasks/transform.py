@@ -1,5 +1,6 @@
 """CNPJ transform step: one ZIP at a time from MinIO, through DuckDB SQL, to Parquet."""
 
+import io
 import logging
 import os
 import re
@@ -91,11 +92,15 @@ def transform_file(reference_month: str, file_name: str, force_reprocess: bool) 
     try:
         zip_path = work_dir / file_name
         _download(reference_month, file_name, zip_path)
+        csv_path = work_dir / (file_name.removesuffix(".zip") + ".csv")
         with zipfile.ZipFile(zip_path) as archive:
             members = [m for m in archive.infolist() if not m.is_dir()]
             if len(members) != 1:
                 raise ValueError(f"{file_name}: expected one CSV inside, found {len(members)}")
-            csv_path = Path(archive.extract(members[0], work_dir))
+            # Receita publishes Latin-1. DuckDB's own latin-1 reader rejects some valid bytes
+            # (0x1A, 0x8F) and its default UTF-8 reader drops accented rows, so decode here.
+            with archive.open(members[0]) as raw, open(csv_path, "w", encoding="utf-8", newline="") as out:
+                shutil.copyfileobj(io.TextIOWrapper(raw, encoding="latin-1", newline=""), out, 16 * 1024 * 1024)
         zip_path.unlink()
         mark_extracted(reference_month, file_name, str(csv_path))
 
