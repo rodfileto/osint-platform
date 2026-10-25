@@ -101,11 +101,7 @@ Para parar apenas o grupo do Airflow:
 docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop airflow-webserver airflow-scheduler airflow-triggerer
 ```
 
-Para carregar ou atualizar manualmente a geografia canônica brasileira no schema `geo`:
-
-```bash
-sh infrastructure/postgres/run-geo-bootstrap.sh
-```
+A geografia brasileira (estados e municípios do IBGE) é carregada automaticamente no schema `geo`: o serviço `geo-bootstrap` roda antes do backend a cada start e baixa as geometrias só na primeira vez. O `cnpj_pipeline` reconstrói o mapeamento de municípios do CNPJ após cada carga.
 
 Esse comando executa o loader compartilhado em [pipelines/scripts/geo/load_br_geo_reference.py](pipelines/scripts/geo/load_br_geo_reference.py) contra o stack raiz e atualiza `geo.br_state`, `geo.br_municipality`, `geo.cnpj_br_municipality_map` e `geo.v_cnpj_br_municipality`.
 

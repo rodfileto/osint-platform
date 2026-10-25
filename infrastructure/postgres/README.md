@@ -38,7 +38,7 @@ Comandos principais:
 ./infrastructure/postgres/run-flyway.sh --env prod-like info
 ./infrastructure/postgres/run-flyway.sh --env prod-like validate
 ./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
-sh ./infrastructure/postgres/run-geo-bootstrap.sh
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml run --rm geo-bootstrap
 ```
 
 Regras práticas:
@@ -87,10 +87,10 @@ ORDER BY tc.table_name;
 
 ### 4. Carregar geografia canônica brasileira
 
-Quando quiser popular ou atualizar o schema `geo` fora do ambiente dev, execute o loader compartilhado:
+No prod-like, o serviço `geo-bootstrap` popula o schema `geo` automaticamente antes do backend. Para rodar o loader manualmente:
 
 ```bash
-sh ./infrastructure/postgres/run-geo-bootstrap.sh
+docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml run --rm geo-bootstrap
 ```
 
 Esse runner garante que PostgreSQL e Flyway estejam prontos e depois executa [pipelines/scripts/geo/load_br_geo_reference.py](pipelines/scripts/geo/load_br_geo_reference.py) no stack raiz.

@@ -46,7 +46,7 @@ One database, one schema per domain, managed by Flyway (`infrastructure/postgres
 | `cnpj` | Companies, establishments, partners, reference tables, download manifest, search materialized views |
 | `finep` | Contracts, disbursements, NLP topics, download manifest |
 | `inpi` | 10 patent tables, `mv_patent_search`, download manifest |
-| `geo` | IBGE states and municipalities, CNPJ municipality mapping (loaded by `run-geo-bootstrap.sh`) |
+| `geo` | IBGE states and municipalities, CNPJ municipality mapping (the `geo-bootstrap` service loads the geometries; `cnpj_pipeline` rebuilds the mapping) |
 | `public` | Airflow metadata and the Flyway history |
 
 Cross-domain joins go through `cnpj_basico`: INPI applicants are resolved to `inpi.patentes_depositantes.cnpj_basico_resolved` at load time.

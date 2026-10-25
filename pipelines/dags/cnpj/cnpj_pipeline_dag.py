@@ -61,6 +61,19 @@ with DAG(
         for table in load_postgres.REFERENCE_TABLES:
             load_postgres.load_table(table, reference_month)
 
+    @task
+    def rebuild_geo_mapping():
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/scripts/geo")
+        import load_br_geo_reference as geo
+
+        conn = geo.connect_postgres()
+        try:
+            geo.rebuild_cnpj_mapping(conn)
+        finally:
+            conn.close()
+
     def load_main_table(table: str):
         @task(task_id=f"load_{table}", execution_timeout=None)
         def _load(reference_month: str):
@@ -85,11 +98,17 @@ with DAG(
     transformed = transform_file.partial(reference_month=month).expand(file_name=list_files(month))
     previous = load_reference_tables(month)
     transformed >> previous
+    # The mapping infers each municipality's state from its establishments.
+    geo_mapping = rebuild_geo_mapping()
     for table in MAIN_TABLES:
         current = load_main_table(table)(month)
         previous >> current
         previous = current
+        if table == "estabelecimento":
+            current >> geo_mapping
 
     graph_companies = load_neo4j_entity.override(task_id="load_neo4j_empresas")("Empresa", month)
     graph_partners = load_neo4j_entity.override(task_id="load_neo4j_socios")("Socio", month)
-    previous >> refresh_search_views() >> neo4j_enabled() >> ensure_neo4j_indexes() >> graph_companies >> graph_partners
+    search_views = refresh_search_views()
+    [previous, geo_mapping] >> search_views
+    search_views >> neo4j_enabled() >> ensure_neo4j_indexes() >> graph_companies >> graph_partners

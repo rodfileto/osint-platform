@@ -33,7 +33,6 @@ sudo rm -rf ./data/postgres ./data/neo4j ./data/airflow/temp_ssd
 
 # 3. Sobe do zero e aplica as migrations
 ./scripts/start-prod-like.sh --apply-migrations --with-airflow
-sh infrastructure/postgres/run-geo-bootstrap.sh
 ```
 
 Depois, siga a seção "First data load" do [README](../../README.md). As DAGs de download registram o que já existe no bronze em vez de baixar novamente.

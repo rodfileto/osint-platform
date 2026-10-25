@@ -7,7 +7,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-import geobr
 import psycopg2
 from psycopg2.extras import execute_values
 
@@ -118,10 +117,14 @@ def should_refresh_municipalities(connection) -> bool:
 
 
 def read_states_frame():
+    import geobr
+
     return geobr.read_state(code_state="all", year=GEOBR_YEAR, simplified=GEOBR_SIMPLIFIED)
 
 
 def read_municipalities_frame():
+    import geobr
+
     return geobr.read_municipality(code_muni="all", year=GEOBR_YEAR, simplified=GEOBR_SIMPLIFIED)
 
 

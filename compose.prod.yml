@@ -33,6 +33,8 @@ services:
         condition: service_started
       keycloak:
         condition: service_healthy
+      geo-bootstrap:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
@@ -62,6 +64,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Loads IBGE states and municipalities once (skipped when present) and rebuilds the
+  # CNPJ municipality mapping; runs before the backend on every start.
   geo-bootstrap:
     build: ./backend
     command: python /workspace/pipelines/scripts/geo/load_br_geo_reference.py

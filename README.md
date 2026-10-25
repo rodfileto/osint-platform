@@ -128,11 +128,7 @@ Airflow is kept out of the default startup and can be started separately:
 ./scripts/start-prod-like.sh --skip-migrations --with-airflow
 ```
 
-Load the canonical Brazilian geography (states, municipalities, CNPJ municipality mapping) into the `geo` schema:
-
-```bash
-sh infrastructure/postgres/run-geo-bootstrap.sh
-```
+The Brazilian geography (IBGE states and municipalities) loads into the `geo` schema automatically: the `geo-bootstrap` service runs before the backend on every start and downloads the geometries only the first time. `cnpj_pipeline` rebuilds the CNPJ municipality mapping after each CNPJ load.
 
 ### Logging in
 
