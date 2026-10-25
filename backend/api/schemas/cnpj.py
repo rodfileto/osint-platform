@@ -14,7 +14,7 @@ class CompanySearchItem(BaseModel):
 
     cnpj_14: str
     cnpj_basico: str
-    razao_social: str
+    razao_social: str | None = None
     nome_fantasia: str | None = None
     situacao_cadastral: str | None = None
     codigo_municipio: str | None = None
@@ -97,7 +97,7 @@ class CompanyDetailResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     cnpj_basico: str
-    razao_social: str
+    razao_social: str | None = None
     natureza_juridica: int | None = None
     natureza_juridica_descricao: str | None = None
     qualificacao_responsavel: str | None = None
@@ -113,7 +113,7 @@ class CompanyDetailResponse(BaseModel):
 
 class PersonCompanyItem(BaseModel):
     cnpj_basico: str
-    razao_social: str
+    razao_social: str | None = None
     qualificacao_socio: str | None = None
     qualificacao_socio_descricao: str | None = None
     data_entrada_sociedade: date | None = None
