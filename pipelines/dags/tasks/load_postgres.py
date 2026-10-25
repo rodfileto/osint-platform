@@ -3,7 +3,9 @@
 import logging
 import os
 import sys
+import threading
 import time
+from contextlib import contextmanager
 
 import duckdb
 import psycopg2
@@ -53,6 +55,25 @@ HEAVY_INDEXES = {
         ("idx_socio_qualificacao", "(qualificacao_socio)"),
     ],
 }
+
+
+@contextmanager
+def _phase(description: str, heartbeat_seconds: int = 120):
+    """Log when a long step starts, every couple of minutes while it runs, and when it ends."""
+    start = time.time()
+    finished = threading.Event()
+
+    def heartbeat():
+        while not finished.wait(heartbeat_seconds):
+            logger.info(f"  {description}: still running ({time.time() - start:.0f}s)")
+
+    logger.info(f"  {description}...")
+    threading.Thread(target=heartbeat, daemon=True).start()
+    try:
+        yield
+    finally:
+        finished.set()
+    logger.info(f"  {description}: done in {time.time() - start:.1f}s")
 
 
 def _pg_params() -> dict:
@@ -108,7 +129,6 @@ def load_table(table: str, reference_month: str) -> int:
 
         rows_per_file = _stage(table, files, reference_month)
 
-        start = time.time()
         conn.autocommit = False
         with conn.cursor() as cur:
             cur.execute(
@@ -119,34 +139,38 @@ def load_table(table: str, reference_month: str) -> int:
             )
             columns = [row[0] for row in cur.fetchall()]
             col_list = ", ".join(columns)
+            staged = sum(rows_per_file.values())
             if key is None:
-                cur.execute(f"DELETE FROM cnpj.{table} WHERE reference_month = %s", (reference_month,))
-                cur.execute(f"INSERT INTO cnpj.{table} ({col_list}) SELECT {col_list} FROM cnpj.{table}_staging")
+                with _phase(f"replacing {reference_month} in cnpj.{table} with {staged:,} staged rows"):
+                    cur.execute(f"DELETE FROM cnpj.{table} WHERE reference_month = %s", (reference_month,))
+                    cur.execute(f"INSERT INTO cnpj.{table} ({col_list}) SELECT {col_list} FROM cnpj.{table}_staging")
             else:
                 updates = ", ".join(
                     "updated_at = CURRENT_TIMESTAMP" if c == "updated_at" else f"{c} = EXCLUDED.{c}" for c in columns
                 )
                 # Receita occasionally publishes a key twice (e.g. a real company plus an empty
                 # placeholder row); keep the most complete row per key.
-                cur.execute(f"""
-                    INSERT INTO cnpj.{table} ({col_list})
-                    SELECT DISTINCT ON ({key}) {col_list}
-                    FROM cnpj.{table}_staging
-                    ORDER BY {key}, num_nonnulls({col_list}) DESC
-                    ON CONFLICT ({key}) DO UPDATE SET {updates}
-                """)
+                with _phase(f"deduplicating and upserting {staged:,} staged rows into cnpj.{table}"):
+                    cur.execute(f"""
+                        INSERT INTO cnpj.{table} ({col_list})
+                        SELECT DISTINCT ON ({key}) {col_list}
+                        FROM cnpj.{table}_staging
+                        ORDER BY {key}, num_nonnulls({col_list}) DESC
+                        ON CONFLICT ({key}) DO UPDATE SET {updates}
+                    """)
             written = cur.rowcount
             cur.execute(f"DROP TABLE cnpj.{table}_staging")
-        conn.commit()
-        logger.info(f"  wrote {written:,} rows into cnpj.{table} in {time.time() - start:.1f}s")
+            with _phase("committing"):
+                conn.commit()
+        logger.info(f"  wrote {written:,} rows into cnpj.{table}")
 
         conn.autocommit = True
         with conn.cursor() as cur:
             for name, definition in HEAVY_INDEXES.get(table, []):
-                start = time.time()
-                cur.execute(f"CREATE INDEX IF NOT EXISTS {name} ON cnpj.{table} {definition}")
-                logger.info(f"  rebuilt {name} in {time.time() - start:.1f}s")
-            cur.execute(f"ANALYZE cnpj.{table}")
+                with _phase(f"building index {name}"):
+                    cur.execute(f"CREATE INDEX IF NOT EXISTS {name} ON cnpj.{table} {definition}")
+            with _phase(f"analyzing cnpj.{table}"):
+                cur.execute(f"ANALYZE cnpj.{table}")
     finally:
         conn.close()
 
@@ -169,11 +193,11 @@ def refresh_search_views() -> None:
                     (view,),
                 )
                 populated = cur.fetchone()[0]
-                start = time.time()
-                cur.execute(f"REFRESH MATERIALIZED VIEW {'CONCURRENTLY ' if populated else ''}cnpj.{view}")
-                cur.execute(f"ANALYZE cnpj.{view}")
+                with _phase(f"refreshing cnpj.{view}{' concurrently' if populated else ''}"):
+                    cur.execute(f"REFRESH MATERIALIZED VIEW {'CONCURRENTLY ' if populated else ''}cnpj.{view}")
+                    cur.execute(f"ANALYZE cnpj.{view}")
                 cur.execute(f"SELECT count(*), pg_size_pretty(pg_total_relation_size('cnpj.{view}')) FROM cnpj.{view}")
                 rows, size = cur.fetchone()
-                logger.info(f"cnpj.{view}: {rows:,} rows, {size}, refreshed in {time.time() - start:.0f}s")
+                logger.info(f"cnpj.{view}: {rows:,} rows, {size}")
     finally:
         conn.close()
