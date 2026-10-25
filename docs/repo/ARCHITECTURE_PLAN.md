@@ -16,12 +16,12 @@ Pipelines never serve HTTP; the API never runs ETL. The API only reads what the 
 
 ## Pipelines
 
-FINEP and INPI use DAG chains linked with `TriggerDagRunOperator`; CNPJ runs as one DAG. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
+INPI uses a DAG chain linked with `TriggerDagRunOperator`; CNPJ and FINEP each run as one DAG. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
 
 | Source | Chain | Schedule |
 |---|---|---|
 | CNPJ (Receita Federal) | One DAG, `cnpj_pipeline`: download → select month → transform (one task per ZIP) → load each table → refresh search views → Neo4j. A month that is already loaded is skipped. | Monthly, 2nd at 02:00 |
-| FINEP | `finep_download` → 7 `finep_load_*` DAGs; `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
+| FINEP | One DAG, `finep_pipeline`: download both spreadsheets → load the 7 tables (each only when a newer file arrived); `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
 | INPI | `inpi_download` → `inpi_load_postgres` → `inpi_load_neo4j` | Weekly, Monday 05:00 |
 
 Schedule times are in Airflow's default timezone, America/Sao_Paulo. CNPJ transforms run in DuckDB SQL: ZIPs are extracted to CSV staging and written as Parquet, then bulk-loaded.

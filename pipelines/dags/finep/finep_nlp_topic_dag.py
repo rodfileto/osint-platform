@@ -15,7 +15,7 @@ Task flow:
 
 Trigger:
   - Manual via UI or CLI
-  - Can be triggered by finep_load_operacao_direta via TriggerDagRunOperator
+  - Run it after finep_pipeline reloads finep.projetos_operacao_direta
 
 All hyperparameters can be overridden at trigger time via conf:
   {
@@ -114,7 +114,7 @@ with DAG(
         "BERTopic pipeline sobre projetos FINEP (resumo/título) → "
         "PostgreSQL (topics) + Neo4j (ProjetoFinep + SIMILAR_TO)"
     ),
-    schedule_interval=None,   # triggered manually or by finep_load_operacao_direta
+    schedule_interval=None,   # triggered manually after finep_pipeline
     catchup=False,
     max_active_runs=1,
     params={

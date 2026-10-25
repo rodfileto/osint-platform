@@ -136,12 +136,12 @@ Open `http://localhost:3000` and sign in with the local user the Keycloak realm 
 
 ### First data load
 
-The database starts empty and every DAG is created paused. Unpause them all, including the FINEP and INPI loaders that are only triggered by other DAGs, then start the downloads:
+The database starts empty and every DAG is created paused. Unpause them all, including the INPI loaders that are only triggered by other DAGs, then start the downloads:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 $C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
-$C exec airflow-scheduler airflow dags trigger finep_download   # chains into the 7 FINEP loader DAGs
+$C exec airflow-scheduler airflow dags trigger finep_pipeline   # download -> 7 FINEP tables
 $C exec airflow-scheduler airflow dags trigger inpi_download    # chains into inpi_load_postgres -> inpi_load_neo4j
 $C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
 ```

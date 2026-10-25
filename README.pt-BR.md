@@ -122,12 +122,12 @@ sudo systemctl start osint-platform-airflow.service
 
 ### Primeira carga de dados
 
-O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as cargas FINEP e INPI que só são acionadas por outras DAGs, e dispare os downloads:
+O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as cargas INPI que só são acionadas por outras DAGs, e dispare os downloads:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 $C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
-$C exec airflow-scheduler airflow dags trigger finep_download   # aciona as 7 DAGs de carga FINEP
+$C exec airflow-scheduler airflow dags trigger finep_pipeline   # download -> 7 tabelas FINEP
 $C exec airflow-scheduler airflow dags trigger inpi_download    # aciona inpi_load_postgres -> inpi_load_neo4j
 $C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
 ```
