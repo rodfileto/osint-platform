@@ -1,37 +1,14 @@
-"""
-Configuration for CNPJ Ingestion Pipeline
+"""Paths and Neo4j settings shared by the CNPJ pipeline task modules."""
 
-Shared constants and paths used across all task modules.
-"""
-
+import os
 from pathlib import Path
 
-# Environment configuration
-BASE_PATH = Path("/opt/airflow/data/cnpj")
-RAW_PATH = BASE_PATH / "raw"  # Local ZIP cache (deprecated; use MinIO)
-TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")  # Mapped to fast local SSD (/srv/osint)
-
-# OPTIMIZATION: Stage CSVs on fast SSD instead of slow HDD
-# Unzipped CSVs are temporary and benefit from fast I/O during DuckDB transformation
-STAGING_PATH = TEMP_SSD_PATH / "cnpj_staging"  # Fast SSD for CSV extraction
-
-# OPTIMIZATION: Parquet files on SSD for fast PostgreSQL loading
-# Parquet files are the active working dataset that gets loaded into PostgreSQL/Neo4j
-# Reading from SSD is 10-100x faster than HDD for bulk loads (135M+ rows)
-# Parquet files are already compressed (ZSTD), so they're space-efficient on SSD
-PROCESSED_PATH = TEMP_SSD_PATH / "cnpj_processed"  # Fast SSD for Parquet (active dataset)
-
-# Optional: Archive path on HDD for long-term cold storage (if needed later)
-ARCHIVE_PATH = BASE_PATH / "archive"  # HDD for long-term archival (not currently used)
-
-# Legacy temp path (now replaced by TEMP_SSD_PATH for most operations)
-TEMP_PATH = BASE_PATH / "temp"
-
-# Default month to process (can be overridden via DAG params)
-DEFAULT_REFERENCE_MONTH = "2026-02"
+# Airflow temp volume (fast local disk): CSV staging, Parquet output, DuckDB spill files.
+TEMP_SSD_PATH = Path("/opt/airflow/temp_ssd")
+STAGING_PATH = TEMP_SSD_PATH / "cnpj_staging"
+PROCESSED_PATH = TEMP_SSD_PATH / "cnpj_processed"
 
 # Neo4j connection settings (from environment variables)
-import os
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "osint_graph_password")
@@ -49,26 +26,6 @@ NEO4J_EMPRESA_FIELDS = {
     "porte_empresa",         # MICRO, PEQUENA, MEDIA, GRANDE
     # excluídos: capital_social (analítico), qualificacao_responsavel (código interno),
     #            ente_federativo_responsavel (raramente preenchido)
-}
-
-# ---------------------------------------------------------------------------
-# DEPRECATED (Cenário A) — Estabelecimento não é mais carregado no Neo4j.
-# Filiais são consultadas via JOIN com cnpj.mv_company_search no PostgreSQL (SSD).
-# Mantido aqui apenas como referência dos campos disponíveis no Parquet.
-# ---------------------------------------------------------------------------
-NEO4J_ESTABELECIMENTO_FIELDS = {
-    "cnpj_basico",               # FK para Empresa
-    "cnpj_ordem",                # parte da PK do CNPJ
-    "cnpj_dv",                   # parte da PK do CNPJ
-    "identificador_matriz_filial",  # 1=Matriz, 2=Filial
-    "nome_fantasia",             # nome comercial
-    "situacao_cadastral",        # 2=Ativa, 3=Suspensa, 4=Inapta, 8=Baixada
-    "data_inicio_atividade",     # data de abertura
-    "cnae_fiscal_principal",     # setor de atividade
-    "uf",                        # estado
-    "municipio",                 # cidade
-    # excluídos: endereço completo, contatos, datas/motivos de situação,
-    #            cnae_fiscal_secundaria, codigo_municipio, codigo_pais, etc.
 }
 
 # ---------------------------------------------------------------------------

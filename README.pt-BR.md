@@ -126,18 +126,17 @@ sudo systemctl start osint-platform-airflow.service
 
 ### Primeira carga de dados
 
-O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as que só são acionadas por outras DAGs, e dispare os downloads:
+O banco começa vazio e todas as DAGs são criadas pausadas. Despause todas, inclusive as cargas FINEP e INPI que só são acionadas por outras DAGs, e dispare os downloads:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 $C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
 $C exec airflow-scheduler airflow dags trigger finep_download   # aciona as 7 DAGs de carga FINEP
 $C exec airflow-scheduler airflow dags trigger inpi_download    # aciona inpi_load_postgres -> inpi_load_neo4j
-$C exec airflow-scheduler airflow dags trigger cnpj_download    # release mensal mais recente para o MinIO
-./pipelines/scripts/cnpj/run_pipeline.sh                          # depois que cnpj_download terminar
+$C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
 ```
 
-O release do CNPJ tem cerca de 7 GB e o servidor da Receita Federal entrega por volta de 2,5 MB/s, então o download leva cerca de uma hora. Depois, `run_pipeline.sh` executa a cadeia transform → load_postgres → matview → neo4j para esse mês. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
+O release do CNPJ tem cerca de 7 GB e o servidor da Receita Federal entrega por volta de 2,5 MB/s, então o download leva cerca de uma hora; `cnpj_pipeline` transforma e carrega o mês na mesma execução. Para reprocessar um mês: `airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'`. Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 
 ### Ambiente Dev com Amostra Reduzida
 

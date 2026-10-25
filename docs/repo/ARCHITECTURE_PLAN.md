@@ -16,11 +16,11 @@ Pipelines never serve HTTP; the API never runs ETL. The API only reads what the 
 
 ## Pipelines
 
-Each source has its own DAG chain, linked with `TriggerDagRunOperator`. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
+FINEP and INPI use DAG chains linked with `TriggerDagRunOperator`; CNPJ runs as one DAG. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
 
 | Source | Chain | Schedule |
 |---|---|---|
-| CNPJ (Receita Federal) | `cnpj_download` → *(manual: `run_pipeline.sh`)* `cnpj_transform` → `cnpj_load_postgres` → `cnpj_matview_refresh` → `cnpj_load_neo4j` | Monthly, 2nd at 02:00 |
+| CNPJ (Receita Federal) | One DAG, `cnpj_pipeline`: download → select month → transform (one task per ZIP) → load each table → refresh search views → Neo4j. A month that is already loaded is skipped. | Monthly, 2nd at 02:00 |
 | FINEP | `finep_download` → 7 `finep_load_*` DAGs; `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
 | INPI | `inpi_download` → `inpi_load_postgres` → `inpi_load_neo4j` | Weekly, Monday 05:00 |
 

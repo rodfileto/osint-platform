@@ -1,651 +1,502 @@
-"""
-CNPJ Data Cleaning Utilities
-
-This module provides reusable data cleaning functions for CNPJ data processing.
-Extracted from legacy Django commands for use in independent ETL pipelines.
-
-Functions are designed to be:
-- Pure (no side effects)
-- Composable (can be chained)
-- Pandas-compatible (work with Series.apply())
-- Type-safe (handle None/NaN gracefully)
-"""
-
-import re
-from decimal import Decimal, InvalidOperation
-from typing import Optional, Union
-import pandas as pd
-from datetime import datetime
+"""DuckDB SQL that turns each raw Receita Federal CSV into typed, cleaned Parquet."""
 
 
-# ============================================================================
-# CNPJ FORMATTING AND VALIDATION
-# ============================================================================
-
-def clean_cnpj_digits(cnpj: Union[str, int, None]) -> Optional[str]:
+def empresas_cleaning_template() -> str:
     """
-    Extract only digits from CNPJ string.
-    
-    Args:
-        cnpj: Raw CNPJ value (may contain formatting)
-        
-    Returns:
-        String with only digits, or None if invalid
-        
-    Examples:
-        >>> clean_cnpj_digits("12.345.678/0001-90")
-        '12345678000190'
-        >>> clean_cnpj_digits(12345678000190)
-        '12345678000190'
-        >>> clean_cnpj_digits("")
-        None
-    """
-    if pd.isna(cnpj) or cnpj is None:
-        return None
-    
-    # Convert to string and extract digits
-    digits = re.sub(r'[^\d]', '', str(cnpj))
-    
-    # Must have exactly 14 digits
-    if len(digits) != 14:
-        return None
-        
-    return digits
-
-
-def format_cnpj(cnpj: Union[str, int, None]) -> Optional[str]:
-    """
-    Format CNPJ in standard Brazilian format: XX.XXX.XXX/XXXX-XX
-    
-    Args:
-        cnpj: Raw CNPJ (with or without formatting)
-        
-    Returns:
-        Formatted CNPJ string or None if invalid
-        
-    Examples:
-        >>> format_cnpj("12345678000190")
-        '12.345.678/0001-90'
-        >>> format_cnpj(12345678000190)
-        '12.345.678/0001-90'
-    """
-    digits = clean_cnpj_digits(cnpj)
-    if not digits:
-        return None
-        
-    return f"{digits[:2]}.{digits[2:5]}.{digits[5:8]}/{digits[8:12]}-{digits[12:14]}"
-
-
-def format_cnpj_basico(cnpj_basico: Union[str, int, None], 
-                       cnpj_ordem: Union[str, int, None],
-                       cnpj_dv: Union[str, int, None]) -> Optional[str]:
-    """
-    Build formatted CNPJ from its three components.
-    
-    Args:
-        cnpj_basico: First 8 digits (base CNPJ)
-        cnpj_ordem: Next 4 digits (order/establishment)
-        cnpj_dv: Last 2 digits (check digits)
-        
-    Returns:
-        Formatted CNPJ or None if any component is invalid
-        
-    Examples:
-        >>> format_cnpj_basico("12345678", "0001", "90")
-        '12.345.678/0001-90'
-    """
-    if pd.isna(cnpj_basico) or pd.isna(cnpj_ordem) or pd.isna(cnpj_dv):
-        return None
-        
-    try:
-        # Ensure proper padding
-        basico = str(cnpj_basico).zfill(8)
-        ordem = str(cnpj_ordem).zfill(4)
-        dv = str(cnpj_dv).zfill(2)
-        
-        # Combine and format
-        full_cnpj = basico + ordem + dv
-        return format_cnpj(full_cnpj)
-    except:
-        return None
-
-
-def validate_cnpj(cnpj: Union[str, int, None]) -> bool:
-    """
-    Validate CNPJ using check digit algorithm.
-    
-    Args:
-        cnpj: CNPJ to validate (with or without formatting)
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    digits = clean_cnpj_digits(cnpj)
-    if not digits:
-        return False
-    
-    # Check for known invalid patterns (all same digit)
-    if len(set(digits)) == 1:
-        return False
-    
-    # Validate check digits
-    def calculate_digit(cnpj_partial, weights):
-        total = sum(int(d) * w for d, w in zip(cnpj_partial, weights))
-        remainder = total % 11
-        return 0 if remainder < 2 else 11 - remainder
-    
-    # First check digit
-    weights1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-    digit1 = calculate_digit(digits[:12], weights1)
-    if digit1 != int(digits[12]):
-        return False
-    
-    # Second check digit
-    weights2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-    digit2 = calculate_digit(digits[:13], weights2)
-    if digit2 != int(digits[13]):
-        return False
-    
-    return True
-
-
-# ============================================================================
-# CURRENCY AND NUMERIC CLEANING
-# ============================================================================
-
-def clean_capital_social(value: Union[str, float, int, None]) -> float:
-    """
-    Clean and convert capital_social (monetary value).
-    
-    Handles:
-    - Quoted strings: "100,00"
-    - Decimal comma: "1.234,56"
-    - Decimal point: "1234.56"
-    - Missing/NaN values
-    
-    Args:
-        value: Raw capital social value
-        
-    Returns:
-        Float value or 0.0 if invalid/missing
-        
-    Examples:
-        >>> clean_capital_social('"1.234,56"')
-        1234.56
-        >>> clean_capital_social("100,00")
-        100.0
-        >>> clean_capital_social(None)
-        0.0
-    """
-    if pd.isna(value) or value is None:
-        return 0.0
-    
-    try:
-        # Remove quotes and whitespace
-        cleaned = str(value).strip().strip('"')
-        
-        # Extract only digits, dots, and commas
-        cleaned = ''.join(c for c in cleaned if c.isdigit() or c in '.,')
-        
-        if not cleaned:
-            return 0.0
-        
-        # Replace decimal comma with dot
-        cleaned = cleaned.replace(',', '.')
-        
-        return float(cleaned)
-    except (ValueError, AttributeError):
-        return 0.0
-
-
-def clean_decimal(value: Union[str, float, int, None], 
-                  default: float = 0.0) -> float:
-    """
-    Generic decimal/float cleaner.
-    
-    Args:
-        value: Raw numeric value
-        default: Default value if cleaning fails
-        
-    Returns:
-        Cleaned float value
-    """
-    if pd.isna(value) or value is None:
-        return default
-    
-    try:
-        cleaned = str(value).strip().strip('"')
-        cleaned = ''.join(c for c in cleaned if c.isdigit() or c in '.,')
-        if not cleaned:
-            return default
-        cleaned = cleaned.replace(',', '.')
-        return float(cleaned)
-    except (ValueError, AttributeError):
-        return default
-
-
-# ============================================================================
-# INTEGER CLEANING
-# ============================================================================
-
-def clean_integer(value: Union[str, int, None]) -> Optional[int]:
-    """
-    Clean and convert to integer.
-    
-    Handles:
-    - Quoted strings: "123"
-    - Whitespace
-    - Empty strings
-    - Non-numeric values
-    
-    Args:
-        value: Raw integer value
-        
-    Returns:
-        Integer or None if invalid/missing
-        
-    Examples:
-        >>> clean_integer('"123"')
-        123
-        >>> clean_integer("  456  ")
-        456
-        >>> clean_integer("")
-        None
-    """
-    if pd.isna(value) or value is None:
-        return None
-    
-    try:
-        cleaned = str(value).strip().strip('"')
-        if not cleaned:
-            return None
-        return int(cleaned)
-    except (ValueError, AttributeError):
-        return None
-
-
-def clean_int_with_default(value: Union[str, int, None], 
-                           default: int = 0) -> int:
-    """
-    Clean integer with default value for failures.
-    
-    Args:
-        value: Raw integer value
-        default: Default value if cleaning fails
-        
-    Returns:
-        Cleaned integer
-    """
-    result = clean_integer(value)
-    return result if result is not None else default
-
-
-# ============================================================================
-# STRING CLEANING
-# ============================================================================
-
-def clean_string(value: Union[str, None]) -> Optional[str]:
-    """
-    Clean string values.
-    
-    Handles:
-    - Quoted strings
-    - Whitespace (leading/trailing)
-    - Empty strings -> None
-    - NaN/None values
-    
-    Args:
-        value: Raw string value
-        
-    Returns:
-        Cleaned string or None if empty/missing
-        
-    Examples:
-        >>> clean_string('"  Hello  "')
-        'Hello'
-        >>> clean_string("")
-        None
-        >>> clean_string(None)
-        None
-    """
-    if pd.isna(value) or value is None:
-        return None
-    
-    cleaned = str(value).strip().strip('"')
-    return cleaned if cleaned else None
-
-
-def clean_string_upper(value: Union[str, None]) -> Optional[str]:
-    """
-    Clean string and convert to uppercase.
-    
-    Useful for standardizing names, addresses, etc.
-    
-    Args:
-        value: Raw string value
-        
-    Returns:
-        Uppercase cleaned string or None
-    """
-    cleaned = clean_string(value)
-    return cleaned.upper() if cleaned else None
-
-
-def clean_string_with_default(value: Union[str, None], 
-                              default: str = "") -> str:
-    """
-    Clean string with default value for empty/missing.
-    
-    Args:
-        value: Raw string value
-        default: Default value if empty/missing
-        
-    Returns:
-        Cleaned string or default
-    """
-    result = clean_string(value)
-    return result if result is not None else default
-
-
-# ============================================================================
-# DATE CLEANING
-# ============================================================================
-
-def clean_cnpj_date(value: Union[str, int, None]) -> Optional[str]:
-    """
-    Clean CNPJ date format (YYYYMMDD as integer or string).
-    
-    CNPJ datasets store dates as 8-digit integers (e.g., 20200131 for Jan 31, 2020).
-    This function converts them to ISO format (YYYY-MM-DD).
-    
-    Args:
-        value: Date as YYYYMMDD integer or string
-        
-    Returns:
-        ISO format date string (YYYY-MM-DD) or None if invalid
-        
-    Examples:
-        >>> clean_cnpj_date(20200131)
-        '2020-01-31'
-        >>> clean_cnpj_date("20200131")
-        '2020-01-31'
-        >>> clean_cnpj_date(0)
-        None
-    """
-    if pd.isna(value) or value is None:
-        return None
-    
-    try:
-        # Convert to string and clean
-        date_str = str(value).strip().strip('"')
-        
-        # Handle empty or zero dates
-        if not date_str or date_str == '0':
-            return None
-        
-        # Ensure 8 digits
-        date_str = date_str.zfill(8)
-        
-        if len(date_str) != 8:
-            return None
-        
-        # Parse and validate
-        year = int(date_str[:4])
-        month = int(date_str[4:6])
-        day = int(date_str[6:8])
-        
-        # Basic validation
-        if year < 1900 or year > 2100:
-            return None
-        if month < 1 or month > 12:
-            return None
-        if day < 1 or day > 31:
-            return None
-        
-        # Create date object to validate (e.g., Feb 31 would fail)
-        date_obj = datetime(year, month, day)
-        
-        return date_obj.strftime('%Y-%m-%d')
-    except (ValueError, AttributeError):
-        return None
-
-
-def clean_date_to_datetime(value: Union[str, int, None]) -> Optional[datetime]:
-    """
-    Convert CNPJ date to Python datetime object.
-    
-    Args:
-        value: Date as YYYYMMDD integer or string
-        
-    Returns:
-        datetime object or None if invalid
-    """
-    date_str = clean_cnpj_date(value)
-    if not date_str:
-        return None
-    
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d')
-    except ValueError:
-        return None
-
-
-# ============================================================================
-# ENUMERATION CLEANING
-# ============================================================================
-
-def clean_porte_empresa(value: Union[str, int, None]) -> str:
-    """
-    Clean and standardize porte_empresa (company size) code.
-    
-    Possible values:
-    - 00: Não informado
-    - 01: Micro empresa
-    - 03: Empresa de pequeno porte
-    - 05: Demais (medium/large)
-    
-    Args:
-        value: Raw porte code
-        
-    Returns:
-        Standardized 2-digit code (always returns valid code, defaulting to '00')
-        
-    Examples:
-        >>> clean_porte_empresa("1")
-        '01'
-        >>> clean_porte_empresa("5")
-        '05'
-        >>> clean_porte_empresa("")
-        '00'
-    """
-    if pd.isna(value) or value is None:
-        return '00'
-    
-    try:
-        # Clean and zero-pad to 2 digits
-        cleaned = str(value).strip().strip('"')
-        if not cleaned:
-            return '00'
-        
-        code = cleaned.zfill(2)
-        
-        # Validate against known codes
-        valid_codes = {'00', '01', '03', '05'}
-        return code if code in valid_codes else '00'
-    except:
-        return '00'
-
-
-def clean_situacao_cadastral(value: Union[str, int, None]) -> Optional[str]:
-    """
-    Clean situação cadastral (registration status) code.
-    
-    Common values:
-    - 01: NULA
-    - 02: ATIVA
-    - 03: SUSPENSA
-    - 04: INAPTA
-    - 08: BAIXADA
-    
-    Args:
-        value: Raw status code
-        
-    Returns:
-        2-digit status code or None if invalid
-    """
-    if pd.isna(value) or value is None:
-        return None
-    
-    try:
-        cleaned = str(value).strip().strip('"')
-        if not cleaned:
-            return None
-        return cleaned.zfill(2)
-    except:
-        return None
-
-
-# ============================================================================
-# BATCH PROCESSING HELPERS
-# ============================================================================
-
-def apply_cleaners_to_dataframe(df: pd.DataFrame, 
-                               column_cleaners: dict) -> pd.DataFrame:
-    """
-    Apply multiple cleaning functions to a DataFrame.
-    
-    Args:
-        df: Input DataFrame
-        column_cleaners: Dict mapping column names to cleaner functions
-                        Example: {'capital_social': clean_capital_social}
+    Complete SQL template for cleaning Empresas table.
     
     Returns:
-        DataFrame with cleaned columns (creates copy)
+        SQL SELECT with all Empresas columns cleaned
         
-    Example:
-        >>> cleaners = {
-        ...     'capital_social': clean_capital_social,
-        ...     'razao_social': clean_string,
-        ...     'cnpj': clean_cnpj_digits
-        ... }
-        >>> df_clean = apply_cleaners_to_dataframe(df, cleaners)
+    Usage:
+        query = f'''
+            CREATE TABLE empresas_clean AS
+            {empresas_cleaning_template()}
+            FROM read_csv('empresas.csv', ...)
+            WHERE LENGTH(TRIM(column0)) = 8
+        '''
     """
-    df_clean = df.copy()
-    
-    for column, cleaner_func in column_cleaners.items():
-        if column in df_clean.columns:
-            df_clean[column] = df_clean[column].apply(cleaner_func)
-    
-    return df_clean
+    return """SELECT 
+        -- CNPJ básico (8 digits, left-padded)
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
+        
+        -- Razão social (uppercase, trimmed)
+        UPPER(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', ''))) as razao_social,
+        
+        -- Natureza jurídica (nullable integer FK)
+        NULLIF(
+            TRY_CAST(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')) AS INTEGER),
+            0
+        ) as natureza_juridica,
+        
+        -- Qualificação do responsável (zero-padded 2-char code, e.g. '00', '05', '50')
+        NULLIF(
+            LPAD(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')), 2, '0'),
+            '00'
+        ) as qualificacao_responsavel,
+        
+        -- Capital social (decimal, Brazilian format)
+        COALESCE(
+            TRY_CAST(
+                REPLACE(
+                    REPLACE(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), '.', ''),
+                    ',', '.'
+                ) AS DECIMAL(15,2)
+            ),
+            0.0
+        ) as capital_social,
+        
+        -- Porte empresa (validated enum)
+        CASE 
+            WHEN LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0') IN ('00', '01', '03', '05')
+            THEN LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0')
+            ELSE '00' 
+        END as porte_empresa,
+        
+        -- Ente federativo (string or NULL)
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', ''))) > 0 
+            THEN TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', ''))
+            ELSE NULL 
+        END as ente_federativo_responsavel"""
 
 
-# ============================================================================
-# VALIDATION HELPERS
-# ============================================================================
-
-def validate_empresa_record(record: dict) -> tuple[bool, list[str]]:
+def estabelecimentos_cleaning_template() -> str:
     """
-    Validate a complete empresa (company) record.
+    Complete SQL template for cleaning Estabelecimentos table.
+    
+    Returns:
+        SQL SELECT with all Estabelecimentos columns cleaned
+        
+    Usage:
+        query = f'''
+            CREATE TABLE estabelecimentos_clean AS
+            {estabelecimentos_cleaning_template()}
+            FROM read_csv('estabelecimentos.csv', ...)
+        '''
+    """
+    return """SELECT 
+        -- CNPJ components
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') as cnpj_basico,
+        LPAD(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')), 4, '0') as cnpj_ordem,
+        LPAD(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')), 2, '0') as cnpj_dv,
+        
+        -- Identification matrix flag
+        TRY_CAST(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', '')) AS INTEGER) as identificador_matriz_filial,
+        
+        -- Nome fantasia
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as nome_fantasia,
+        
+        -- Situação cadastral (zero-padded 2-char: '01','02','03','08')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column5 AS VARCHAR), '"', '')), 2, '0'), '00') as situacao_cadastral,
+        
+        -- Data situação cadastral (YYYYMMDD -> DATE)
+        CASE 
+            WHEN CAST(column6 AS VARCHAR) = '0' OR TRIM(CAST(column6 AS VARCHAR)) = '' THEN NULL
+            WHEN LENGTH(TRIM(CAST(column6 AS VARCHAR))) = 8 THEN
+                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column6 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL 
+        END as data_situacao_cadastral,
+        
+        -- Motivo situação cadastral (zero-padded 2-char: '01'..'63')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', '')), 2, '0'), '00') as motivo_situacao_cadastral,
+        
+        -- Cidade exterior
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as nome_cidade_exterior,
+        
+        -- País code (zero-padded 3-char: '000','013','158')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')), 3, '0'), '000') as codigo_pais,
+        
+        -- Data início atividade
+        CASE 
+            WHEN CAST(column10 AS VARCHAR) = '0' OR TRIM(CAST(column10 AS VARCHAR)) = '' THEN NULL
+            WHEN LENGTH(TRIM(CAST(column10 AS VARCHAR))) = 8 THEN
+                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column10 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL 
+        END as data_inicio_atividade,
+        
+        -- CNAE principal (zero-padded 7-char: '0111301','8888888')
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column11 AS VARCHAR), '"', '')), 7, '0'), '0000000') as cnae_fiscal_principal,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column12 AS VARCHAR), '"', ''))) > 0 
+            THEN TRIM(REPLACE(CAST(column12 AS VARCHAR), '"', ''))
+            ELSE NULL 
+        END as cnae_fiscal_secundaria,
+        
+        -- Address fields
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column13 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column13 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as tipo_logradouro,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column14 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column14 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as logradouro,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column15 AS VARCHAR), '"', ''))) > 0 
+            THEN TRIM(REPLACE(CAST(column15 AS VARCHAR), '"', ''))
+            ELSE NULL 
+        END as numero,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column16 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column16 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as complemento,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column17 AS VARCHAR), '"', ''))) > 0 
+            THEN UPPER(TRIM(REPLACE(CAST(column17 AS VARCHAR), '"', '')))
+            ELSE NULL 
+        END as bairro,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column18 AS VARCHAR), '"', ''))) > 0 
+            THEN LPAD(TRIM(REPLACE(CAST(column18 AS VARCHAR), '"', '')), 8, '0')
+            ELSE NULL 
+        END as cep,
+        CASE 
+            WHEN LENGTH(TRIM(REPLACE(CAST(column19 AS VARCHAR), '"', ''))) > 0 
+            THEN TRIM(REPLACE(CAST(column19 AS VARCHAR), '"', ''))
+            ELSE NULL 
+        END as uf,
+        -- codigo_municipio: zero-padded 4-char code, e.g. '0001', '9997'
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column20 AS VARCHAR), '"', '')), 4, '0'), '0000') as codigo_municipio,
+
+        -- Contact (RF layout: ddd_1, telefone_1, ddd_2, telefone_2, ddd_fax, fax, correio)
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column21 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END as ddd_1,
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column22 AS VARCHAR), '"', '')) AS INTEGER), 0) as telefone_1,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column23 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column23 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END as ddd_2,
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column24 AS VARCHAR), '"', '')) AS INTEGER), 0) as telefone_2,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column25 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END as ddd_fax,
+        NULLIF(TRY_CAST(TRIM(REPLACE(CAST(column26 AS VARCHAR), '"', '')) AS INTEGER), 0) as fax,
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column27 AS VARCHAR), '"', ''))) > 0
+            THEN LOWER(TRIM(REPLACE(CAST(column27 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END as correio_eletronico,
+
+        -- Situação especial
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column28 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column28 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END as situacao_especial,
+        CASE
+            WHEN CAST(column29 AS VARCHAR) = '0' OR TRIM(CAST(column29 AS VARCHAR)) = '' THEN NULL
+            WHEN LENGTH(TRIM(CAST(column29 AS VARCHAR))) = 8 THEN
+                TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column29 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
+        END as data_situacao_especial"""
+
+
+def build_empresas_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Empresas CSV processing.
     
     Args:
-        record: Dictionary with empresa fields
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
         
     Returns:
-        Tuple of (is_valid, list_of_errors)
-        
-    Example:
-        >>> record = {'cnpj_basico': '12345678', 'razao_social': 'ACME LTDA'}
-        >>> valid, errors = validate_empresa_record(record)
+        Complete SQL query string
     """
-    errors = []
+    # Generate column names explicitly to avoid DuckDB's two-digit naming for 10+ columns
+    column_names = ','.join([f'column{i}' for i in range(7)])  # Empresas has 7 columns (0-6)
     
-    # Required fields
-    if not record.get('cnpj_basico'):
-        errors.append("Missing cnpj_basico")
-    
-    if not record.get('razao_social'):
-        errors.append("Missing razao_social")
-    
-    # Validate CNPJ format if present
-    cnpj = record.get('cnpj_basico')
-    if cnpj and len(str(cnpj)) != 8:
-        errors.append(f"Invalid cnpj_basico length: {cnpj}")
-    
-    # Validate capital_social is non-negative
-    capital = record.get('capital_social', 0)
-    if capital < 0:
-        errors.append(f"Negative capital_social: {capital}")
-    
-    return len(errors) == 0, errors
-
-
-def validate_estabelecimento_record(record: dict) -> tuple[bool, list[str]]:
-    """
-    Validate a complete estabelecimento (establishment) record.
-    
-    Args:
-        record: Dictionary with estabelecimento fields
-        
-    Returns:
-        Tuple of (is_valid, list_of_errors)
-    """
-    errors = []
-    
-    # Required fields
-    required_fields = ['cnpj_basico', 'cnpj_ordem', 'cnpj_dv']
-    for field in required_fields:
-        if not record.get(field):
-            errors.append(f"Missing {field}")
-    
-    # Validate full CNPJ if components are present
-    if all(record.get(f) for f in required_fields):
-        full_cnpj = (
-            str(record['cnpj_basico']).zfill(8) +
-            str(record['cnpj_ordem']).zfill(4) +
-            str(record['cnpj_dv']).zfill(2)
+    return f"""
+    COPY (
+        {empresas_cleaning_template()}
+        FROM read_csv('{csv_path}', 
+            delim=';',
+            encoding='latin-1',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
         )
-        if not validate_cnpj(full_cnpj):
-            errors.append(f"Invalid CNPJ: {full_cnpj}")
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
+
+
+def build_estabelecimentos_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Estabelecimentos CSV processing.
     
-    return len(errors) == 0, errors
+    Args:
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
+        
+    Returns:
+        Complete SQL query string
+    """
+    # Generate column names explicitly to avoid DuckDB's two-digit naming for 10+ columns
+    column_names = ','.join([f'column{i}' for i in range(30)])  # Estabelecimentos has 30 columns (0-29)
+    
+    return f"""
+    COPY (
+        {estabelecimentos_cleaning_template()}
+        FROM read_csv('{csv_path}', 
+            delim=';',
+            encoding='latin-1',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
 
 
 # ============================================================================
-# MODULE EXPORTS
+# SOCIOS
 # ============================================================================
 
-__all__ = [
-    # CNPJ functions
-    'clean_cnpj_digits',
-    'format_cnpj',
-    'format_cnpj_basico',
-    'validate_cnpj',
-    
-    # Currency/numeric
-    'clean_capital_social',
-    'clean_decimal',
-    
-    # Integer
-    'clean_integer',
-    'clean_int_with_default',
-    
-    # String
-    'clean_string',
-    'clean_string_upper',
-    'clean_string_with_default',
-    
-    # Date
-    'clean_cnpj_date',
-    'clean_date_to_datetime',
-    
-    # Enumerations
-    'clean_porte_empresa',
-    'clean_situacao_cadastral',
-    
-    # Batch processing
-    'apply_cleaners_to_dataframe',
-    
-    # Validation
-    'validate_empresa_record',
-    'validate_estabelecimento_record',
-]
+def socios_cleaning_template() -> str:
+    """
+    SQL template for cleaning Socios CSV.
+
+    Schema (11 columns, semicolon-delimited, no header):
+        0  cnpj_basico              VARCHAR(8)
+        1  identificador_socio      INTEGER  (1=PJ, 2=PF, 3=Estrangeiro)
+        2  nome_socio_razao_social  TEXT
+        3  cpf_cnpj_socio           VARCHAR(14) — mascarado pela RF
+        4  qualificacao_socio       VARCHAR(2)  (zero-padded, e.g. '05', '22', '50')
+        5  data_entrada_sociedade   DATE (YYYYMMDD)
+        6  pais                     VARCHAR(3) (código, zero-padded)
+        7  representante_legal      VARCHAR(14) — CPF mascarado
+        8  nome_do_representante    TEXT
+        9  qualificacao_representante_legal  VARCHAR(2)  (NULL if '00'/empty)
+       10  faixa_etaria             INTEGER
+    """
+    return """SELECT
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') AS cnpj_basico,
+
+        TRY_CAST(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS INTEGER) AS identificador_socio,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column2 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END AS nome_socio_razao_social,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column3 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END AS cpf_cnpj_socio,
+
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')), 2, '0'), '00') AS qualificacao_socio,
+
+        CASE
+            WHEN TRIM(CAST(column5 AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
+            WHEN LENGTH(TRIM(CAST(column5 AS VARCHAR))) = 8
+            THEN TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST(column5 AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
+        END AS data_entrada_sociedade,
+
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column6 AS VARCHAR), '"', '')), 3, '0'), '000') AS pais,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', ''))) > 0
+            THEN TRIM(REPLACE(CAST(column7 AS VARCHAR), '"', ''))
+            ELSE NULL
+        END AS representante_legal,
+
+        CASE
+            WHEN LENGTH(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', ''))) > 0
+            THEN UPPER(TRIM(REPLACE(CAST(column8 AS VARCHAR), '"', '')))
+            ELSE NULL
+        END AS nome_do_representante,
+
+        NULLIF(LPAD(TRIM(REPLACE(CAST(column9 AS VARCHAR), '"', '')), 2, '0'), '00') AS qualificacao_representante_legal,
+
+        TRY_CAST(TRIM(REPLACE(CAST(column10 AS VARCHAR), '"', '')) AS INTEGER) AS faixa_etaria"""
+
+
+def build_socios_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Socios CSV processing.
+
+    Args:
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
+
+    Returns:
+        Complete SQL query string
+    """
+    column_names = ','.join([f'column{i}' for i in range(11)])
+
+    return f"""
+    COPY (
+        {socios_cleaning_template()}
+        FROM read_csv('{csv_path}',
+            delim=';',
+            encoding='latin-1',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) = 8
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
+
+
+# ============================================================================
+# SIMPLES NACIONAL
+# ============================================================================
+
+def simples_cleaning_template() -> str:
+    """
+    SQL template for cleaning Simples Nacional CSV.
+
+    Schema (7 columns, semicolon-delimited, no header):
+        0  cnpj_basico          VARCHAR(8)
+        1  optante_simples_nacional  BOOLEAN ('S'/'N' -> true/false)
+        2  data_optante_simples_nacional DATE (YYYYMMDD; '00000000' = NULL)
+        3  data_exclusao_simples_nacional DATE
+        4  opcao_mei            VARCHAR(1)  'S'/'N'
+        5  data_opcao_mei       DATE
+        6  data_exclusao_mei    DATE
+    """
+    def _date_expr(col: str) -> str:
+        return f"""CASE
+            WHEN TRIM(CAST({col} AS VARCHAR)) IN ('', '0', '00000000') THEN NULL
+            WHEN LENGTH(TRIM(CAST({col} AS VARCHAR))) = 8
+            THEN TRY_CAST(TRY_STRPTIME(LPAD(TRIM(CAST({col} AS VARCHAR)), 8, '0'), '%Y%m%d') AS DATE)
+            ELSE NULL
+        END"""
+
+    return f"""SELECT
+        LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', '')), 8, '0') AS cnpj_basico,
+
+        CASE UPPER(TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')))
+            WHEN 'S' THEN TRUE
+            WHEN 'N' THEN FALSE
+            ELSE NULL
+        END AS optante_simples_nacional,
+        {_date_expr('column2')} AS data_optante_simples_nacional,
+        {_date_expr('column3')} AS data_exclusao_simples_nacional,
+
+        CASE UPPER(TRIM(REPLACE(CAST(column4 AS VARCHAR), '"', '')))
+            WHEN 'S' THEN TRUE
+            WHEN 'N' THEN FALSE
+            ELSE NULL
+        END AS opcao_mei,
+        {_date_expr('column5')} AS data_opcao_mei,
+        {_date_expr('column6')} AS data_exclusao_mei"""
+
+
+def build_simples_query(csv_path: str, output_path: str) -> str:
+    """
+    Build complete DuckDB query for Simples Nacional CSV processing.
+
+    Args:
+        csv_path: Path to input CSV file
+        output_path: Path to output Parquet file
+
+    Returns:
+        Complete SQL query string
+    """
+    column_names = ','.join([f'column{i}' for i in range(7)])
+
+    return f"""
+    COPY (
+        {simples_cleaning_template()}
+        FROM read_csv('{csv_path}',
+            delim=';',
+            encoding='latin-1',
+            header=false,
+            names=[{column_names}],
+            all_varchar=true,
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) >= 6
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """
+
+
+# ============================================================================
+# REFERENCE TABLES (Cnaes, Motivos, Municipios, Naturezas, Paises, Qualificacoes)
+# ============================================================================
+
+def build_reference_query(csv_path: str, output_path: str, ref_type: str) -> str:
+    """
+    Build DuckDB query for any 2-column reference table CSV.
+
+    All reference CSVs share the same structure: codigo;descricao
+    The primary key type varies:
+        - cnaes:          VARCHAR(7)
+        - motivos:        VARCHAR(2)  (zero-padded, e.g. '01', '63')
+        - municipios:     VARCHAR(4)  (zero-padded, e.g. '0001', '9997')
+        - naturezas:      INTEGER
+        - paises:         VARCHAR(3)  (zero-padded, e.g. '000', '013', '158')
+        - qualificacoes:  VARCHAR(2)  (zero-padded, e.g. '00', '05', '50')
+
+    Args:
+        csv_path:  Path to input CSV file
+        output_path: Path to output Parquet file
+        ref_type:  One of 'cnaes', 'motivos', 'municipios', 'naturezas', 'paises', 'qualificacoes'
+
+    Returns:
+        Complete SQL query string
+    """
+    varchar_refs = {'cnaes'}
+    lpad2_refs   = {'qualificacoes', 'motivos'}    # zero-padded 2-char codes
+    lpad3_refs   = {'paises'}                       # zero-padded 3-char codes
+    lpad4_refs   = {'municipios'}                   # zero-padded 4-char codes
+
+    # cnpj.cnae uses 'cnae_fiscal' as PK column name (not 'codigo')
+    pk_alias = 'cnae_fiscal' if ref_type == 'cnaes' else 'codigo'
+    # cnpj.municipio and cnpj.pais use 'nome' for the description column (not 'descricao')
+    desc_alias = 'nome' if ref_type in ('municipios', 'paises') else 'descricao'
+
+    if ref_type in varchar_refs:
+        codigo_expr = f"TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS {pk_alias}"
+    elif ref_type in lpad2_refs:
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 2, '0') AS {pk_alias}"
+    elif ref_type in lpad3_refs:
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 3, '0') AS {pk_alias}"
+    elif ref_type in lpad4_refs:
+        codigo_expr = f"LPAD(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')), 4, '0') AS {pk_alias}"
+    else:
+        codigo_expr = f"TRY_CAST(TRIM(REPLACE(CAST(column0 AS VARCHAR), '\"', '')) AS INTEGER) AS {pk_alias}"
+
+    return f"""
+    COPY (
+        SELECT
+            {codigo_expr},
+            TRIM(REPLACE(CAST(column1 AS VARCHAR), '"', '')) AS {desc_alias}
+        FROM read_csv('{csv_path}',
+            delim=';',
+            header=false,
+            names=['column0','column1'],
+            all_varchar=true,
+            encoding='latin-1',
+            ignore_errors=true
+        )
+        WHERE LENGTH(TRIM(REPLACE(CAST(column0 AS VARCHAR), '"', ''))) > 0
+    ) TO '{output_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+    """

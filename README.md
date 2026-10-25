@@ -50,18 +50,21 @@ flowchart LR
 
 ### The CNPJ pipeline
 
-| Step | DAG | What it does |
-|---|---|---|
-| Download | `cnpj_download` (monthly, on the 2nd at 02:00) | Watches the Receita Federal repository and streams new monthly ZIPs straight to MinIO (`osint-raw/cnpj/raw/{YYYY-MM}/`), then updates `cnpj.download_manifest` |
-| Transform | `cnpj_transform` | Extracts the files to staging and cleans and validates them in pure DuckDB SQL, writing Parquet |
-| Load | `cnpj_load_postgres` | Bulk-loads into the `cnpj` schema in PostgreSQL |
-| Search index | `cnpj_matview_refresh` | Refreshes the `cnpj.mv_company_search` materialized views |
-| Graph | `cnpj_load_neo4j` | Loads `Empresa`, `Estabelecimento` and shareholder (`Pessoa`) nodes and their relationships |
+One DAG, `cnpj_pipeline`, runs monthly (on the 2nd at 02:00):
 
-Benchmark from one file (`Empresas0.zip`, ~5M rows): 2 to 5 s extract, 3 to 4 s DuckDB transform, 10 to 20 s Postgres load and 30 to 60 s Neo4j load. A full run detects the latest month and runs the whole chain:
+| Step | Tasks | What it does |
+|---|---|---|
+| Download | `download_release`, `update_manifest` | Streams the latest release's ZIPs straight to MinIO (`osint-raw/cnpj/raw/{YYYY-MM}/`) and records them in `cnpj.download_manifest` |
+| Select | `select_month` | Picks the month to process and skips the rest of the run if it is already loaded |
+| Transform | `transform_file` (one per ZIP) | Downloads the ZIP from MinIO, extracts it, and cleans and validates it in pure DuckDB SQL, writing Parquet |
+| Load | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Stages each table, deduplicates it and upserts it into the `cnpj` schema |
+| Search index | `refresh_search_views` | Refreshes the `cnpj.mv_company_search` materialized views |
+| Graph | `load_neo4j_empresas`, `load_neo4j_socios` | Loads `Empresa` and shareholder (`Pessoa`) nodes and their relationships |
+
+Benchmark from one file (`Empresas0.zip`, ~5M rows): 2 to 5 s extract, 3 to 4 s DuckDB transform, 10 to 20 s Postgres load and 30 to 60 s Neo4j load. To process a specific month again:
 
 ```bash
-./pipelines/scripts/cnpj/run_pipeline.sh
+airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'
 ```
 
 FINEP and INPI follow the same pattern: a downloader with a manifest, then loaders for each dataset. See [`pipelines/dags/README_CNPJ_DAG.md`](pipelines/dags/README_CNPJ_DAG.md) for details.
@@ -137,18 +140,17 @@ Open `http://localhost:3000` and sign in with the local user the Keycloak realm 
 
 ### First data load
 
-The database starts empty and every DAG is created paused. Unpause them all, including the ones that are only triggered by other DAGs, then start the downloads:
+The database starts empty and every DAG is created paused. Unpause them all, including the FINEP and INPI loaders that are only triggered by other DAGs, then start the downloads:
 
 ```bash
 C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 $C exec airflow-scheduler bash -c 'airflow dags list -o plain | awk "NR>1 {print \$1}" | xargs -n1 airflow dags unpause'
 $C exec airflow-scheduler airflow dags trigger finep_download   # chains into the 7 FINEP loader DAGs
 $C exec airflow-scheduler airflow dags trigger inpi_download    # chains into inpi_load_postgres -> inpi_load_neo4j
-$C exec airflow-scheduler airflow dags trigger cnpj_download    # latest monthly release into MinIO
-./pipelines/scripts/cnpj/run_pipeline.sh                          # once cnpj_download is done
+$C exec airflow-scheduler airflow dags trigger cnpj_pipeline    # download -> transform -> Postgres -> matviews -> Neo4j
 ```
 
-The CNPJ release is about 7 GB and the Receita Federal server serves roughly 2.5 MB/s, so its download takes about an hour. `run_pipeline.sh` then runs transform, PostgreSQL load, materialized-view refresh and Neo4j load for that month. Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
+The CNPJ release is about 7 GB and the Receita Federal server serves roughly 2.5 MB/s, so its download takes about an hour; `cnpj_pipeline` then transforms and loads it in the same run. Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
 
 ## Data sources
 

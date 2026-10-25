@@ -1,339 +1,58 @@
-# CNPJ Ingestion DAGs
+# CNPJ pipeline DAG
 
-Airflow DAGs for ingesting Brazilian CNPJ (Cadastro Nacional da Pessoa Jurídica) data from Receita Federal into PostgreSQL and Neo4j.
+`cnpj_pipeline` ([cnpj/cnpj_pipeline_dag.py](cnpj/cnpj_pipeline_dag.py)) ingests the Receita Federal company registry in one run: download, transform, load, search views, graph. It runs monthly on the 2nd at 02:00 (America/Sao_Paulo).
 
-## Overview
-
-This pipeline implements a high-performance ETL pipeline for CNPJ data processing:
-
-- **Download**: Streams raw ZIPs from Receita Federal directly to MinIO
-- **Extract**: Unzips CNPJ files from MinIO to staging
-- **Transform**: Cleans and validates data using DuckDB pure SQL (10-100x faster than Python)
-- **Load**: Inserts into PostgreSQL (relational) and Neo4j (graph)
-
-## Architecture
+## Flow
 
 ```
-┌─────────────┐
-│ Receita Fed │
-└──────┬──────┘
-  │ Direct stream
-  ▼
-┌─────────────┐
-│ MinIO raw   │  osint-raw/cnpj/raw/{YYYY-MM}/
-└──────┬──────┘
-  │ Extract (parallel, temporary local staging)
-       ▼
-┌─────────────┐
-│ Staging CSVs│  /data/cnpj/staging/{YYYY-MM}/
-└──────┬──────┘
-       │ Transform with DuckDB SQL (4M rows/sec)
-       ▼
-┌─────────────┐
-│  Parquet    │  /data/cnpj/processed/{YYYY-MM}/
-└──────┬──────┘
-       │ Load (bulk insert)
-       ▼
-┌─────────────┬─────────────┐
-│ PostgreSQL  │   Neo4j     │
-│  (cnpj.*) │  (Graphs)   │
-└─────────────┴─────────────┘
-
-Airflow DAG chain (typical run):
-
-- `cnpj_download` (scheduled) → streams ZIPs to MinIO and updates `cnpj.download_manifest`
-- `cnpj_transform` (manual or triggered) → extract + DuckDB SQL transform to Parquet
-- `cnpj_load_postgres` (triggered) → bulk load to PostgreSQL
-- `cnpj_matview_refresh` (triggered) → refresh `cnpj.mv_company_search`
-- `cnpj_load_neo4j` (triggered) → load graph entities to Neo4j
+download_release → update_manifest → select_month
+  → transform_file ×N (one per ZIP, 4 at a time)
+  → load_reference_tables → load_empresa → load_simples_nacional → load_estabelecimento → load_socio
+  → refresh_search_views → neo4j_enabled → ensure_neo4j_indexes → load_neo4j_empresas → load_neo4j_socios
 ```
 
-## Download DAGs
+| Task | Module | What it does |
+|---|---|---|
+| `download_release` | `tasks/download.py` | Makes the month (requested, or the latest on the server) complete in MinIO; streams only missing or mismatched ZIPs; fails if files are still missing |
+| `update_manifest` | `tasks/download.py` | Registers every ZIP in MinIO in `cnpj.download_manifest`, keeping per-file progress |
+| `select_month` | `tasks/download.py` | Picks the month; skips the rest of the run when every main file is already transformed and loaded |
+| `transform_file` | `tasks/transform.py` | Downloads one ZIP from MinIO, extracts it, runs the DuckDB SQL from `scripts/cnpj/cleaners.py` to Parquet, deletes its staging files |
+| `load_*` | `tasks/load_postgres.py` | Copies the Parquet into an unlogged staging table, then upserts one row per key (the most complete one when Receita publishes a key twice); `socio` replaces the month instead |
+| `refresh_search_views` | `tasks/load_postgres.py` | Refreshes `cnpj.mv_company_search` and `cnpj.mv_company_search_inactive` (concurrently once populated) |
+| `load_neo4j_*` | `tasks/load_neo4j.py` | Loads `Empresa` nodes, then `Pessoa` nodes and `SOCIO_DE` relationships |
 
-### `cnpj_download`
+Each task is idempotent, so a retry repeats only that step. Per-file progress (`extracted_at`, `transformed_at`, `loaded_postgres_at`) lives in `cnpj.download_manifest`; a file is marked loaded only after its table's upsert commits.
 
-Monitora o repositório da Receita Federal (WebDAV) e baixa automaticamente novos meses quando disponíveis.
+## Params
 
-- **Schedule:** mensal, dia 2 às 02:00 (cron: `0 2 2 * *`)
-- **Raw source of truth:** `s3://osint-raw/cnpj/raw/{YYYY-MM}/` no MinIO
-- **Manifest:** atualiza a tabela `cnpj.download_manifest` ao final do fluxo a partir do MinIO
-
-**Optional parameter:**
-
-- `reference_month` (format `YYYY-MM`, e.g., `2026-02`)
-  - default: `auto` (baixa o último mês disponível no servidor, somente se ainda não existir no `cnpj.download_manifest`)
-  - when set: baixa/verifica somente o mês informado
-
-**Tasks:**
-
-- `check_new_months` → detecta meses novos ou incompletos comparando Receita Federal com os objetos no MinIO
-- `download_new_months` → faz streaming dos ZIPs do(s) mês(es) para o MinIO
-- `verify_downloads` → verifica se o mês está completo no MinIO (todos os ZIPs esperados)
-- `repair_downloads` → tenta reenviar ao MinIO apenas os arquivos faltantes / com size mismatch
-- `update_manifest` → executa `pipelines/scripts/cnpj/populate_manifest.py` para registrar os ZIPs no Postgres
-- `generate_report` → imprime sumário (tamanho total, meses disponíveis, último mês)
-
-**Manual trigger examples:**
+| Param | Default | Meaning |
+|---|---|---|
+| `reference_month` | `auto` | `YYYY-MM`, or `auto` for the latest release |
+| `force_reprocess` | `false` | Transform and load the month again even if it is already done |
+| `load_neo4j` | `true` | Run the Neo4j tasks |
 
 ```bash
-# Auto mode (default): download latest month if absent in manifest
-airflow dags trigger cnpj_download
-
-# Force download a specific month
-airflow dags trigger cnpj_download \
-  --conf '{"reference_month": "2026-02"}'
+airflow dags trigger cnpj_pipeline                                                  # latest month
+airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10"}'           # a specific month
+airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true, "load_neo4j": false}'
 ```
 
-### `cnpj_download_full_sync`
+## Storage
 
-Full sync manual (útil no setup inicial ou recuperação). Faz sync de todos os meses diretamente para o MinIO e depois:
-
-- `verify_after_sync` → valida integridade
-- `update_manifest_after_sync` → popula `cnpj.download_manifest`
-- `report_after_sync` → sumário do manifest
-
-## Task Groups
-
-### 1. `process_empresas_group`
-Processes 10 Empresas files (Empresas0.zip - Empresas9.zip) containing:
-- CNPJ básico (8 digits)
-- Razão social (company name)
-- Legal nature
-- Share capital
-- Company size
-
-**Output Tables:**
-- PostgreSQL: `cnpj.empresa`
-- Neo4j: `:Empresa` nodes
-
-### 2. `process_estabelecimentos_group`
-Processes 10 Estabelecimentos files containing:
-- Complete CNPJ (14 digits: básico + ordem + DV)
-- Trade name
-- Registration status
-- Address (street, city, state, ZIP)
-- Economic activity codes (CNAE)
-- Contact information
-
-**Output Tables:**
-- PostgreSQL: `cnpj.estabelecimento`
-- Neo4j: `:Estabelecimento` nodes with `[:PERTENCE_A]` relationships to `:Empresa`
-
-### 3. `process_socios_group` (Future)
-Will process partner/shareholder data and create relationships.
-
-## Performance
-
-### Benchmark Results (Empresas0.zip, ~5M rows):
-- **Extract**: 2-5 seconds (unzip)
-- **Transform (DuckDB SQL)**: 3-4 seconds (~4M rows/sec)
-- **Load (PostgreSQL)**: 10-20 seconds (bulk insert)
-- **Load (Neo4j)**: 30-60 seconds (MERGE batches)
-
-**Total per file**: ~45-90 seconds  
-**Total for 10 files (parallel)**: ~2-3 minutes
-
-### Storage:
-- Raw ZIP em MinIO: ~300 MB (Empresas0) → 6 GB (Estabelecimentos0)
-- Extracted CSV: ~900 MB → 18 GB
-- Parquet (compressed): ~250 MB → 5 GB (70% reduction)
-
-## Configuration
-
-### DAG Parameters (runtime override):
-```python
-{
-    'reference_month': '2024-02',      # Which month to process
-    'process_empresas': True,          # Enable/disable empresas
-    'process_estabelecimentos': True,  # Enable/disable estabelecimentos
-    'process_socios': False            # Not implemented yet
-}
+```
+osint-raw/cnpj/raw/<YYYY-MM>/<File>.zip         MinIO, source of truth
+/opt/airflow/temp_ssd/cnpj_staging/<YYYY-MM>/    CSV staging, removed after each file
+/opt/airflow/temp_ssd/cnpj_processed/<YYYY-MM>/  Parquet (about 5 GB per month), read by the load tasks
 ```
 
-### Environment Variables:
-Set in Airflow connections or environment:
-```bash
-# PostgreSQL
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=osint_metadata
-POSTGRES_USER=osint_admin
-POSTGRES_PASSWORD=osint_secure_password
+`CNPJ_DUCKDB_MEMORY_LIMIT` (default `4GB`) caps DuckDB memory per transform task; it spills to `/opt/airflow/temp_ssd/duckdb_tmp`.
 
-# Neo4j
-NEO4J_URI=bolt://neo4j:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=osint_graph_password
-```
+Benchmark from one file (`Empresas0.zip`, ~5M rows): 2 to 5 s extract, 3 to 4 s DuckDB transform, 10 to 20 s Postgres load, 30 to 60 s Neo4j load.
 
-### Directory Structure:
-```
-/opt/airflow/
-├── data/cnpj/
-│   ├── staging/       # Extracted CSVs (temporary)
-│   │   └── 2024-02/
-│   │       ├── empresas_0/
-│   │       └── ...
-│   └── processed/     # Transformed Parquet (permanent)
-│       └── 2024-02/
-│           ├── empresas_0.parquet
-│           └── ...
-└── scripts/cnpj/      # Python modules
-    ├── __init__.py
-    ├── cleaners.py         # Python cleaners (for reference)
-    └── cleaners_sql.py     # SQL templates (used in DAG)
-```
+## SQL cleaners
 
-MinIO raw layout:
-```
-osint-raw/
-└── cnpj/raw/
-  └── 2024-02/
-    ├── Empresas0.zip
-    ├── Empresas1.zip
-    └── ...
-```
+`scripts/cnpj/cleaners.py` builds one DuckDB query per file kind: `build_empresas_query`, `build_estabelecimentos_query`, `build_socios_query`, `build_simples_query` and `build_reference_query`. Each reads the semicolon-separated Latin-1 CSV, normalizes codes, dates and Brazilian decimals (`1.234,56` → `1234.56`), and writes ZSTD Parquet.
 
-## Usage
+## Known limitations
 
-### Trigger Manually:
-```bash
-# Download & update manifest (scheduled monthly, but can be triggered)
-airflow dags trigger cnpj_download
-
-# Transform (extract + DuckDB SQL → Parquet). This will trigger the downstream DAGs.
-airflow dags trigger cnpj_transform \
-  --conf '{"reference_month": "2026-02"}'
-
-# Transform only Empresas
-airflow dags trigger cnpj_transform \
-  --conf '{"process_estabelecimentos": false, "process_socios": false, "process_simples": false, "process_references": false}'
-```
-
-### Backfill Historical Data:
-```bash
-# Process all months from 2022-08 to 2025-06
-for month in 2022-08 2022-09 2022-10 ... 2025-06; do
-  airflow dags trigger cnpj_transform \
-    --conf "{\"reference_month\": \"$month\"}"
-  sleep 300  # Wait 5 minutes between runs
-done
-```
-
-### Monitor Progress:
-```bash
-# Watch DAG runs
-airflow dags list-runs -d cnpj_transform
-
-# View task logs
-airflow tasks logs cnpj_transform transform_empresas_group.process_empresas_file EXECUTION_DATE
-
-# Check database
-psql -h localhost -U osint_admin -d osint_metadata \
-  -c "SELECT reference_month, COUNT(*) FROM cnpj.empresa GROUP BY reference_month"
-```
-
-## SQL Cleaners
-
-The DAG uses pure SQL for transformation (defined in `cleaners_sql.py`):
-
-### Key Functions:
-- `clean_cnpj_basico_sql()` - Clean and pad CNPJ to 8 digits
-- `clean_capital_social_sql()` - Convert Brazilian currency format (1.234,56 → 1234.56)
-- `clean_porte_empresa_sql()` - Validate company size codes (00, 01, 03, 05)
-- `clean_cnpj_date_sql()` - Convert YYYYMMDD integer to DATE
-- `clean_string_sql()` - Remove quotes, trim whitespace
-
-### Complete Templates:
-- `empresas_cleaning_template()` - Full SELECT for all 7 Empresas columns
-- `estabelecimentos_cleaning_template()` - Full SELECT for all 28 Estabelecimentos columns
-- `build_empresas_query()` - Complete CSV → Parquet transformation
-- `build_estabelecimentos_query()` - Complete CSV → Parquet transformation
-
-## Database Schema
-
-### PostgreSQL:
-
-The authoritative schema is managed by Flyway migrations (see `infrastructure/postgres/migrations/cnpj/`).
-
-Main tables (physical names):
-
-- `cnpj.empresa`
-- `cnpj.estabelecimento`
-- `cnpj.socio`
-- `cnpj.simples_nacional`
-
-Download tracking:
-
-- `cnpj.download_manifest`
-
-Search MatView:
-
-- `cnpj.mv_company_search`
-
-### Neo4j:
-
-```cypher
-// Empresa nodes
-CREATE (e:Empresa {
-    cnpj_basico: "12345678",
-    razao_social: "ACME LTDA",
-    natureza_juridica: 2135,
-    capital_social: 5000.00,
-    porte_empresa: "01"
-})
-
-// Estabelecimento nodes with relationship
-CREATE (est:Estabelecimento {
-    cnpj: "12345678000190",
-    nome_fantasia: "ACME Store",
-    municipio: "São Paulo",
-    uf: "SP"
-})
-CREATE (est)-[:PERTENCE_A]->(e)
-
-// Indexes
-CREATE INDEX FOR (e:Empresa) ON (e.cnpj_basico);
-CREATE INDEX FOR (est:Estabelecimento) ON (est.cnpj);
-CREATE FULLTEXT INDEX empresa_names FOR (e:Empresa) ON EACH [e.razao_social];
-```
-
-## Troubleshooting
-
-### Common Issues:
-
-1. **DuckDB encoding errors**:
-   - Solution: Files should be auto-detected, but if issues persist, check `ignore_errors=true` in CSV reader
-
-2. **PostgreSQL connection timeout**:
-  - Check: `docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps postgres`
-  - Verify: Connection settings in DAG match `docker-compose.yml` plus `compose.prod.yml`
-
-3. **Neo4j batch too large**:
-   - Reduce `batch_size` in `load_to_neo4j()` function (default: 1000)
-
-4. **Out of memory**:
-   - DuckDB processes in chunks automatically
-   - If still an issue, split files or increase Airflow worker memory
-
-5. **Slow load performance**:
-   - Check: Are PostgreSQL/Neo4j indexes created?
-   - Verify: Parallel workers configured in Airflow
-   - Monitor: `docker stats` during load
-
-## Next Steps
-
-1. **Implement Socios processing** - Partner/shareholder data with relationships
-2. **Add download task** - Scrape Receita Federal website automatically
-3. **Incremental updates** - Only process new/changed files
-4. **Data quality checks** - Add Great Expectations validation
-5. **Monitoring** - Add Prometheus metrics and Grafana dashboards
-6. **Cross-references** - Link to Sanctions, Contracts, etc.
-
-## References
-
-- [Receita Federal - CNPJ Open Data](https://www.gov.br/receitafederal/pt-br/assuntos/orientacao-tributaria/cadastros/consultas/dados-publicos-cnpj)
-- [CNPJ File Layout](https://www.gov.br/receitafederal/dados/cnpj-metadados.pdf)
-- [DuckDB SQL Reference](https://duckdb.org/docs/sql/introduction)
-- [Architecture Plan](../../docs/repo/ARCHITECTURE_PLAN.md)
-- [Implementation Steps](../../docs/repo/IMPLEMENTATION_STEPS.md)
+See [docs/repo/DATA_ARCHITECTURE_REVIEW.md](../../docs/repo/DATA_ARCHITECTURE_REVIEW.md): `socio` keeps every loaded month while `empresa` and `estabelecimento` keep only the latest, and Neo4j `SOCIO_DE` edges are keyed by month.
