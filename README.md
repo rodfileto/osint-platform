@@ -16,6 +16,22 @@ An open-source intelligence platform for Brazilian public data. It ingests the f
 - **NLP:** FINEP project texts are topic-modeled with multilingual sentence-transformers, UMAP, HDBSCAN and BERTopic. The k-NN similarity between projects is stored in PostgreSQL.
 - **Full stack:** a FastAPI backend, a React + Vite frontend (Cytoscape network graphs, Leaflet maps, ApexCharts) and Keycloak (OIDC) authentication.
 
+## Screenshots
+
+Taken from the dev replica. The companies and people are fictitious; the FINEP panel uses the full public FINEP dataset.
+
+**Ownership network:** a company, its partners, and the partners' other companies (depth 2).
+
+![Ownership network of a company](docs/images/network.png)
+
+**Company search** by name or CNPJ.
+
+![Company search results](docs/images/search.png)
+
+**FINEP panel:** funded companies and projects, by funding line and state.
+
+![FINEP funding panel](docs/images/finep.png)
+
 ## Architecture
 
 ```mermaid

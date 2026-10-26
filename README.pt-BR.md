@@ -16,6 +16,22 @@ Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos b
 - **NLP:** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. A similaridade k-NN entre projetos fica no PostgreSQL.
 - **Full stack:** backend FastAPI, frontend React + Vite (grafos de rede com Cytoscape, mapas com Leaflet, ApexCharts) e autenticação Keycloak (OIDC).
 
+## Capturas de tela
+
+Feitas na réplica de dev. As empresas e pessoas são fictícias; o painel FINEP usa a base pública completa da FINEP.
+
+**Rede societária:** uma empresa, seus sócios e as outras empresas dos sócios (profundidade 2).
+
+![Rede societária de uma empresa](docs/images/network.png)
+
+**Pesquisa de empresas** por nome ou CNPJ.
+
+![Resultados da pesquisa de empresas](docs/images/search.png)
+
+**Painel FINEP:** empresas e projetos apoiados, por linha de fomento e UF.
+
+![Painel de fomento da FINEP](docs/images/finep.png)
+
 ## Arquitetura
 
 ```mermaid
