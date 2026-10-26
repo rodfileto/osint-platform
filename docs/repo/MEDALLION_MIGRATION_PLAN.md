@@ -37,7 +37,7 @@ Principles:
 
 ### Sizing
 
-From the production figures in IMPLEMENTATION_STEPS / CNPJ_IMPLEMENTATION_REVIEW:
+From the production figures (in the since-removed IMPLEMENTATION_STEPS.md and CNPJ_IMPLEMENTATION_REVIEW.md, still in git history):
 - Parquet is about 5 GB/month, about 245 GB for the 49 months already in bronze (174 GB), growing about 60 GB/year. That is about 2.5% of the 10 TB HDD.
 - The latest-month gold build reads about 5 GB. The `socio_history` build reads only the `socios` columns of every month (an estimated 1 GB/month, to be measured in Step 1), which is minutes of I/O on the HDD.
 - No NVMe cache for silver is planned.

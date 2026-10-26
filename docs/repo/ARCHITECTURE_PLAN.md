@@ -24,7 +24,7 @@ One DAG per source. Each records its files in a `download_manifest` table, so no
 | `finep_pipeline` | download both spreadsheets → load the 7 tables | Monthly, 2nd at 06:00 |
 | `inpi_pipeline` | download the 10 CSVs → stage → publish all tables in one transaction → search view | Weekly, Monday 05:00 |
 
-`finep_nlp_topic` (topics and project similarity) is triggered by hand.
+`finep_nlp_topic` (topics and project similarity) is experimental and triggered by hand.
 
 ## Storage
 

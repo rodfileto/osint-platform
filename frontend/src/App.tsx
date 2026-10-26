@@ -4,7 +4,6 @@ import { AuthProvider } from "@/auth/AuthProvider";
 import { SidebarProvider } from "@/contexts/SidebarContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import AppLayout from "@/layout/AppLayout";
-import { runtimeEnv } from "@/lib/env";
 
 const CnpjSearchPage = lazy(() => import("@/pages/CnpjSearchPage"));
 const EmpresaDetailPage = lazy(() => import("@/pages/EmpresaDetailPage"));
@@ -18,8 +17,6 @@ function RouteFallback() {
 }
 
 export default function App() {
-  const apiBaseUrl = runtimeEnv.apiUrl;
-
   return (
     <AuthProvider>
       <ThemeProvider>
@@ -27,7 +24,7 @@ export default function App() {
           <BrowserRouter>
             <Suspense fallback={<RouteFallback />}>
               <Routes>
-                <Route element={<AppLayout apiBaseUrl={apiBaseUrl} />}>
+                <Route element={<AppLayout />}>
                   <Route path="/" element={<CnpjSearchPage />} />
                   <Route path="/pessoa" element={<PessoaSearchPage />} />
                   <Route path="/pessoa/detalhe" element={<PessoaDetailPage />} />

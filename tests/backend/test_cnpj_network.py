@@ -10,9 +10,9 @@ from api.services.cnpj_network import CnpjNetworkService
 
 ACME, HOLDING, NOVA = "empresa:12345678", "empresa:87654321", "empresa:11222333"
 ANA, ROBERTO, CARLOS = (
-    "socio:11122233344:ANA PAULA TESTE",
-    "socio:22233344455:ROBERTO MENDES",
-    "socio:55566677788:CARLOS LIMA",
+    "socio:***222333**:ANA PAULA TESTE",
+    "socio:***333444**:ROBERTO MENDES",
+    "socio:***666777**:CARLOS LIMA",
 )
 
 
@@ -72,21 +72,21 @@ def test_unknown_company_returns_none(run):
 
 
 def test_person_network(run):
-    network = person(run, "11122233344", "ANA PAULA TESTE", depth=1)
+    network = person(run, "***222333**", "ANA PAULA TESTE", depth=1)
 
     PersonNetworkResponse.model_validate(network)
-    core = "pessoa:11122233344:ANA PAULA TESTE"
+    core = "pessoa:***222333**:ANA PAULA TESTE"
     assert edges(network) == {(core, ACME), (core, NOVA)}
     assert network["metadata"]["core_nome"] == "ANA PAULA TESTE"
 
 
 def test_person_depth_2_adds_co_partners(run):
-    network = person(run, "11122233344", "ANA PAULA TESTE", depth=2)
+    network = person(run, "***222333**", "ANA PAULA TESTE", depth=2)
 
     sources = {source for source, _ in edges(network)}
-    assert "pessoa:22233344455:ROBERTO MENDES" in sources
+    assert "pessoa:***333444**:ROBERTO MENDES" in sources
     assert "empresa:87654321" in sources
 
 
 def test_person_is_matched_by_cpf_and_name(run):
-    assert person(run, "11122233344", "SOMEONE ELSE", depth=1) is None
+    assert person(run, "***222333**", "SOMEONE ELSE", depth=1) is None

@@ -15,15 +15,7 @@ const navigation: NavItem[] = [
       { name: "Pesquisa CNPJ", path: "/" },
       { name: "Pesquisa Pessoas", path: "/pessoa" },
       { name: "Painel FINEP", path: "/finep" },
-      { name: "Painel INPI", path: "/inpi", badge: "new" },
-    ],
-  },
-  {
-    name: "Detalhes",
-    subItems: [
-      { name: "Empresa", path: "/cnpj/00000000" },
-      { name: "Pessoa", path: "/pessoa/00000000000" },
-      { name: "Pessoa detalhe", path: "/pessoa/detalhe" },
+      { name: "Painel INPI", path: "/inpi" },
     ],
   },
 ];
@@ -55,8 +47,8 @@ export default function AppSidebar() {
         <NavLink to="/" className="flex items-center gap-3">
           {isExpanded || isHovered || isMobileOpen ? (
             <>
-              <img className="h-8 dark:hidden" src="/images/logo/logo.svg" alt="OSINT Platform" />
-              <img className="hidden h-8 dark:block" src="/images/logo/logo-dark.svg" alt="OSINT Platform" />
+<img className="h-8 w-8" src="/images/logo/logo-icon.svg" alt="" />
+              <span className="text-lg font-semibold text-gray-900 dark:text-white">OSINT Platform</span>
             </>
           ) : (
             <img className="h-8 w-8" src="/images/logo/logo-icon.svg" alt="OSINT Platform" />
@@ -65,19 +57,6 @@ export default function AppSidebar() {
       </div>
 
       <div className="flex-1 overflow-y-auto pb-6">
-        <div className="mb-6 rounded-2xl border border-brand-100 bg-brand-50 p-4 dark:border-brand-500/20 dark:bg-brand-500/10">
-          {(isExpanded || isHovered || isMobileOpen) && (
-            <>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600 dark:text-brand-300">
-                Migration
-              </p>
-              <p className="mt-2 text-sm text-gray-700 dark:text-gray-300">
-                Shared shell running in Vite. Domain routes are mapped and ready for porting.
-              </p>
-            </>
-          )}
-        </div>
-
         <nav className="space-y-4">
           {navigation.map((item) => {
             const expanded = openGroup === item.name || isGroupActive(location.pathname, item);

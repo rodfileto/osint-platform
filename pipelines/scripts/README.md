@@ -5,10 +5,9 @@ Source-specific code used by the Airflow DAGs in `pipelines/dags/`. The scripts 
 ## Structure
 
 - `cnpj/` - Receita Federal download (`downloader.py`), download manifest (`manifest_tracker.py`) and field cleaning (`cleaners.py`). The task logic of `cnpj_pipeline` lives in `pipelines/dags/tasks/`.
-- `finep/` - FINEP spreadsheet download and load (`downloader.py`, `loader.py`) and the BERTopic pipeline of `finep_nlp_topic` (`nlp_topic_pipeline.py`).
+- `finep/` - FINEP spreadsheet download and load (`downloader.py`, `loader.py`) and the experimental BERTopic pipeline of `finep_nlp_topic` (`nlp_topic_pipeline.py`).
 - `inpi/` - INPI patent CSV download (`downloader.py`) and the staged, atomic load into `inpi.*` (`loader.py`).
 - `geo/` - Brazilian geography reference loader. It is not Airflow-only: it also runs as a standalone script from the dev bootstrap and the `geo-bootstrap` service, so keep it executable on its own.
-- `test_nlp_finep_titulo.py` - Standalone experiment for the FINEP topic model.
 
 ## Usage
 
