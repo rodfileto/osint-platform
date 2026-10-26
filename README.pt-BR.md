@@ -111,7 +111,7 @@ FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas 
 | Camada | Ferramentas |
 |---|---|
 | Orquestração | Apache Airflow 2.10 |
-| Processamento | Python, DuckDB, pandas, PyArrow / Parquet |
+| Processamento | Python, DuckDB, pandas, Parquet |
 | Armazenamento | PostgreSQL 16 + PostGIS, MinIO (S3) |
 | Gestão de schema | Flyway, scripts de inicialização Cypher |
 | NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |

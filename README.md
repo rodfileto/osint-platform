@@ -111,7 +111,7 @@ FINEP and INPI follow the same pattern: a downloader with a manifest, then loade
 | Layer | Tools |
 |---|---|
 | Orchestration | Apache Airflow 2.10 |
-| Processing | Python, DuckDB, pandas, PyArrow / Parquet |
+| Processing | Python, DuckDB, pandas, Parquet |
 | Storage | PostgreSQL 16 + PostGIS, MinIO (S3) |
 | Schema management | Flyway |
 | NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |
