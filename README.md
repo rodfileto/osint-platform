@@ -185,11 +185,11 @@ The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upser
 
 `tests/` holds pytest suites that CI runs on every push ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)), together with the frontend type check and build:
 
-- `tests/pipelines`: the DuckDB cleaning SQL (codes, Brazilian decimals, dates, invalid rows), the Latin-1 extraction of Receita ZIPs, and the FINEP loader's header matching. Needs `duckdb`, `openpyxl` and `pytest`.
+- `tests/pipelines`: the DuckDB cleaning SQL (codes, Brazilian decimals, dates, invalid rows), the Latin-1 extraction of Receita ZIPs, and the FINEP loader's header matching. Needs `duckdb`, `openpyxl`, `psycopg2-binary` and `pytest`.
 - `tests/backend`: the ownership network and company search against a PostgreSQL with the Flyway migrations and the dev seed. Set `POSTGRES_HOST` and the other `POSTGRES_*` variables; without them the suite is skipped.
 
 ```bash
-pip install duckdb openpyxl pytest && pytest tests/pipelines
+pip install duckdb openpyxl psycopg2-binary pytest && pytest tests/pipelines
 ```
 
 ## Data sources
