@@ -279,11 +279,10 @@ wait_for_service_health() {
 }
 
 echo "Starting shared infrastructure..."
-compose up -d postgres neo4j minio keycloak
+compose up -d postgres minio keycloak
 
 echo "Waiting for shared infrastructure readiness..."
 wait_for_service_health postgres 180
-wait_for_service_state neo4j running 120
 wait_for_service_state minio running 120
 wait_for_service_health keycloak 180
 
@@ -364,6 +363,5 @@ if [[ "$START_CLOUDFLARED" == "true" ]]; then
 else
     echo "Tunnel:   not started (use --with-cloudflared)"
 fi
-echo "Neo4j:    http://localhost:$(env_value NEO4J_HTTP_PORT 7474)"
 echo "MinIO:    http://localhost:$(env_value MINIO_CONSOLE_PORT 9001)"
 echo "Keycloak: http://localhost:$(env_value KEYCLOAK_PORT 8081)"

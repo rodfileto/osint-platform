@@ -21,9 +21,6 @@ compose() {
     docker compose --env-file "$ENV_FILE" -f "$BASE_COMPOSE_FILE" -f "$DEV_COMPOSE_FILE" "$@"
 }
 
-echo "Applying Neo4j schema..."
-compose exec -T neo4j cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" < "$ROOT_DIR/infrastructure/neo4j/init-cnpj-schema.cypher"
-
 echo "Loading PostgreSQL sample..."
 compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < "$DEV_DIR/data/postgres/seed_sample.sql"
 
@@ -44,12 +41,9 @@ fi
 echo "PostgreSQL sample loaded successfully."
 echo "Counts => empresas: $empresa_count, estabelecimentos: $estabelecimento_count, mv_company_search: $active_mv_count, mv_company_search_inactive: $inactive_mv_count"
 
-echo "Loading Neo4j sample..."
-compose exec -T neo4j cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" < "$DEV_DIR/data/neo4j/seed_sample.cypher"
-
 echo "Loading full FINEP dataset..."
 compose run --rm \
     -e DEV_BOOTSTRAP_FINEP_OUTPUT_DIR=/bootstrap-data/finep/raw \
     dev-bootstrap python /workspace/pipelines/scripts/finep/bootstrap_full_load.py --output-dir /bootstrap-data/finep/raw
 
-echo "Bootstrap complete: sample CNPJ + sample Neo4j + full FINEP."
+echo "Bootstrap complete: sample CNPJ + full FINEP."

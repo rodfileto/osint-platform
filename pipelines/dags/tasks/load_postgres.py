@@ -50,6 +50,7 @@ HEAVY_INDEXES = {
     "socio": [
         ("idx_socio_cnpj_basico", "(cnpj_basico)"),
         ("idx_socio_cpf_nome", "(cpf_cnpj_socio, nome_socio_razao_social)"),
+        ("idx_socio_pj_cnpj_basico", "(left(cpf_cnpj_socio, 8)) WHERE identificador_socio = 1"),
         ("idx_socio_nome", "USING GIN (to_tsvector('portuguese', nome_socio_razao_social)) WHERE nome_socio_razao_social IS NOT NULL"),
         ("idx_socio_ref_month", "(reference_month)"),
         ("idx_socio_qualificacao", "(qualificacao_socio)"),

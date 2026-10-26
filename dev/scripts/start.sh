@@ -54,7 +54,6 @@ compose() {
 ensure_host_dirs() {
     mkdir -p \
         "$DEV_DIR/volumes/postgres/data" \
-        "$DEV_DIR/volumes/neo4j/data" \
         "$DEV_DIR/volumes/minio/data" \
         "$DEV_DIR/volumes/airflow/data" \
         "$DEV_DIR/volumes/airflow/temp"
@@ -73,26 +72,12 @@ wait_for_postgres() {
     return 1
 }
 
-wait_for_neo4j() {
-    echo "Waiting for Neo4j..."
-    for _ in $(seq 1 60); do
-        if compose exec -T neo4j cypher-shell -u "$NEO4J_USER" -p "$NEO4J_PASSWORD" 'RETURN 1' >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 2
-    done
-
-    echo "Neo4j did not become ready in time."
-    return 1
-}
-
 ensure_host_dirs
 
 echo "Starting infrastructure services..."
-compose up -d postgres neo4j minio
+compose up -d postgres minio
 
 wait_for_postgres
-wait_for_neo4j
 
 echo "Running Flyway migrations..."
 compose up --build --abort-on-container-exit --exit-code-from flyway flyway
@@ -120,5 +105,4 @@ if [[ "$START_AIRFLOW" == "true" ]]; then
 else
     echo "Airflow:  not started (use --with-airflow)"
 fi
-echo "Neo4j:    http://localhost:${NEO4J_HTTP_PORT}"
 echo "MinIO:    http://localhost:${MINIO_CONSOLE_PORT}"

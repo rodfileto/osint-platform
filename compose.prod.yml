@@ -29,8 +29,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      neo4j:
-        condition: service_started
       keycloak:
         condition: service_healthy
       geo-bootstrap:

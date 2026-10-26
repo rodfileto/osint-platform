@@ -4,13 +4,13 @@ This folder contains a lightweight replica of the main OSINT stack. It keeps the
 
 ## What It Includes
 
-- PostgreSQL, Neo4j, MinIO, Flyway, backend, and the React + Vite frontend by default
+- PostgreSQL, MinIO, Flyway, backend, and the React + Vite frontend by default
 - Optional Airflow services when you need DAG and pipeline debugging
 - Reduced ports and memory settings so it can run side by side with the main stack
 - Sample CNPJ data for:
   - active and inactive company search
   - company detail with matriz and filial data
-  - Neo4j shareholder network with both pessoa fisica and pessoa juridica links
+  - ownership network with both pessoa fisica and pessoa juridica partners
 - Full FINEP data loaded from the public FINEP spreadsheets into the `finep` schema
 - Canonical Brazilian geography loaded into the `geo` schema from Python geobr, plus a CNPJ municipality mapping view
 
@@ -101,7 +101,6 @@ cp .env.example .env
 - Frontend: `http://localhost:13000`
 - Backend: `http://localhost:18000`
 - Airflow: `http://localhost:18080` when started with `--with-airflow`
-- Neo4j Browser: `http://localhost:17474`
 - MinIO Console: `http://localhost:19001`
 - PostgreSQL: `localhost:15432`
 
@@ -115,7 +114,7 @@ If you change core PostgreSQL identity settings in `dev/.env`, such as `POSTGRES
 
 ## Notes
 
-- The dev bootstrap uses committed sample seed files for CNPJ and Neo4j, but downloads and loads the full public FINEP dataset through the existing pipeline loaders.
+- The dev bootstrap uses a committed sample seed file for CNPJ, but downloads and loads the full public FINEP dataset through the existing pipeline loaders.
 - The dev bootstrap also loads canonical Brazilian state and municipality boundaries into `geo.br_state` and `geo.br_municipality`, then rebuilds `geo.cnpj_br_municipality_map` and `geo.v_cnpj_br_municipality`.
 - The shared geography loader lives in `pipelines/scripts/geo/load_br_geo_reference.py`, and the dev bootstrap invokes that shared script instead of keeping a dev-only implementation.
 - The dev bootstrap runs on a lightweight Python app container and no longer depends on the Airflow image.

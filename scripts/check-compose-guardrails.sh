@@ -75,11 +75,9 @@ docker compose \
     config >/dev/null
 
 echo "Checking for stale dev compose references..."
-if rg --fixed-strings \
-    --glob '!dev/.env' \
-    --glob '!dev/.env.example' \
-    --glob '!scripts/check-compose-guardrails.sh' \
-    'dev/docker-compose.yml' "$ROOT_DIR" >/dev/null; then
+if git -C "$ROOT_DIR" grep --quiet --fixed-strings 'dev/docker-compose.yml' -- \
+    ':!dev/.env.example' \
+    ':!scripts/check-compose-guardrails.sh'; then
     echo "Found stale references to dev/docker-compose.yml"
     exit 1
 fi

@@ -150,14 +150,12 @@ INSERT INTO cnpj.download_manifest (
     processing_status,
     transformed_at,
     loaded_postgres_at,
-    loaded_neo4j_at,
     rows_transformed,
     rows_loaded_postgres,
-    rows_loaded_neo4j,
     parquet_path
 ) VALUES
-    ('2026-02', 'dev_empresas_sample.parquet', 'empresas', 4096, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 5, 5, 5, '/opt/airflow/data/dev/cnpj/processed/dev_empresas_sample.parquet'),
-    ('2026-02', 'dev_estabelecimentos_sample.parquet', 'estabelecimentos', 8192, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 6, 6, 6, '/opt/airflow/data/dev/cnpj/processed/dev_estabelecimentos_sample.parquet');
+    ('2026-02', 'dev_empresas_sample.parquet', 'empresas', 4096, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 5, 5, '/opt/airflow/data/dev/cnpj/processed/dev_empresas_sample.parquet'),
+    ('2026-02', 'dev_estabelecimentos_sample.parquet', 'estabelecimentos', 8192, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 6, 6, '/opt/airflow/data/dev/cnpj/processed/dev_estabelecimentos_sample.parquet');
 
 REFRESH MATERIALIZED VIEW cnpj.mv_company_search;
 REFRESH MATERIALIZED VIEW cnpj.mv_company_search_inactive;

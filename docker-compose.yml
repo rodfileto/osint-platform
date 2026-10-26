@@ -81,30 +81,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5-community
-    ports:
-      - ${NEO4J_HTTP_PORT:-7474}:7474
-      - ${NEO4J_BOLT_PORT:-7687}:7687
-    volumes:
-      - ${NEO4J_DATA_HOST_PATH:-./data/neo4j}:/data
-      - ./infrastructure/neo4j/plugins:/plugins
-    environment:
-      NEO4J_AUTH: ${NEO4J_USER}/${NEO4J_PASSWORD}
-      NEO4J_apoc_export_file_enabled: 'true'
-      NEO4J_apoc_import_file_enabled: 'true'
-      NEO4J_apoc_import_file_use__neo4j__config: 'true'
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-2g}
-      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-2g}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-2g}
-      NEO4J_dbms_memory_transaction_total_max: ${NEO4J_TX_MEMORY:-1g}
-      NEO4J_db_tx__log_rotation_retention__policy: ${NEO4J_TX_LOG_RETENTION_POLICY:-2 files}
-      NEO4J_db_checkpoint_interval_tx: ${NEO4J_CHECKPOINT_INTERVAL_TX:-50}
-      TZ: ${TZ:-America/Sao_Paulo}
-    restart: unless-stopped
-
   keycloak:
     image: quay.io/keycloak/keycloak:26.2.0
     command:

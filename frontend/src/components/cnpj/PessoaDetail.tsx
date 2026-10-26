@@ -75,7 +75,7 @@ function InfoItem({ label, value }: { label: string; value: string }) {
 
 function GraphFallback() {
   return (
-    <ComponentCard title="Rede de Co-propriedade" desc="Pessoa ↔ Empresas ↔ Co-sócios (Neo4j)">
+    <ComponentCard title="Rede de Co-propriedade" desc="Pessoa ↔ Empresas ↔ Co-sócios">
       <p className="text-sm text-gray-500 dark:text-gray-400">Carregando grafo...</p>
     </ComponentCard>
   );

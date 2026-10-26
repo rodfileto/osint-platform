@@ -79,6 +79,7 @@ function getShortLabel(label: string, type: NetworkNode["type"]) {
 export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphProps) {
   const [data, setData] = useState<NetworkResponse | null>(null);
   const [depth, setDepth] = useState("1");
+  const [maxEdges, setMaxEdges] = useState("200");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tooltip, setTooltip] = useState<NetworkTooltipState>({
@@ -97,7 +98,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
 
       try {
         const response = await apiClient.get<NetworkResponse>(`/api/cnpj/network/${cnpjBasico}/`, {
-          params: { depth },
+          params: { depth, max_edges: maxEdges },
         });
         setData(response.data);
       } catch (errorValue) {
@@ -114,7 +115,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
     };
 
     void fetchNetwork();
-  }, [cnpjBasico, depth]);
+  }, [cnpjBasico, depth, maxEdges]);
 
   const elements = useMemo(() => {
     if (!data) {
@@ -294,7 +295,7 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
   };
 
   return (
-    <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios (Neo4j)">
+    <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios">
       {loading ? <p className="text-sm text-gray-500 dark:text-gray-400">Carregando rede...</p> : null}
 
       {error ? (
@@ -320,6 +321,19 @@ export default function CompanyNetworkGraph({ cnpjBasico }: CompanyNetworkGraphP
                   ]}
                   value={depth}
                   onChange={setDepth}
+                  className="h-9 rounded-lg py-2 text-xs"
+                />
+              </div>
+              <div className="min-w-[160px]">
+                <Select
+                  options={[
+                    { value: "100", label: "Até 100 arestas" },
+                    { value: "200", label: "Até 200 arestas" },
+                    { value: "500", label: "Até 500 arestas" },
+                    { value: "1000", label: "Até 1000 arestas" },
+                  ]}
+                  value={maxEdges}
+                  onChange={setMaxEdges}
                   className="h-9 rounded-lg py-2 text-xs"
                 />
               </div>

@@ -94,7 +94,7 @@ def update_manifest() -> None:
 
     reset = ", ".join(
         f"{col} = CASE WHEN m.file_size_bytes IS DISTINCT FROM EXCLUDED.file_size_bytes THEN NULL ELSE m.{col} END"
-        for col in ("extracted_at", "transformed_at", "loaded_postgres_at", "loaded_neo4j_at")
+        for col in ("extracted_at", "transformed_at", "loaded_postgres_at")
     )
     if not rows:
         logger.warning(f"No ZIPs under s3://{downloader.raw_bucket()}/{prefix}")

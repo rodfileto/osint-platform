@@ -96,7 +96,7 @@ function InfoItem({ label, value }: { label: string; value: string }) {
 
 function GraphFallback() {
   return (
-    <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios (Neo4j)">
+    <ComponentCard title="Rede Societária" desc="Grafo Empresa ↔ Sócios">
       <p className="text-sm text-gray-500 dark:text-gray-400">Carregando grafo...</p>
     </ComponentCard>
   );

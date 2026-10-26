@@ -29,7 +29,7 @@ $C down -v --remove-orphans
 
 # 2. Apaga os dados derivados (caminhos *_HOST_PATH do .env; padrão ./data/<serviço>)
 #    Mantenha o bronze (MinIO osint-raw) se não quiser baixar tudo de novo.
-sudo rm -rf ./data/postgres ./data/neo4j ./data/airflow/temp_ssd
+sudo rm -rf ./data/postgres ./data/airflow/temp_ssd
 
 # 3. Sobe do zero e aplica as migrations
 ./scripts/start-prod-like.sh --apply-migrations --with-airflow
@@ -45,15 +45,15 @@ Depois, siga a seção "First data load" do [README](../../README.md). As DAGs d
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop postgres
-docker rm -f osint_postgres
+docker rm -f osint_platform-postgres-1
 sudo rm -rf /srv/osint/postgres/data/*
 docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml up -d postgres
 
 # Aguarda ficar pronto
-until docker exec osint_postgres pg_isready -U osint_admin; do sleep 2; done
+until docker exec osint_platform-postgres-1 pg_isready -U osint_admin; do sleep 2; done
 
 # Recria estrutura
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<-EOSQL
+docker exec osint_platform-postgres-1 psql -U osint_admin -d osint_metadata <<-EOSQL
     CREATE SCHEMA IF NOT EXISTS cnpj;
     GRANT ALL PRIVILEGES ON SCHEMA cnpj TO osint_admin;
 EOSQL
@@ -61,27 +61,11 @@ EOSQL
 ./infrastructure/postgres/run-flyway.sh --env prod-like --yes migrate
 ```
 
-### Reset Apenas Neo4j
-
-```bash
-docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml stop neo4j
-docker rm -f osint_neo4j
-sudo rm -rf /srv/osint/neo4j/data/*
-docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml up -d neo4j
-
-# Aguarda ficar pronto
-until docker exec osint_neo4j cypher-shell -u neo4j -p osint_graph_password "RETURN 1" 2>/dev/null; do sleep 2; done
-
-# Cria schema
-cat infrastructure/neo4j/init-cnpj-schema.cypher | \
-    docker exec -i osint_neo4j cypher-shell -u neo4j -p osint_graph_password
-```
-
 ### Drop e Recriar Apenas Tabelas CNPJ (Sem Reset de Container)
 
 ```bash
 # Drop tabelas
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<EOF
+docker exec osint_platform-postgres-1 psql -U osint_admin -d osint_metadata <<EOF
 DROP TABLE IF EXISTS cnpj.estabelecimento CASCADE;
 DROP TABLE IF EXISTS cnpj.empresa CASCADE;
 DROP TABLE IF EXISTS cnpj.download_manifest CASCADE;
@@ -99,7 +83,7 @@ EOF
 
 ```bash
 # Conectar
-docker exec -it osint_postgres psql -U osint_admin -d osint_metadata
+docker exec -it osint_platform-postgres-1 psql -U osint_admin -d osint_metadata
 
 # Dentro do psql:
 \dt cnpj.*;              -- Lista tabelas
@@ -128,18 +112,6 @@ ORDER BY tc.table_name;
  estabelecimento | estabelecimento_pkey  | cnpj_basico, cnpj_ordem, cnpj_dv
 ```
 
-### Neo4j
-
-```bash
-# Via cypher-shell
-docker exec -it osint_neo4j cypher-shell -u neo4j -p osint_graph_password
-
-# Via browser
-open http://localhost:7474
-# User: neo4j
-# Pass: osint_graph_password
-```
-
 ### Containers
 
 ```bash
@@ -147,9 +119,8 @@ open http://localhost:7474
 docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps
 
 # Ver logs
-docker logs osint_postgres --tail 50
-docker logs osint_neo4j --tail 50
-docker logs osint-platform-airflow-webserver-1 --tail 50
+docker logs osint_platform-postgres-1 --tail 50
+docker logs osint_platform-airflow-webserver-1 --tail 50
 ```
 
 ---
@@ -160,7 +131,7 @@ docker logs osint-platform-airflow-webserver-1 --tail 50
 
 ```bash
 # Verifica logs
-docker logs osint_postgres --tail 100
+docker logs osint_platform-postgres-1 --tail 100
 
 # Possíveis causas:
 # 1. Porta 5432 em uso
@@ -171,24 +142,7 @@ sudo pkill -9 postgres  # Se necessário
 sudo chown -R 999:999 infrastructure/postgres/data/
 
 # 3. Memória insuficiente
-docker stats osint_postgres
-```
-
-### Erro: "Neo4j não inicializou a tempo"
-
-```bash
-# Verifica logs
-docker logs osint_neo4j --tail 100
-
-# Possíveis causas:
-# 1. Porta 7687 ou 7474 em uso
-sudo lsof -i :7687
-sudo lsof -i :7474
-
-# 2. Permissões do volume SSD
-sudo chown -R 7474:7474 /home/rfileto/osint_neo4j/data/
-
-# 3. Heap memory insuficiente (ajustar em docker-compose.yml)
+docker stats osint_platform-postgres-1
 ```
 
 ### Erro: "Tabelas criadas mas sem PRIMARY KEY"
@@ -198,7 +152,7 @@ Isso acontece se você rodou um script antigo ou criou tabelas manualmente sem c
 **Solução:**
 ```bash
 # Drop e recria com constraints
-docker exec osint_postgres psql -U osint_admin -d osint_metadata <<EOF
+docker exec osint_platform-postgres-1 psql -U osint_admin -d osint_metadata <<EOF
 DROP TABLE IF EXISTS cnpj.estabelecimento CASCADE;
 DROP TABLE IF EXISTS cnpj.empresa CASCADE;
 EOF
@@ -210,8 +164,8 @@ EOF
 
 ```bash
 # Force kill
-docker kill osint_postgres osint_neo4j
-docker rm -f osint_postgres osint_neo4j
+docker kill osint_platform-postgres-1
+docker rm -f osint_platform-postgres-1
 
 # Se ainda persistir
 docker ps -a | grep osint
@@ -228,7 +182,6 @@ docker rm -f $(docker ps -aq)  # Remove TODOS containers (cuidado!)
 | `infrastructure/postgres/run-flyway.sh` | Executa Flyway no ambiente escolhido, com confirmação explícita para mutações em `prod-like` |
 | `dev/scripts/run-flyway.sh` | Runner Flyway do ambiente dev |
 | `infrastructure/postgres/migrations/` | Fonte de verdade do schema PostgreSQL |
-| `infrastructure/neo4j/init-cnpj-schema.cypher` | Cria constraints e indexes Neo4j |
 | `docker-compose.yml` | Configuração de todos os serviços |
 | `force-reset-databases.sh` | ⚠️ Script antigo - use o novo |
 | `wait-and-recreate-schemas.sh` | ⚠️ Script antigo - use o novo |
@@ -260,14 +213,13 @@ O fluxo antigo baseado em scripts de inicialização do Docker só funcionava au
 Use este checklist para garantir que tudo está funcionando:
 
 - [ ] Containers rodando: `docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml ps`
-- [ ] PostgreSQL aceita conexões: `docker exec osint_postgres pg_isready -U osint_admin`
+- [ ] PostgreSQL aceita conexões: `docker exec osint_platform-postgres-1 pg_isready -U osint_admin`
 - [ ] Schemas criados: `\dn` no psql deve mostrar `cnpj`, `airflow`, etc.
 - [ ] Tabelas criadas: `\dt cnpj.*` deve mostrar `empresa`, `estabelecimento`, `download_manifest`
 - [ ] PRIMARY KEYs: Query de verificação retorna 2 PKs (empresa + estabelecimento)
 - [ ] FOREIGN KEYs: `\d+ cnpj.estabelecimento` mostra FK para empresa
 - [ ] Indexes: `\di cnpj.*` mostra múltiplos indexes
 - [ ] Views: `\dv cnpj.*` mostra 4 views
-- [ ] Neo4j conecta: `docker exec osint_neo4j cypher-shell -u neo4j -p osint_graph_password "RETURN 1"`
 - [ ] Airflow UI: http://localhost:8080 (se iniciado)
 
 ---
@@ -292,7 +244,7 @@ Se após seguir este guia ainda tiver problemas:
 3. **Revise configurações:**
    - Arquivo `.env` está correto?
    - Permissões de diretórios estão corretas? (`/media/bigdata/osint-platform` acessível?)
-   - Ports 5432, 7474, 7687, 8080 disponíveis?
+   - Ports 5432, 8080 disponíveis?
 
 4. **Consulte documentação específica:**
     - PostgreSQL: [infrastructure/postgres/README.md](../../infrastructure/postgres/README.md)

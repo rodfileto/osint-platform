@@ -48,16 +48,9 @@ class Settings(BaseSettings):
     postgres_pool_timeout: int = Field(default=30, alias="POSTGRES_POOL_TIMEOUT")
     postgres_pool_recycle: int = Field(default=1800, alias="POSTGRES_POOL_RECYCLE")
 
-    neo4j_uri: str = Field(default="bolt://neo4j:7687", alias="NEO4J_URI")
-    neo4j_user: str = Field(default="neo4j", alias="NEO4J_USER")
-    neo4j_password: str = Field(default="neo4j", alias="NEO4J_PASSWORD")
-    neo4j_database: str = Field(default="neo4j", alias="NEO4J_DATABASE")
-    neo4j_max_connection_lifetime: int = Field(default=3600, alias="NEO4J_MAX_CONNECTION_LIFETIME")
-    neo4j_max_connection_pool_size: int = Field(default=100, alias="NEO4J_MAX_CONNECTION_POOL_SIZE")
-    neo4j_connection_timeout: int = Field(default=30, alias="NEO4J_CONNECTION_TIMEOUT")
-
-    neo4j_max_network_depth: int = Field(default=3, alias="NEO4J_MAX_NETWORK_DEPTH")
-    neo4j_max_network_edges: int = Field(default=200, alias="NEO4J_MAX_NETWORK_EDGES")
+    network_max_depth: int = Field(default=3, alias="NETWORK_MAX_DEPTH")
+    # Upper bound for the max_edges request parameter of the network endpoints (default 200 per request).
+    network_max_edges: int = Field(default=2000, alias="NETWORK_MAX_EDGES")
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

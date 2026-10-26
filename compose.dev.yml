@@ -25,8 +25,6 @@ services:
         condition: service_healthy
       flyway:
         condition: service_completed_successfully
-      neo4j:
-        condition: service_started
       keycloak:
         condition: service_healthy
       dev-bootstrap:
@@ -89,8 +87,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      neo4j:
-        condition: service_started
       flyway:
         condition: service_completed_successfully
     restart: 'no'

@@ -3,15 +3,12 @@ FINEP NLP Topic Modelling DAG
 
 Runs the BERTopic pipeline over finep.projetos_operacao_direta
 (resumo_publicavel with fallback to titulo) and persists results to:
-  - PostgreSQL: finep.nlp_model_run, finep.nlp_topic, finep.nlp_document_topic
-  - Neo4j:      ProjetoFinep nodes (topic_id, umap_x/y) + SIMILAR_TO edges
+  - finep.nlp_model_run, finep.nlp_topic, finep.nlp_document_topic, finep.nlp_project_similarity
 
 Task flow:
   start
-    └─▶ embed_and_cluster    — embed texts, BERTopic, write PG schema
-          └─▶ load_neo4j_nodes  — MERGE ProjetoFinep + PROPOSTO_POR / EXECUTADO_POR
-                └─▶ load_neo4j_edges — CREATE SIMILAR_TO, clean up .npy artifacts
-                      └─▶ end
+    └─▶ embed_and_cluster — embed texts, BERTopic, k-NN, write PostgreSQL in one transaction
+          └─▶ end
 
 Trigger:
   - Manual via UI or CLI
@@ -75,35 +72,8 @@ def _embed_and_cluster(**context) -> dict:
     logger.info(
         f"embed_and_cluster done | run_id={result['run_id']} | "
         f"{result['n_documents']} docs | {result['n_topics']} topics | "
-        f"{result['n_outliers']} outliers"
+        f"{result['n_outliers']} outliers | {result['n_similar_pairs']} similar pairs"
     )
-    return result
-
-
-def _load_neo4j_nodes(**context) -> dict:
-    from nlp_topic_pipeline import load_neo4j_nodes
-
-    embed_result = context["ti"].xcom_pull(task_ids="embed_and_cluster")
-    result = load_neo4j_nodes(run_id=embed_result["run_id"])
-    logger.info(
-        f"load_neo4j_nodes done | {result['nodes_merged']} merged | "
-        f"PROPOSTO_POR={result['proposto_created']} | "
-        f"EXECUTADO_POR={result['executado_created']}"
-    )
-    return result
-
-
-def _load_neo4j_edges(**context) -> dict:
-    from nlp_topic_pipeline import load_neo4j_edges
-
-    embed_result = context["ti"].xcom_pull(task_ids="embed_and_cluster")
-    result = load_neo4j_edges(
-        run_id=embed_result["run_id"],
-        artifact_dir=embed_result["artifact_dir"],
-        sim_threshold=embed_result["sim_threshold"],
-        k_neighbors=embed_result["k_neighbors"],
-    )
-    logger.info(f"load_neo4j_edges done | {result['edges_created']} SIMILAR_TO created")
     return result
 
 
@@ -112,7 +82,7 @@ with DAG(
     default_args=default_args,
     description=(
         "BERTopic pipeline sobre projetos FINEP (resumo/título) → "
-        "PostgreSQL (topics) + Neo4j (ProjetoFinep + SIMILAR_TO)"
+        "PostgreSQL (tópicos + similaridade entre projetos)"
     ),
     schedule_interval=None,   # triggered manually after finep_pipeline
     catchup=False,
@@ -124,7 +94,7 @@ with DAG(
         "sim_threshold":             0.70,
         "k_neighbors":               5,
     },
-    tags=["finep", "nlp", "bertopic", "neo4j", "postgres"],
+    tags=["finep", "nlp", "bertopic", "postgres"],
 ) as dag:
 
     start = EmptyOperator(task_id="start")
@@ -136,20 +106,6 @@ with DAG(
         execution_timeout=timedelta(hours=2),   # embedding large corpora is slow
     )
 
-    neo4j_nodes_task = PythonOperator(
-        task_id="load_neo4j_nodes",
-        python_callable=_load_neo4j_nodes,
-        provide_context=True,
-        execution_timeout=timedelta(minutes=30),
-    )
-
-    neo4j_edges_task = PythonOperator(
-        task_id="load_neo4j_edges",
-        python_callable=_load_neo4j_edges,
-        provide_context=True,
-        execution_timeout=timedelta(minutes=30),
-    )
-
     end = EmptyOperator(task_id="end")
 
-    start >> embed_task >> neo4j_nodes_task >> neo4j_edges_task >> end
+    start >> embed_task >> end

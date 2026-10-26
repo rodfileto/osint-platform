@@ -175,7 +175,7 @@ def is_file_processed(
     Args:
         reference_month: Month in YYYY-MM format
         file_name: Name of the ZIP file
-        stage: Stage to check ('extracted', 'transformed', 'loaded_postgres', 'loaded_neo4j')
+        stage: Stage to check ('extracted', 'transformed', 'loaded_postgres')
         
     Returns:
         True if file has been processed to this stage, False otherwise

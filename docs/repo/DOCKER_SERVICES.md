@@ -1,5 +1,7 @@
 # Docker Services - OSINT Platform
 
+> **Historical.** Lists the services as they were before Redis and Neo4j were removed. The current services are in `docker-compose.yml` and the [README](../../README.md).
+
 > Operational note: this file is a quick reference. The canonical startup flow is now `./dev/scripts/start.sh` for dev and `./scripts/start-prod-like.sh --apply-migrations` for prod-like.
 
 ## Running Services

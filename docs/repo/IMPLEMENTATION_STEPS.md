@@ -1,5 +1,7 @@
 # OSINT Platform — Passos de Implementação
 
+> **Histórico.** Descreve a implantação até 2026-03 (DAGs antigas, Redis e Neo4j, que já foram removidos). O estado atual está no [README](../../README.md) e em [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
+
 > Documento **operacional**: ambiente, configuração de hardware, histórico de execução e próximos passos.
 > Para decisões arquiteturais e stack, veja [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md).
 

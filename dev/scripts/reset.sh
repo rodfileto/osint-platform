@@ -29,7 +29,6 @@ compose down --remove-orphans
 
 echo "Removing bind-mounted state..."
 wipe_dir "$DEV_DIR/volumes/postgres/data"
-wipe_dir "$DEV_DIR/volumes/neo4j/data"
 wipe_dir "$DEV_DIR/volumes/minio/data"
 wipe_dir "$DEV_DIR/volumes/airflow/data"
 wipe_dir "$DEV_DIR/volumes/airflow/temp"

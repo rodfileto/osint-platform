@@ -1,23 +1,21 @@
-# Airflow Pipeline Scripts
+# Pipeline Scripts
 
-This directory contains utility scripts for Airflow DAGs and data processing tasks.
+Source-specific code used by the Airflow DAGs in `pipelines/dags/`. The scripts are mounted at `/opt/airflow/scripts` and the DAGs add the folder they need to `sys.path`.
 
 ## Structure
 
-- `ingestion/` - Data ingestion scripts
-- `processing/` - Data transformation and processing scripts
-- `utils/` - Utility functions and helpers
-- `connectors/` - Database and API connectors
-- `geo/` - Shared geography ingestion scripts used by dev bootstrap today and reusable by future production jobs
+- `cnpj/` - Receita Federal download (`downloader.py`), download manifest (`manifest_tracker.py`) and field cleaning (`cleaners.py`). The task logic of `cnpj_pipeline` lives in `pipelines/dags/tasks/`.
+- `finep/` - FINEP spreadsheet download and load (`downloader.py`, `loader.py`) and the BERTopic pipeline of `finep_nlp_topic` (`nlp_topic_pipeline.py`).
+- `inpi/` - INPI patent CSV download (`downloader.py`) and the staged, atomic load into `inpi.*` (`loader.py`).
+- `geo/` - Brazilian geography reference loader. It is not Airflow-only: it also runs as a standalone script from the dev bootstrap and the `geo-bootstrap` service, so keep it executable on its own.
+- `test_nlp_finep_titulo.py` - Standalone experiment for the FINEP topic model.
 
 ## Usage
 
-Scripts in this directory can be imported and used by DAGs in `/pipelines/dags/`.
-
-The `geo/` folder is intentionally not Airflow-only. Shared loaders there should remain executable as standalone scripts so dev bootstrap, ad hoc production runs, and future DAG wrappers can reuse the same logic.
-
-Example:
 ```python
-from scripts.utils.database import get_postgres_connection
-from scripts.connectors.neo4j_connector import Neo4jConnector
+import sys
+sys.path.insert(0, "/opt/airflow/scripts")
+
+from inpi import loader
+from inpi.downloader import INPI_DATASETS, collect_dataset
 ```

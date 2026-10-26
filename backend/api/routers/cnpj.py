@@ -142,7 +142,7 @@ def _build_company_search_filters(
         else:
             normalized_query = _strip_accents(q)
             clauses.append(
-                "(razao_social ILIKE :text_query OR COALESCE(nome_fantasia, '') ILIKE :text_query)"
+                "(razao_social ILIKE :text_query OR nome_fantasia ILIKE :text_query)"
             )
             parameters["text_query"] = f"%{normalized_query}%"
 
@@ -210,7 +210,7 @@ async def _fetch_company_search_page(
             reference_month
         FROM {table_name}
         {where_clause}
-        ORDER BY razao_social
+        ORDER BY razao_social, cnpj_14
         LIMIT :limit OFFSET :offset
         """,
         {
@@ -575,22 +575,29 @@ async def _fetch_person_detail(
     )
 
 
+def _check_max_edges(database: DatabaseManager, max_edges: int) -> None:
+    limit = max(1, database.settings.network_max_edges)
+    if max_edges > limit:
+        raise HTTPException(status_code=422, detail=f"Informe um limite de arestas entre 1 e {limit}.")
+
+
 async def _fetch_company_network(
     database: DatabaseManager,
     cnpj_basico: str,
     depth: int,
+    max_edges: int,
 ) -> CompanyNetworkResponse:
     if not (cnpj_basico.isdigit() and len(cnpj_basico) == 8):
         raise HTTPException(status_code=422, detail="Informe um CNPJ básico válido com 8 dígitos numéricos.")
 
     service = CnpjNetworkService(database)
     try:
-        payload = await service.get_company_network(cnpj_basico, depth=depth)
+        payload = await service.get_company_network(cnpj_basico, depth=depth, max_edges=max_edges)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="Falha ao consultar rede no Neo4j.") from exc
+        raise HTTPException(status_code=503, detail="Falha ao consultar a rede societária.") from exc
 
     if payload is None:
-        raise HTTPException(status_code=404, detail="Empresa não encontrada na base Neo4j para o CNPJ informado.")
+        raise HTTPException(status_code=404, detail="Empresa não encontrada para o CNPJ informado.")
 
     return CompanyNetworkResponse.model_validate(payload)
 
@@ -600,6 +607,7 @@ async def _fetch_person_network(
     nome: str,
     cpf_masked: str,
     depth: int,
+    max_edges: int,
 ) -> PersonNetworkResponse:
     normalized_name = _strip_accents(nome.strip())
     if len(normalized_name) < 3:
@@ -607,14 +615,14 @@ async def _fetch_person_network(
 
     service = CnpjNetworkService(database)
     try:
-        payload = await service.get_person_network(cpf_masked, nome=normalized_name, depth=depth)
+        payload = await service.get_person_network(cpf_masked, nome=normalized_name, depth=depth, max_edges=max_edges)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="Falha ao consultar rede no Neo4j.") from exc
+        raise HTTPException(status_code=503, detail="Falha ao consultar a rede societária.") from exc
 
     if payload is None:
         raise HTTPException(
             status_code=404,
-            detail="Pessoa não encontrada na base Neo4j para o par nome + CPF mascarado informado.",
+            detail="Pessoa não encontrada para o par nome + CPF mascarado informado.",
         )
 
     return PersonNetworkResponse.model_validate(payload)
@@ -765,12 +773,14 @@ def get_router() -> APIRouter:
     async def get_company_network(
         cnpj_basico: str,
         depth: int = Query(default=1, ge=1),
+        max_edges: int = Query(default=200, ge=1),
         database: DatabaseManager = Depends(get_database_manager),
     ) -> CompanyNetworkResponse:
-        max_depth = max(1, database.settings.neo4j_max_network_depth)
+        max_depth = max(1, database.settings.network_max_depth)
         if depth > max_depth:
             raise HTTPException(status_code=422, detail=f"Informe uma profundidade entre 1 e {max_depth}.")
-        return await _fetch_company_network(database, cnpj_basico, depth)
+        _check_max_edges(database, max_edges)
+        return await _fetch_company_network(database, cnpj_basico, depth, max_edges)
 
     @router.get(
         "/pessoa-network/detail",
@@ -781,6 +791,7 @@ def get_router() -> APIRouter:
         nome: str = Query(...),
         cpf_mascarado: str = Query(...),
         depth: int = Query(default=1, ge=1),
+        max_edges: int = Query(default=200, ge=1),
         database: DatabaseManager = Depends(get_database_manager),
     ) -> PersonNetworkResponse:
         normalized_cpf = _normalize_masked_cpf(cpf_mascarado)
@@ -789,10 +800,11 @@ def get_router() -> APIRouter:
                 status_code=422,
                 detail="Informe um CPF mascarado válido no formato ***123456**.",
             )
-        max_depth = max(1, database.settings.neo4j_max_network_depth)
+        max_depth = max(1, database.settings.network_max_depth)
         if depth > max_depth:
             raise HTTPException(status_code=422, detail=f"Informe uma profundidade entre 1 e {max_depth}.")
-        return await _fetch_person_network(database, nome, normalized_cpf, depth)
+        _check_max_edges(database, max_edges)
+        return await _fetch_person_network(database, nome, normalized_cpf, depth, max_edges)
 
     @router.get(
         "/pessoa-network/{cpf}",
@@ -803,6 +815,7 @@ def get_router() -> APIRouter:
         cpf: str,
         nome: str = Query(...),
         depth: int = Query(default=1, ge=1),
+        max_edges: int = Query(default=200, ge=1),
         database: DatabaseManager = Depends(get_database_manager),
     ) -> PersonNetworkResponse:
         cpf_masked = _mask_cpf(cpf)
@@ -811,9 +824,10 @@ def get_router() -> APIRouter:
                 status_code=422,
                 detail="Informe um CPF válido com 11 dígitos numéricos.",
             )
-        max_depth = max(1, database.settings.neo4j_max_network_depth)
+        max_depth = max(1, database.settings.network_max_depth)
         if depth > max_depth:
             raise HTTPException(status_code=422, detail=f"Informe uma profundidade entre 1 e {max_depth}.")
-        return await _fetch_person_network(database, nome, cpf_masked, depth)
+        _check_max_edges(database, max_edges)
+        return await _fetch_person_network(database, nome, cpf_masked, depth, max_edges)
 
     return router

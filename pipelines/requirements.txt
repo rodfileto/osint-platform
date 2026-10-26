@@ -11,9 +11,6 @@ numpy>=1.26.0
 psycopg2-binary>=2.9.0
 sqlalchemy[asyncio]>=1.4.36,<2.0
 
-# Neo4j graph database
-neo4j>=5.0.0
-
 # HTTP requests and scraping (for CNPJ download)
 requests>=2.31.0
 beautifulsoup4>=4.12.0

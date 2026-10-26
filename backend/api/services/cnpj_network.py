@@ -1,413 +1,293 @@
-"""Async Neo4j-backed CNPJ network service."""
+"""CNPJ ownership networks built from cnpj.socio in PostgreSQL.
+
+A network is expanded breadth-first, one level per hop: for the companies reached so far, their
+partners and the companies they are partners in; for the people reached so far, the companies they
+are partners in. Every lookup hits an index (idx_socio_cnpj_basico, idx_socio_pj_cnpj_basico,
+idx_socio_cpf_nome), and expansion stops once one edge more than the requested max_edges has been found, so hubs
+stay as cheap as ordinary companies. Only the latest reference month is used.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from neo4j.exceptions import Neo4jError
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core.database import DatabaseManager
+
+EDGE_COLUMNS = """
+    s.id, s.cnpj_basico, s.identificador_socio, s.cpf_cnpj_socio, s.nome_socio_razao_social,
+    s.faixa_etaria, s.qualificacao_socio, s.data_entrada_sociedade, s.reference_month
+"""
+
+# Rows that cannot become an edge: a corporate partner without a full CNPJ, or a person with neither
+# CPF nor name. Filtered in SQL so that they do not use up the LIMIT.
+VALID_PARTNER = """
+    CASE WHEN s.identificador_socio = 1 THEN length(s.cpf_cnpj_socio) >= 14
+         ELSE coalesce(nullif(s.cpf_cnpj_socio, ''), nullif(s.nome_socio_razao_social, '')) IS NOT NULL END
+"""
+
+PARTNERS_OF_COMPANIES = text(f"""
+    SELECT {EDGE_COLUMNS} FROM cnpj.socio s
+    WHERE s.cnpj_basico = ANY(:companies) AND s.reference_month = :month AND s.id <> ALL(:seen)
+      AND {VALID_PARTNER}
+    LIMIT :limit
+""")
+
+COMPANIES_AS_PARTNERS = text(f"""
+    SELECT {EDGE_COLUMNS} FROM cnpj.socio s
+    WHERE s.identificador_socio = 1 AND left(s.cpf_cnpj_socio, 8) = ANY(:companies)
+      AND s.reference_month = :month AND s.id <> ALL(:seen)
+      AND {VALID_PARTNER}
+    LIMIT :limit
+""")
+
+COMPANIES_OF_PEOPLE = text(f"""
+    SELECT {EDGE_COLUMNS} FROM cnpj.socio s
+    JOIN unnest(CAST(:cpfs AS text[]), CAST(:names AS text[])) AS p(cpf, nome)
+      ON s.cpf_cnpj_socio = p.cpf AND s.nome_socio_razao_social = p.nome
+    WHERE s.identificador_socio IN (2, 3) AND s.reference_month = :month AND s.id <> ALL(:seen)
+      AND {VALID_PARTNER}
+    LIMIT :limit
+""")
+
+
+def _partner_key(row: dict[str, Any]) -> tuple[str, Any]:
+    """The node a socio row starts from: a company (corporate partner) or a person."""
+    document = row["cpf_cnpj_socio"] or ""
+    if row["identificador_socio"] == 1:
+        return ("empresa", document[:8])
+    return ("pessoa", (document, row["nome_socio_razao_social"] or ""))
+
+
+async def _expand(
+    connection: AsyncConnection,
+    start: tuple[str, Any],
+    hops: int,
+    max_edges: int,
+) -> tuple[list[tuple[dict[str, Any], tuple[str, Any]]], bool]:
+    """Edges (socio row, partner node) within `hops` of `start`, nearest first, and whether truncated."""
+    month = (await connection.execute(text("SELECT max(reference_month) FROM cnpj.socio"))).scalar()
+    edges: list[tuple[dict[str, Any], tuple[str, Any]]] = []
+    seen_edges: list[int] = []
+    seen_nodes = {start}
+    frontier = [start]
+
+    for _ in range(hops):
+        companies = [key for kind, key in frontier if kind == "empresa"]
+        people = [key for kind, key in frontier if kind == "pessoa"]
+        lookups = []
+        if companies:
+            lookups += [(PARTNERS_OF_COMPANIES, {"companies": companies}), (COMPANIES_AS_PARTNERS, {"companies": companies})]
+        if people:
+            lookups.append((COMPANIES_OF_PEOPLE, {"cpfs": [c for c, _ in people], "names": [n for _, n in people]}))
+
+        next_frontier: list[tuple[str, Any]] = []
+        for query, params in lookups:
+            limit = max_edges + 1 - len(edges)
+            result = await connection.execute(query, {**params, "month": month, "seen": seen_edges, "limit": limit})
+            for row in result.mappings():
+                seen_edges.append(row["id"])
+                partner = _partner_key(row)
+                edges.append((dict(row), partner))
+                for node in (partner, ("empresa", row["cnpj_basico"])):
+                    if node not in seen_nodes:
+                        seen_nodes.add(node)
+                        next_frontier.append(node)
+            if len(edges) > max_edges:
+                return edges[:max_edges], True
+        frontier = next_frontier
+        if not frontier:
+            break
+    return edges, False
+
+
+async def _companies(connection: AsyncConnection, cnpjs: set[str]) -> dict[str, dict[str, Any]]:
+    result = await connection.execute(
+        text(
+            "SELECT cnpj_basico, razao_social, porte_empresa, natureza_juridica "
+            "FROM cnpj.empresa WHERE cnpj_basico = ANY(:cnpjs)"
+        ),
+        {"cnpjs": list(cnpjs)},
+    )
+    return {row["cnpj_basico"]: dict(row) for row in result.mappings()}
+
+
+def _edge(row: dict[str, Any], source_id: str) -> dict[str, Any]:
+    entry = row["data_entrada_sociedade"]
+    return {
+        "id": f"edge:{row['id']}",
+        "source": source_id,
+        "target": f"empresa:{row['cnpj_basico']}",
+        "type": "SOCIO_DE",
+        "data": {
+            "qualificacao_socio": row["qualificacao_socio"],
+            "data_entrada_sociedade": entry.isoformat() if entry else None,
+            "reference_month": row["reference_month"],
+        },
+    }
+
+
+def _company_node(cnpj: str, company: dict[str, Any] | None, fallback_label: str | None, is_core: bool) -> dict[str, Any]:
+    company = company or {}
+    label = company.get("razao_social") or fallback_label or cnpj
+    return {
+        "id": f"empresa:{cnpj}",
+        "type": "empresa",
+        "label": label,
+        "data": {
+            "cnpj_basico": cnpj,
+            "razao_social": company.get("razao_social") or fallback_label,
+            "porte_empresa": company.get("porte_empresa"),
+            "natureza_juridica": company.get("natureza_juridica"),
+            "is_core": is_core,
+        },
+    }
+
+
+def _metadata(core: dict[str, Any], depth: int, nodes: list, edges: list, truncated: bool, max_edges: int) -> dict:
+    return {
+        **core,
+        "depth": depth,
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+        "total_relationships": len(edges) + (1 if truncated else 0),
+        "truncated": truncated,
+        "max_edges": max_edges,
+    }
 
 
 class CnpjNetworkService:
     def __init__(self, database: DatabaseManager) -> None:
         self.database = database
 
-    async def get_company_network(self, cnpj_basico: str, depth: int = 1) -> dict[str, Any] | None:
+    def _limits(self, depth: int, max_edges: int) -> tuple[int, int]:
         settings = self.database.settings
-        normalized_depth = max(1, min(depth, max(1, settings.neo4j_max_network_depth)))
-        max_hops = (normalized_depth * 2) - 1
-        max_edges = max(1, settings.neo4j_max_network_edges)
-        relationship_limit = max_edges + 1
+        return (
+            max(1, min(depth, max(1, settings.network_max_depth))),
+            max(1, min(max_edges, max(1, settings.network_max_edges))),
+        )
 
-        company_query = """
-        MATCH (e:Empresa {cnpj_basico: $cnpj_basico})
-        RETURN e
-        LIMIT 1
-        """
-
-        network_query = f"""
-        MATCH (core:Empresa {{cnpj_basico: $cnpj_basico}})
-        MATCH path = (core)-[:SOCIO_DE*1..{max_hops}]-(connected)
-        UNWIND relationships(path) AS rel
-        WITH DISTINCT rel
-        ORDER BY elementId(rel)
-        LIMIT $relationship_limit
-        RETURN collect({{
-            id: elementId(rel),
-            source_kind: CASE
-                WHEN startNode(rel):Empresa THEN 'empresa'
-                ELSE 'socio'
-            END,
-            source_identifier: coalesce(
-                startNode(rel).cnpj_basico,
-                startNode(rel).cpf_cnpj_socio,
-                startNode(rel).cpf_cnpj,
-                startNode(rel).documento,
-                elementId(startNode(rel))
-            ),
-            source_label: coalesce(
-                startNode(rel).razao_social,
-                startNode(rel).nome,
-                startNode(rel).nome_socio_razao_social,
-                startNode(rel).cnpj_basico,
-                startNode(rel).cpf_cnpj_socio,
-                'Sócio'
-            ),
-            source_cnpj_basico: startNode(rel).cnpj_basico,
-            source_cpf_cnpj_socio: coalesce(startNode(rel).cpf_cnpj_socio, startNode(rel).cpf_cnpj),
-            source_identificador_socio: startNode(rel).identificador_socio,
-            source_faixa_etaria: startNode(rel).faixa_etaria,
-            source_porte_empresa: startNode(rel).porte_empresa,
-            source_natureza_juridica: startNode(rel).natureza_juridica,
-            target_identifier: coalesce(endNode(rel).cnpj_basico, elementId(endNode(rel))),
-            target_label: coalesce(
-                endNode(rel).razao_social,
-                endNode(rel).nome,
-                endNode(rel).nome_socio_razao_social,
-                endNode(rel).cnpj_basico,
-                'Empresa'
-            ),
-            target_cnpj_basico: endNode(rel).cnpj_basico,
-            target_porte_empresa: endNode(rel).porte_empresa,
-            target_natureza_juridica: endNode(rel).natureza_juridica,
-            type: type(rel),
-            qualificacao_socio: rel.qualificacao_socio,
-            data_entrada_sociedade: toString(rel.data_entrada_sociedade),
-            reference_month: rel.reference_month
-        }}) AS rels
-        """
-
+    async def get_company_network(self, cnpj_basico: str, depth: int = 1, max_edges: int = 200) -> dict[str, Any] | None:
+        depth, max_edges = self._limits(depth, max_edges)
         try:
-            async with self.database.neo4j_session() as session:
-                company_result = await session.run(company_query, cnpj_basico=cnpj_basico)
-                company_record = await company_result.single()
-                if not company_record:
+            async with self.database.postgres_connection() as connection:
+                if not await _companies(connection, {cnpj_basico}):
                     return None
+                # Depth counts company-to-company steps: depth 1 is the direct partners, depth 2 adds
+                # the partners' other companies and their partners, and so on.
+                edges, truncated = await _expand(connection, ("empresa", cnpj_basico), depth * 2 - 1, max_edges)
+                cnpjs = {cnpj_basico} | {row["cnpj_basico"] for row, _ in edges}
+                cnpjs |= {key for (_, (kind, key)) in edges if kind == "empresa"}
+                companies = await _companies(connection, cnpjs)
+        except SQLAlchemyError as exc:
+            raise RuntimeError("network_query_failed") from exc
 
-                network_result = await session.run(
-                    network_query,
-                    cnpj_basico=cnpj_basico,
-                    relationship_limit=relationship_limit,
-                )
-                network_record = await network_result.single()
-        except Neo4jError as exc:
-            raise RuntimeError("neo4j_query_failed") from exc
-
-        empresa = company_record["e"]
-        relationship_rows = [
-            rel for rel in (((network_record or {}).get("rels") or [])) if rel and rel.get("id") is not None
-        ]
-        truncated = len(relationship_rows) > max_edges
-        relationships = relationship_rows[:max_edges]
-        total_relationships = len(relationships) + (1 if truncated else 0)
-
-        empresa_cnpj = str(empresa.get("cnpj_basico") or cnpj_basico)
-        empresa_node_id = f"empresa:{empresa_cnpj}"
-        nodes_by_id: dict[str, dict[str, Any]] = {
-            empresa_node_id: {
-                "id": empresa_node_id,
-                "type": "empresa",
-                "label": empresa.get("razao_social") or empresa.get("nome") or empresa_cnpj,
-                "data": {
-                    "cnpj_basico": empresa_cnpj,
-                    "razao_social": empresa.get("razao_social"),
-                    "porte_empresa": empresa.get("porte_empresa"),
-                    "natureza_juridica": empresa.get("natureza_juridica"),
-                    "is_core": True,
-                },
-            }
-        }
-
-        edges: list[dict[str, Any]] = []
-        for rel in relationships:
-            source_kind = rel.get("source_kind") or "socio"
-            source_id = f"{source_kind}:{rel.get('source_identifier')}"
-            target_id = f"empresa:{rel.get('target_identifier')}"
-
-            if source_id not in nodes_by_id:
-                nodes_by_id[source_id] = {
+        nodes = {f"empresa:{cnpj_basico}": _company_node(cnpj_basico, companies.get(cnpj_basico), None, True)}
+        edge_list = []
+        for row, (kind, key) in edges:
+            if kind == "empresa":
+                source_id = f"empresa:{key}"
+                nodes.setdefault(source_id, _company_node(key, companies.get(key), row["nome_socio_razao_social"], False))
+            else:
+                cpf, name = key
+                source_id = f"socio:{cpf}:{name}"
+                nodes.setdefault(source_id, {
                     "id": source_id,
-                    "type": source_kind,
-                    "label": rel.get("source_label") or "Sócio",
+                    "type": "socio",
+                    "label": name or cpf or "Sócio",
                     "data": {
-                        "cnpj_basico": rel.get("source_cnpj_basico") if source_kind == "empresa" else None,
-                        "razao_social": rel.get("source_label") if source_kind == "empresa" else None,
-                        "porte_empresa": rel.get("source_porte_empresa") if source_kind == "empresa" else None,
-                        "natureza_juridica": rel.get("source_natureza_juridica") if source_kind == "empresa" else None,
-                        "cpf_cnpj_socio": None if source_kind == "empresa" else rel.get("source_cpf_cnpj_socio"),
-                        "identificador_socio": rel.get("source_identificador_socio"),
-                        "faixa_etaria": rel.get("source_faixa_etaria"),
+                        "cnpj_basico": None,
+                        "razao_social": None,
+                        "porte_empresa": None,
+                        "natureza_juridica": None,
+                        "cpf_cnpj_socio": cpf or None,
+                        "identificador_socio": row["identificador_socio"],
+                        "faixa_etaria": row["faixa_etaria"],
                         "is_core": False,
                     },
-                }
+                })
+            target = row["cnpj_basico"]
+            nodes.setdefault(f"empresa:{target}", _company_node(target, companies.get(target), None, False))
+            edge_list.append(_edge(row, source_id))
 
-            if target_id not in nodes_by_id:
-                nodes_by_id[target_id] = {
-                    "id": target_id,
-                    "type": "empresa",
-                    "label": rel.get("target_label") or rel.get("target_identifier") or "Empresa",
-                    "data": {
-                        "cnpj_basico": rel.get("target_cnpj_basico"),
-                        "razao_social": rel.get("target_label"),
-                        "porte_empresa": rel.get("target_porte_empresa"),
-                        "natureza_juridica": rel.get("target_natureza_juridica"),
-                        "is_core": target_id == empresa_node_id,
-                    },
-                }
-
-            edges.append(
-                {
-                    "id": f"edge:{rel.get('id')}",
-                    "source": source_id,
-                    "target": target_id,
-                    "type": rel.get("type") or "SOCIO_DE",
-                    "data": {
-                        "qualificacao_socio": rel.get("qualificacao_socio"),
-                        "data_entrada_sociedade": rel.get("data_entrada_sociedade"),
-                        "reference_month": rel.get("reference_month"),
-                    },
-                }
-            )
-
-        unique_nodes = list(nodes_by_id.values())
+        node_list = list(nodes.values())
         return {
-            "nodes": unique_nodes,
-            "edges": edges,
-            "metadata": {
-                "core_cnpj_basico": empresa_cnpj,
-                "depth": normalized_depth,
-                "total_nodes": len(unique_nodes),
-                "total_edges": len(edges),
-                "total_relationships": total_relationships,
-                "truncated": truncated,
-                "max_edges": max_edges,
-            },
+            "nodes": node_list,
+            "edges": edge_list,
+            "metadata": _metadata({"core_cnpj_basico": cnpj_basico}, depth, node_list, edge_list, truncated, max_edges),
         }
 
     async def get_person_network(
-        self,
-        cpf_masked: str,
-        nome: str | None = None,
-        depth: int = 1,
+        self, cpf_masked: str, nome: str, depth: int = 1, max_edges: int = 200
     ) -> dict[str, Any] | None:
-        settings = self.database.settings
-        normalized_depth = max(1, min(depth, max(1, settings.neo4j_max_network_depth)))
-        max_hops = normalized_depth
-        max_edges = max(1, settings.neo4j_max_network_edges)
-        relationship_limit = max_edges + 1
-
-        person_query = """
-        MATCH (p:Pessoa)
-        WHERE p.cpf_cnpj_socio = $cpf_masked
-          AND ($nome IS NULL OR p.nome = $nome)
-        RETURN p
-        ORDER BY p.nome
-        LIMIT 1
-        """
-
-        network_query = f"""
-        MATCH (core:Pessoa)
-        WHERE core.cpf_cnpj_socio = $cpf_masked
-          AND ($nome IS NULL OR core.nome = $nome)
-        WITH core ORDER BY core.nome LIMIT 1
-        MATCH path = (core)-[:SOCIO_DE*1..{max_hops}]-(connected)
-        UNWIND relationships(path) AS rel
-        WITH DISTINCT rel
-        ORDER BY elementId(rel)
-        LIMIT $relationship_limit
-        RETURN collect({{
-            id: elementId(rel),
-            source_kind: CASE
-                WHEN startNode(rel):Empresa THEN 'empresa'
-                ELSE 'pessoa'
-            END,
-            source_identifier: coalesce(
-                startNode(rel).cnpj_basico,
-                startNode(rel).cpf_cnpj_socio,
-                elementId(startNode(rel))
-            ),
-            source_label: coalesce(
-                startNode(rel).razao_social,
-                startNode(rel).nome,
-                startNode(rel).cnpj_basico,
-                'Desconhecido'
-            ),
-            source_cnpj_basico: startNode(rel).cnpj_basico,
-            source_cpf_cnpj_socio: startNode(rel).cpf_cnpj_socio,
-            source_nome: startNode(rel).nome,
-            source_identificador_socio: startNode(rel).identificador_socio,
-            source_faixa_etaria: startNode(rel).faixa_etaria,
-            source_porte_empresa: startNode(rel).porte_empresa,
-            source_natureza_juridica: startNode(rel).natureza_juridica,
-            target_kind: CASE
-                WHEN endNode(rel):Empresa THEN 'empresa'
-                ELSE 'pessoa'
-            END,
-            target_identifier: coalesce(
-                endNode(rel).cnpj_basico,
-                endNode(rel).cpf_cnpj_socio,
-                elementId(endNode(rel))
-            ),
-            target_label: coalesce(
-                endNode(rel).razao_social,
-                endNode(rel).nome,
-                endNode(rel).cnpj_basico,
-                'Desconhecido'
-            ),
-            target_cnpj_basico: endNode(rel).cnpj_basico,
-            target_cpf_cnpj_socio: endNode(rel).cpf_cnpj_socio,
-            target_porte_empresa: endNode(rel).porte_empresa,
-            target_natureza_juridica: endNode(rel).natureza_juridica,
-            type: type(rel),
-            qualificacao_socio: rel.qualificacao_socio,
-            data_entrada_sociedade: toString(rel.data_entrada_sociedade),
-            reference_month: rel.reference_month
-        }}) AS rels
-        """
-
+        depth, max_edges = self._limits(depth, max_edges)
         try:
-            async with self.database.neo4j_session() as session:
-                person_result = await session.run(person_query, cpf_masked=cpf_masked, nome=nome)
-                person_record = await person_result.single()
-                if not person_record:
+            async with self.database.postgres_connection() as connection:
+                person = (await connection.execute(
+                    text(
+                        "SELECT identificador_socio, faixa_etaria FROM cnpj.socio "
+                        "WHERE cpf_cnpj_socio = :cpf AND nome_socio_razao_social = :nome "
+                        "AND identificador_socio IN (2, 3) ORDER BY reference_month DESC LIMIT 1"
+                    ),
+                    {"cpf": cpf_masked, "nome": nome},
+                )).mappings().first()
+                if person is None:
                     return None
+                edges, truncated = await _expand(connection, ("pessoa", (cpf_masked, nome)), depth, max_edges)
+                cnpjs = {row["cnpj_basico"] for row, _ in edges}
+                cnpjs |= {key for (_, (kind, key)) in edges if kind == "empresa"}
+                companies = await _companies(connection, cnpjs)
+        except SQLAlchemyError as exc:
+            raise RuntimeError("network_query_failed") from exc
 
-                network_result = await session.run(
-                    network_query,
-                    cpf_masked=cpf_masked,
-                    nome=nome,
-                    relationship_limit=relationship_limit,
-                )
-                network_record = await network_result.single()
-        except Neo4jError as exc:
-            raise RuntimeError("neo4j_query_failed") from exc
-
-        pessoa = person_record["p"]
-        relationship_rows = [
-            rel for rel in (((network_record or {}).get("rels") or [])) if rel and rel.get("id") is not None
-        ]
-        truncated = len(relationship_rows) > max_edges
-        relationships = relationship_rows[:max_edges]
-        total_relationships = len(relationships) + (1 if truncated else 0)
-
-        pessoa_cpf = str(pessoa.get("cpf_cnpj_socio") or cpf_masked)
-        pessoa_nome = str(pessoa.get("nome") or nome or "")
-        core_node_id = f"pessoa:{pessoa_cpf}:{pessoa_nome}"
-        nodes_by_id: dict[str, dict[str, Any]] = {
-            core_node_id: {
-                "id": core_node_id,
+        core_id = f"pessoa:{cpf_masked}:{nome}"
+        nodes = {
+            core_id: {
+                "id": core_id,
                 "type": "pessoa",
-                "label": pessoa_nome or pessoa_cpf,
+                "label": nome or cpf_masked,
                 "data": {
-                    "cpf_cnpj_socio": pessoa_cpf,
-                    "nome": pessoa_nome or None,
-                    "identificador_socio": pessoa.get("identificador_socio"),
-                    "faixa_etaria": pessoa.get("faixa_etaria"),
+                    "cpf_cnpj_socio": cpf_masked,
+                    "nome": nome or None,
+                    "identificador_socio": person["identificador_socio"],
+                    "faixa_etaria": person["faixa_etaria"],
                     "is_core": True,
                 },
             }
         }
-
-        edges: list[dict[str, Any]] = []
-        for rel in relationships:
-            source_kind = rel.get("source_kind") or "pessoa"
-            source_cpf = rel.get("source_cpf_cnpj_socio") or rel.get("source_identifier")
-            source_nome_val = rel.get("source_nome") or rel.get("source_label") or ""
-            source_id = (
-                f"empresa:{rel.get('source_identifier')}"
-                if source_kind == "empresa"
-                else f"pessoa:{source_cpf}:{source_nome_val}"
-            )
-
-            target_kind = rel.get("target_kind") or "empresa"
-            target_cpf = rel.get("target_cpf_cnpj_socio") or rel.get("target_identifier")
-            target_id = (
-                f"empresa:{rel.get('target_identifier')}"
-                if target_kind == "empresa"
-                else f"pessoa:{target_cpf}:{rel.get('target_label') or ''}"
-            )
-
-            if source_id not in nodes_by_id:
-                if source_kind == "empresa":
-                    nodes_by_id[source_id] = {
-                        "id": source_id,
-                        "type": "empresa",
-                        "label": rel.get("source_label") or "Empresa",
-                        "data": {
-                            "cnpj_basico": rel.get("source_cnpj_basico"),
-                            "razao_social": rel.get("source_label"),
-                            "porte_empresa": rel.get("source_porte_empresa"),
-                            "natureza_juridica": rel.get("source_natureza_juridica"),
-                            "is_core": False,
-                        },
-                    }
-                else:
-                    nodes_by_id[source_id] = {
-                        "id": source_id,
-                        "type": "pessoa",
-                        "label": rel.get("source_label") or "Pessoa",
-                        "data": {
-                            "cpf_cnpj_socio": source_cpf,
-                            "nome": rel.get("source_nome") or rel.get("source_label"),
-                            "identificador_socio": rel.get("source_identificador_socio"),
-                            "faixa_etaria": rel.get("source_faixa_etaria"),
-                            "is_core": source_id == core_node_id,
-                        },
-                    }
-
-            if target_id not in nodes_by_id:
-                if target_kind == "empresa":
-                    nodes_by_id[target_id] = {
-                        "id": target_id,
-                        "type": "empresa",
-                        "label": rel.get("target_label") or rel.get("target_identifier") or "Empresa",
-                        "data": {
-                            "cnpj_basico": rel.get("target_cnpj_basico"),
-                            "razao_social": rel.get("target_label"),
-                            "porte_empresa": rel.get("target_porte_empresa"),
-                            "natureza_juridica": rel.get("target_natureza_juridica"),
-                            "is_core": False,
-                        },
-                    }
-                else:
-                    nodes_by_id[target_id] = {
-                        "id": target_id,
-                        "type": "pessoa",
-                        "label": rel.get("target_label") or "Pessoa",
-                        "data": {
-                            "cpf_cnpj_socio": target_cpf,
-                            "nome": rel.get("target_label"),
-                            "is_core": False,
-                        },
-                    }
-
-            edges.append(
-                {
-                    "id": f"edge:{rel.get('id')}",
-                    "source": source_id,
-                    "target": target_id,
-                    "type": rel.get("type") or "SOCIO_DE",
+        edge_list = []
+        for row, (kind, key) in edges:
+            if kind == "empresa":
+                source_id = f"empresa:{key}"
+                nodes.setdefault(source_id, _company_node(key, companies.get(key), row["nome_socio_razao_social"], False))
+            else:
+                cpf, name = key
+                source_id = f"pessoa:{cpf}:{name}"
+                nodes.setdefault(source_id, {
+                    "id": source_id,
+                    "type": "pessoa",
+                    "label": name or cpf or "Pessoa",
                     "data": {
-                        "qualificacao_socio": rel.get("qualificacao_socio"),
-                        "data_entrada_sociedade": rel.get("data_entrada_sociedade"),
-                        "reference_month": rel.get("reference_month"),
+                        "cpf_cnpj_socio": cpf or None,
+                        "nome": name or None,
+                        "identificador_socio": row["identificador_socio"],
+                        "faixa_etaria": row["faixa_etaria"],
+                        "is_core": False,
                     },
-                }
-            )
+                })
+            target = row["cnpj_basico"]
+            nodes.setdefault(f"empresa:{target}", _company_node(target, companies.get(target), None, False))
+            edge_list.append(_edge(row, source_id))
 
-        unique_nodes = list(nodes_by_id.values())
+        node_list = list(nodes.values())
         return {
-            "nodes": unique_nodes,
-            "edges": edges,
-            "metadata": {
-                "core_cpf_mascarado": pessoa_cpf,
-                "core_nome": pessoa_nome or None,
-                "depth": normalized_depth,
-                "total_nodes": len(unique_nodes),
-                "total_edges": len(edges),
-                "total_relationships": total_relationships,
-                "truncated": truncated,
-                "max_edges": max_edges,
-            },
+            "nodes": node_list,
+            "edges": edge_list,
+            "metadata": _metadata(
+                {"core_cpf_mascarado": cpf_masked, "core_nome": nome or None},
+                depth, node_list, edge_list, truncated, max_edges,
+            ),
         }

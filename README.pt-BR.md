@@ -1,17 +1,17 @@
 # OSINT Platform
 
-Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos brasileiros. Ela ingere o cadastro federal de empresas (CNPJ), o fomento à inovação da FINEP e as patentes do INPI. Limpa os dados em escala e os disponibiliza como tabelas relacionais pesquisáveis e como um grafo de relações entre empresas e sócios.
+Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos brasileiros. Ela ingere o cadastro federal de empresas (CNPJ), o fomento à inovação da FINEP e as patentes do INPI. Limpa os dados em escala e os disponibiliza como tabelas relacionais pesquisáveis, incluindo a rede de empresas e seus sócios.
 
 [Read in English](README.md)
 
 **Destaques**
 
-- **ETL orquestrado:** DAGs do Apache Airflow para cada fonte, do download mensal agendado à transformação, carga, refresh de materialized views e carga do grafo.
+- **ETL orquestrado:** DAGs do Apache Airflow para cada fonte, do download mensal agendado à transformação, carga e refresh de materialized views.
 - **Processamento em larga escala:** o cadastro CNPJ tem dezenas de milhões de empresas e estabelecimentos. O DuckDB SQL transforma um arquivo de ~5 milhões de linhas em 3 a 4 segundos (cerca de 4 milhões de linhas/s), e o Parquet o reduz em cerca de 70%.
-- **Armazenamento em camadas:** ZIPs e CSVs brutos chegam ao MinIO (API S3) e são limpos em Parquet, depois carregados no PostgreSQL/PostGIS para busca e no Neo4j para redes.
+- **Armazenamento em camadas:** ZIPs e CSVs brutos chegam ao MinIO (API S3) e são limpos em Parquet, depois carregados no PostgreSQL/PostGIS, que atende busca, redes societárias e mapas.
 - **Idempotente e rastreável:** manifestos de download registram cada arquivo e mês de referência, então nada é baixado ou reprocessado duas vezes. Mudanças na fonte são detectadas com verificações de ETag/Last-Modified.
-- **Schema como código:** migrations Flyway para cada schema de domínio (`cnpj`, `finep`, `inpi`, `geo`), além de scripts Cypher para constraints e índices do Neo4j.
-- **NLP:** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. Um grafo de similaridade k-NN entre projetos é gravado no Neo4j.
+- **Schema como código:** migrations Flyway para cada schema de domínio (`cnpj`, `finep`, `inpi`, `geo`).
+- **NLP:** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. A similaridade k-NN entre projetos fica no PostgreSQL.
 - **Full stack:** backend FastAPI, frontend React + Vite (grafos de rede com Cytoscape, mapas com Leaflet, ApexCharts) e autenticação Keycloak (OIDC).
 
 ## Arquitetura
@@ -34,16 +34,14 @@ flowchart LR
     RAW[("MinIO / S3<br/>ZIP, CSV, XLSX brutos")]
     PQ[("Parquet<br/>camada processada")]
     PG[("PostgreSQL + PostGIS<br/>cnpj, finep, inpi, geo")]
-    NEO[("Neo4j<br/>empresas, sócios,<br/>patentes, projetos similares")]
     API["Backend FastAPI"]
     UI["Frontend React<br/>busca, redes, mapas"]
     KC["Keycloak (OIDC)"]
 
     RF & FINEP & INPI --> DL --> RAW --> TR --> PQ --> LD
     LD --> PG
-    LD --> NEO
-    PG --> NLP --> NEO
-    PG & NEO --> API --> UI
+    PG <--> NLP
+    PG --> API --> UI
     KC -. tokens .-> UI
     KC -. valida .-> API
 ```
@@ -59,9 +57,8 @@ Uma DAG, `cnpj_pipeline`, roda mensalmente (no dia 2, às 02:00):
 | Transformação | `transform_file` (uma por ZIP) | Baixa o ZIP do MinIO, extrai, limpa e valida em DuckDB SQL puro, gravando Parquet |
 | Carga | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Faz o staging de cada tabela, remove duplicatas e faz upsert no schema `cnpj` |
 | Índice de busca | `refresh_search_views` | Atualiza as materialized views `cnpj.mv_company_search` |
-| Grafo | `load_neo4j_empresas`, `load_neo4j_socios` | Carrega os nós `Empresa` e de sócios (`Pessoa`) e suas relações |
 
-Uma execução mensal leva cerca de 1,5 hora quando o release já está no MinIO (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa)). Para processar um mês específico de novo:
+Uma execução mensal leva cerca de 1 h 20 min quando o release já está no MinIO (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa)). Para processar um mês específico de novo:
 
 ```bash
 airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'
@@ -75,10 +72,10 @@ FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas 
 |---|---|
 | Orquestração | Apache Airflow 2.10 |
 | Processamento | Python, DuckDB, pandas, PyArrow / Parquet |
-| Armazenamento | PostgreSQL 16 + PostGIS, Neo4j 5 (APOC), MinIO (S3) |
+| Armazenamento | PostgreSQL 16 + PostGIS, MinIO (S3) |
 | Gestão de schema | Flyway, scripts de inicialização Cypher |
 | NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |
-| Backend | FastAPI, SQLAlchemy / asyncpg, driver Neo4j |
+| Backend | FastAPI, SQLAlchemy / asyncpg |
 | Frontend | React 19, Vite, TypeScript, Cytoscape.js, Leaflet, ApexCharts |
 | Autenticação | Keycloak 26 (OIDC) |
 | Operação | Docker Compose (base compartilhada mais overrides de dev e prod-like), unidades systemd, GitHub Actions |
@@ -88,19 +85,19 @@ FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas 
 | Diretório | Papel |
 |---|---|
 | [`pipelines/`](pipelines/) | DAGs do Airflow (`dags/`) e os scripts de ETL que elas chamam (`scripts/`): downloaders, limpeza, cargas e o pipeline de NLP |
-| [`backend/`](backend/) | API FastAPI: um gateway stateless sobre PostgreSQL e Neo4j, sem lógica de ETL |
+| [`backend/`](backend/) | API FastAPI: um gateway stateless sobre PostgreSQL, sem lógica de ETL |
 | [`frontend/`](frontend/) | Dashboard React + Vite: busca de empresas e pessoas, grafos de rede, visões FINEP e INPI |
-| [`infrastructure/`](infrastructure/) | Migrations do PostgreSQL, schema do Neo4j, imagem do Airflow, realm do Keycloak, unidades systemd |
+| [`infrastructure/`](infrastructure/) | Migrations do PostgreSQL, imagem do Airflow, realm do Keycloak, unidades systemd |
 | [`dev/`](dev/) | Uma réplica leve do stack com um pequeno dataset de amostra determinístico |
 | [`docs/`](docs/) | Notas de arquitetura e implementação |
 
 ## Primeiros passos
 
-Requisitos: Docker e Docker Compose. Carregar o mês mais recente do CNPJ mais INPI e FINEP exige cerca de 100 GB de disco (150 GB recomendado para folga), e as configurações de memória padrão são dimensionadas para uma máquina de 32 GB; veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa). A réplica de dev roda com bem menos.
+Requisitos: Docker e Docker Compose. Carregar o mês mais recente do CNPJ mais INPI e FINEP exige cerca de 105 GB de disco (150 GB recomendado para folga), e as configurações de memória padrão são dimensionadas para uma máquina de 32 GB; veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa). A réplica de dev roda com bem menos.
 
 ### Réplica de dev (dados de amostra)
 
-A forma mais rápida de experimentar. Usa portas separadas e dados de amostra de CNPJ, Neo4j e FINEP:
+A forma mais rápida de experimentar. Usa portas separadas, dados de amostra do CNPJ e os dados completos da FINEP:
 
 ```bash
 cp dev/.env.example dev/.env
@@ -118,9 +115,9 @@ cp .env.example .env
 ./scripts/start-prod-like.sh --apply-migrations
 ```
 
-Por padrão, os dados de todos os serviços (PostgreSQL, Neo4j, MinIO, Airflow) ficam em `./data/` dentro do repositório, e as configurações de memória são dimensionadas para uma máquina de 32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL e do Neo4j; o `.env.example` traz o perfil de 64 GB.
+Por padrão, os dados de todos os serviços (PostgreSQL, MinIO, Airflow) ficam em `./data/` dentro do repositório, e as configurações de memória são dimensionadas para uma máquina de 32 GB. Para carregar os datasets completos, aponte as variáveis `*_HOST_PATH` do `.env` para discos maiores e aumente a memória do PostgreSQL; o `.env.example` traz o perfil de 64 GB.
 
-Isso sobe o frontend (`http://localhost:3000`), o backend (`http://localhost:8000`), o Keycloak (`http://localhost:8081`), o console do MinIO (`http://localhost:9001`), PostgreSQL, Neo4j e Flyway. Migrations nunca são aplicadas implicitamente: o script exige `--apply-migrations` ou `--skip-migrations`.
+Isso sobe o frontend (`http://localhost:3000`), o backend (`http://localhost:8000`), o Keycloak (`http://localhost:8081`), o console do MinIO (`http://localhost:9001`), PostgreSQL e Flyway. Migrations nunca são aplicadas implicitamente: o script exige `--apply-migrations` ou `--skip-migrations`.
 
 O Airflow fica fora do startup padrão e pode ser iniciado separadamente:
 
@@ -150,26 +147,24 @@ C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
 
-`cnpj_pipeline` faz download → transformação → PostgreSQL → views de busca → Neo4j, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes, carrega e monta o grafo de patentes.
+`cnpj_pipeline` faz download → transformação → PostgreSQL → views de busca, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes e os carrega.
 
 Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 
 ### Quanto tempo leva uma carga completa
 
-Medido com as configurações de memória padrão do `.env.example`, dimensionadas para uma máquina de 32 GB (`shared_buffers` do PostgreSQL 2 GB, DuckDB 4 GB por tarefa de transformação); os containers usaram cerca de 12 GB. A máquina tem 8 núcleos e 60 GB de RAM, com PostgreSQL em NVMe e MinIO em HDD; a RAM livre serve de cache de arquivos do sistema operacional, então uma máquina com apenas 32 GB pode ser um pouco mais lenta. Carregando o release 2026-10 do CNPJ:
+Medido com as configurações de memória padrão do `.env.example`, dimensionadas para uma máquina de 32 GB (`shared_buffers` do PostgreSQL 2 GB, DuckDB 4 GB por tarefa de transformação); os containers usaram cerca de 12 GB. A máquina tem 8 núcleos e 60 GB de RAM, com PostgreSQL em NVMe e MinIO em HDD; a RAM livre serve de cache de arquivos do sistema operacional, então uma máquina com apenas 32 GB pode ser um pouco mais lenta. Carregando o release 2026-10 do CNPJ (o tempo de download é da primeira carga; as demais linhas são de uma carga do zero com os arquivos já no MinIO):
 
 | Etapa | Tempo |
 |---|---|
 | Download do CNPJ: cerca de 7,3 GB, servidos pela Receita Federal a ~2,5 MB/s | ~1 h |
-| Transformação do CNPJ: 37 ZIPs para Parquet, 4 por vez | 8 min |
-| Carga do CNPJ no PostgreSQL: empresas 22 min, estabelecimentos 21, Simples 7, sócios 5, mapeamento de municípios 2 | ~57 min |
-| Views de busca do CNPJ (`mv_company_search`, ativas e inativas) | 20 min |
-| INPI: staging e publicação das 10 tabelas de patentes, refresh da view de busca | ~10 min, mais o download de cerca de 2,6 GB do INPI |
+| Transformação do CNPJ: 37 ZIPs para Parquet, 4 por vez | 3 min |
+| Carga do CNPJ no PostgreSQL: empresas 23 min, estabelecimentos 21, Simples 6, sócios 5, mapeamento de municípios 2 | ~58 min |
+| Views de busca do CNPJ (`mv_company_search`, ativas e inativas) | 21 min |
+| INPI: staging e publicação das 10 tabelas de patentes, refresh da view de busca | ~8 min, mais o download de cerca de 2,6 GB do INPI |
 | FINEP: as duas planilhas, 7 tabelas | menos de 1 min |
-| **Primeira execução do zero** | **cerca de 2,5 h**; os três pipelines rodam em paralelo e o CNPJ é o mais longo |
-| **Execução mensal do CNPJ com o release já no MinIO** | **cerca de 1,5 h** |
-
-Os tempos acima não incluem a carga do grafo no Neo4j, que está sendo removida. Para pulá-la, use `"load_neo4j": false`, por exemplo `airflow dags trigger cnpj_pipeline --conf '{"load_neo4j": false}'` (o mesmo parâmetro existe em `inpi_pipeline`).
+| **Primeira execução do zero** | **cerca de 2 h 20 min**; os três pipelines rodam em paralelo e o CNPJ é o mais longo |
+| **Execução mensal do CNPJ com o release já no MinIO** | **cerca de 1 h 20 min** |
 
 Espaço em disco após essa carga:
 
@@ -177,10 +172,10 @@ Espaço em disco após essa carga:
 |---|---|
 | Bronze do CNPJ no MinIO, por release mensal | 7,3 GB |
 | Bronze do INPI no MinIO, por snapshot (gravado só quando o conteúdo muda) | cerca de 2,6 GB |
-| Parquet do CNPJ no volume temporário do Airflow | 5,2 GB |
-| PostgreSQL: `cnpj` 72 GB (tabelas, índices e views de busca), `inpi` 4 GB, `finep` e `geo` abaixo de 100 MB | 76 GB |
+| Parquet do CNPJ no volume temporário do Airflow | 5,1 GB |
+| PostgreSQL: `cnpj` 79 GB (tabelas, índices e views de busca), `inpi` 4 GB, `finep` e `geo` abaixo de 100 MB | 83 GB |
 | Espaço temporário de ordenação durante a carga de empresas | cerca de 6 GB |
-| **Total** | **cerca de 97 GB**: 91 GB armazenados, mais cerca de 6 GB usados só durante a carga |
+| **Total** | **cerca de 105 GB**: 98 GB armazenados, mais cerca de 6 GB usados só durante a carga |
 
 O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criação de índices e o refresh das views no PostgreSQL.
 
@@ -200,7 +195,6 @@ Os registros de sócios incluem nomes de pessoas reais, que são dados pessoais 
 | Documento | Conteúdo |
 |---|---|
 | [docs/repo/ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md) | Stack, decisões arquiteturais, estratégia de armazenamento |
-| [docs/repo/IMPLEMENTATION_STEPS.md](docs/repo/IMPLEMENTATION_STEPS.md) | Ambiente, hardware, status de implementação, comandos operacionais |
 | [pipelines/dags/README_CNPJ_DAG.md](pipelines/dags/README_CNPJ_DAG.md) | As DAGs do CNPJ em detalhe, com benchmarks |
 | [infrastructure/postgres/README.md](infrastructure/postgres/README.md) | Setup do PostgreSQL, schemas do CNPJ, materialized views |
 | [docs/repo/DOCKER_RESET_GUIDE.md](docs/repo/DOCKER_RESET_GUIDE.md) | Troubleshooting e reset completo dos containers |

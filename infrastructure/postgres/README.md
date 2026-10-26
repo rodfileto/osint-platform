@@ -185,7 +185,7 @@ done
 - **PRIMARY KEY**: `id` (SERIAL)
 - **UNIQUE**: `(reference_month, file_name)`
 - Rastreia status completo do pipeline de downloads e processamento
-- Campos de tracking: `processing_status`, `extracted_at`, `transformed_at`, `loaded_postgres_at`, `loaded_neo4j_at`
+- Campos de tracking: `processing_status`, `extracted_at`, `transformed_at`, `loaded_postgres_at`
 - Métricas: `rows_extracted`, `rows_transformed`, `rows_loaded_postgres`, `processing_duration_seconds`
 
 ## 🕐 Colunas Timestamp

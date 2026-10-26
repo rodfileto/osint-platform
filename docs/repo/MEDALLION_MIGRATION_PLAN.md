@@ -140,14 +140,14 @@ cnpj_silver_backfill (manual; params: from_month, to_month, force)
 
 ### Step 4: Backend on the new serving model
 - Search, FINEP and INPI routers: two MV queries → one `company_search` query with `is_active`. Then a migration drops the two MVs.
-- Ownership network (`/network/{cnpj}`, `/pessoa-network/...`): recursive CTE over `cnpj.socio`, keeping the current response schema so the frontend doesn't change.
+- Ownership network (`/network/{cnpj}`, `/pessoa-network/...`): **done 2026-10-25** with the Neo4j removal: level-by-level indexed queries over `cnpj.socio` (latest month), same response schema, edge cap as the `max_edges` request param. Hubs at depth 3 answer in under 40 ms over HTTP.
 - Person detail reads current partnerships from `socio` and past ones from `socio_history`. A new endpoint lists a company's partner history (frontend tab is optional, decide during review).
-- Unified search: remove the Neo4j branch.
+- Unified search: remove the Neo4j branch. **Done 2026-10-25.**
 - **Verify:** compare network responses on sample companies; p95 benchmark on the companies with the most partners (record numbers in this doc).
 
 ### Step 5: Remove Neo4j
 
-> Replaced by [NEO4J_REMOVAL_PLAN.md](NEO4J_REMOVAL_PLAN.md), written against the current single-DAG pipelines. The list below names files that no longer exist.
+> **Done 2026-10-25**, following a separate step-by-step plan written against the single-DAG pipelines (`docs/repo/NEO4J_REMOVAL_PLAN.md` in commit `21a5857`; the measurements are in ARCHITECTURE_PLAN.md). The list below names files that no longer exist. FINEP similarity is in `finep.nlp_project_similarity`; the current design is described in [ARCHITECTURE_PLAN.md](ARCHITECTURE_PLAN.md), "Ownership networks and graph analysis".
 
 - Pipelines: delete `cnpj_load_neo4j`, `inpi_load_neo4j`, `neo4j_schema.py`, the Neo4j parts of `load_tasks.py`, `inpi/neo4j_loader.py`, `delete_estabelecimentos_neo4j.py`, `create_neo4j_indexes.py`.
 - FINEP NLP: write the k-NN `SIMILAR_TO` edges to a new `finep.nlp_project_similarity` table instead of Neo4j.
