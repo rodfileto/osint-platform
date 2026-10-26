@@ -2,9 +2,23 @@
 
 [![Tests](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml/badge.svg)](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml)
 
-Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos brasileiros. Ela ingere o cadastro federal de empresas (CNPJ), o fomento à inovação da FINEP e as patentes do INPI. Limpa os dados em escala e os disponibiliza como tabelas relacionais pesquisáveis, incluindo a rede de empresas e seus sócios.
+Pesquise o cadastro de empresas do Brasil, veja quem é dono do quê e acompanhe o dinheiro público de inovação.
+
+A plataforma ingere o cadastro federal de empresas (CNPJ: cerca de 28,5 milhões de registros de sócios), o fomento à inovação da FINEP e as patentes do INPI. O Airflow e o DuckDB os limpam todo mês para o PostgreSQL, e um app FastAPI + React oferece busca, redes societárias e mapas sobre eles.
 
 [Read in English](README.md)
+
+## Demo rápida
+
+Precisa de Docker. Sobe uma cópia do stack com empresas e pessoas fictícias e os dados públicos completos da FINEP, em portas próprias:
+
+```bash
+git clone https://github.com/rodfileto/osint-platform.git && cd osint-platform
+cp dev/.env.example dev/.env
+./dev/scripts/start.sh
+```
+
+Depois de cerca de 7 minutos, abra `http://localhost:13000`, entre como `osint-admin` / `osint123`, pesquise `acme` e abra a empresa para ver a rede societária. Mais em [Primeiros passos](#primeiros-passos).
 
 **Destaques**
 
@@ -15,6 +29,14 @@ Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos b
 - **Schema como código:** migrations Flyway para cada schema de domínio (`cnpj`, `finep`, `inpi`, `geo`).
 - **NLP:** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. A similaridade k-NN entre projetos fica no PostgreSQL.
 - **Full stack:** backend FastAPI, frontend React + Vite (grafos de rede com Cytoscape, mapas com Leaflet, ApexCharts) e autenticação Keycloak (OIDC).
+
+## Decisões de engenharia
+
+- **Sem banco de grafos.** As redes societárias eram carregadas no Neo4j todo mês. Agora são montadas no PostgreSQL com uma consulta indexada por salto sobre os 28,5 milhões de registros de sócios: profundidade 3 em torno dos maiores hubs leva de 0,6 a 1,2 ms (p95) no banco e de 14 a 44 ms pela API. Um serviço e 56 GB de disco a menos, e nenhuma segunda cópia dos dados para manter sincronizada. Medições em [ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md#ownership-networks).
+- **Busca que usa seus índices.** A busca de empresas varria as views de busca inteiras (17 a 30 s). Índices de prefixo nas colunas de CNPJ e a remoção de um `COALESCE` que escondia a coluna de nome do seu índice a trouxeram para 3 a 660 ms.
+- **Uma DAG em vez de cinco.** A carga do CNPJ eram cinco DAGs encadeadas que passavam parâmetros como strings (então `'False'` contava como verdadeiro), baixavam cada ZIP duas vezes e marcavam arquivos como carregados antes do commit do upsert. Agora é um único `cnpj_pipeline` com parâmetros tipados e upserts com staging e deduplicação; a reescrita removeu 9.547 linhas e adicionou 1.510.
+- **Guardar os arquivos brutos.** Os downloads ficam no MinIO como vieram da fonte, com um manifesto de cada arquivo e mês. O banco pode ser apagado e reconstruído sem baixar de novo: a reconstrução completa da versão 2026-10 levou 1 h 20 min para o CNPJ, 8 min para o INPI e menos de 1 min para a FINEP.
+- **Testado a cada push.** O GitHub Actions roda os testes do SQL de limpeza do DuckDB e do loader da FINEP, as consultas de rede e busca contra o PostgreSQL com as migrations reais, e o build do frontend.
 
 ## Capturas de tela
 

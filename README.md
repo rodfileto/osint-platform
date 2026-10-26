@@ -2,9 +2,23 @@
 
 [![Tests](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml/badge.svg)](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml)
 
-An open-source intelligence platform for Brazilian public data. It ingests the federal company registry (CNPJ), FINEP innovation funding and INPI patents. It cleans the data at scale, then serves it as searchable relational tables, including the network of companies and their shareholders.
+Search Brazil's company registry, see who owns what, and follow public innovation money.
+
+The platform ingests the federal company registry (CNPJ: about 28.5 million partner records), FINEP innovation funding and INPI patents. Airflow and DuckDB clean them every month into PostgreSQL, and a FastAPI + React app serves search, ownership networks and maps over them.
 
 [Leia em português](README.pt-BR.md)
+
+## Quick demo
+
+Needs Docker. Starts a copy of the stack with fictitious companies and people plus the full public FINEP data, on its own ports:
+
+```bash
+git clone https://github.com/rodfileto/osint-platform.git && cd osint-platform
+cp dev/.env.example dev/.env
+./dev/scripts/start.sh
+```
+
+After about 7 minutes, open `http://localhost:13000`, sign in as `osint-admin` / `osint123`, search for `acme` and open the company to see its ownership network. More in [Getting started](#getting-started).
 
 **Highlights**
 
@@ -15,6 +29,14 @@ An open-source intelligence platform for Brazilian public data. It ingests the f
 - **Schema as code:** Flyway migrations for each domain schema (`cnpj`, `finep`, `inpi`, `geo`).
 - **NLP:** FINEP project texts are topic-modeled with multilingual sentence-transformers, UMAP, HDBSCAN and BERTopic. The k-NN similarity between projects is stored in PostgreSQL.
 - **Full stack:** a FastAPI backend, a React + Vite frontend (Cytoscape network graphs, Leaflet maps, ApexCharts) and Keycloak (OIDC) authentication.
+
+## Engineering decisions
+
+- **No graph database.** Ownership networks used to be loaded into Neo4j every month. They are now built in PostgreSQL with one indexed query per hop over the 28.5 million partner rows: depth 3 around the largest hubs takes 0.6 to 1.2 ms (p95) in the database and 14 to 44 ms through the API. One service and 56 GB of disk fewer, and no second copy of the data to keep in sync. Measurements in [ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md#ownership-networks).
+- **Search that uses its indexes.** Company search scanned the whole search views (17 to 30 s). Prefix indexes on the CNPJ columns and dropping a `COALESCE` that hid the name column from its index brought it to 3 to 660 ms.
+- **One DAG instead of five.** The CNPJ load was five chained DAGs that passed parameters as strings (so `'False'` counted as true), downloaded every ZIP twice and marked files as loaded before the upsert committed. It is now a single `cnpj_pipeline` with typed parameters and staged, deduplicated upserts; the rewrite deleted 9,547 lines and added 1,510.
+- **Keep the raw files.** Downloads stay in MinIO as they came from the source, with a manifest of every file and month. The database can be dropped and rebuilt without downloading again: a full rebuild of the 2026-10 release took 1 h 20 min for CNPJ, 8 min for INPI and under 1 min for FINEP.
+- **Tested on every push.** GitHub Actions runs the DuckDB cleaning SQL and FINEP loader tests, the network and search queries against PostgreSQL with the real migrations, and the frontend build.
 
 ## Screenshots
 

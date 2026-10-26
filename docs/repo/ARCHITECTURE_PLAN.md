@@ -1,88 +1,66 @@
 # Architecture
 
-How the platform is built today. For a critique of the storage design and the recommended changes, see [DATA_ARCHITECTURE_REVIEW.md](DATA_ARCHITECTURE_REVIEW.md). Setup and configuration live in the [README](../../README.md) and [`.env.example`](../../.env.example).
+How the platform is built. Setup and configuration are in the [README](../../README.md) and [`.env.example`](../../.env.example); a critique of the storage design is in [DATA_ARCHITECTURE_REVIEW.md](DATA_ARCHITECTURE_REVIEW.md).
 
 ## Layers
 
-| Layer | Responsibility | Location |
+| Layer | Role | Where |
 |---|---|---|
-| Pipelines | Download, transform and load each source | `pipelines/` (Airflow DAGs and scripts) |
-| Storage | Raw files, relational tables | MinIO, PostgreSQL + PostGIS |
-| API | Stateless read-only gateway for the UI | `backend/` (FastAPI) |
+| Pipelines | Download, transform and load each source | `pipelines/` (Airflow) |
+| Storage | Raw files; relational tables | MinIO; PostgreSQL + PostGIS |
+| API | Read-only gateway for the UI | `backend/` (FastAPI) |
 | Frontend | Search, detail pages, networks, maps | `frontend/` (React + Vite) |
 | Auth | OIDC login for UI and API | Keycloak |
 
-Pipelines never serve HTTP; the API never runs ETL. The API only reads what the pipelines produced.
+The API only reads what the pipelines wrote.
 
 ## Pipelines
 
-Each source runs as one DAG: `cnpj_pipeline`, `finep_pipeline` and `inpi_pipeline`. Download DAGs record every file in a per-source `download_manifest` table and skip or register files already in MinIO, so re-runs never download twice.
+One DAG per source. Each records its files in a `download_manifest` table, so nothing is downloaded or loaded twice.
 
-| Source | Chain | Schedule |
+| DAG | Steps | Schedule (America/Sao_Paulo) |
 |---|---|---|
-| CNPJ (Receita Federal) | One DAG, `cnpj_pipeline`: download → select month → transform (one task per ZIP) → load each table → refresh search views. A month that is already loaded is skipped. | Monthly, 2nd at 02:00 |
-| FINEP | One DAG, `finep_pipeline`: download both spreadsheets → load the 7 tables (each only when a newer file arrived); `finep_nlp_topic` is triggered manually | Monthly, 2nd at 06:00 |
-| INPI | One DAG, `inpi_pipeline`: download the 10 CSVs (a snapshot is stored only when its content changed) → stage each table → publish all tables in one transaction → search view | Weekly, Monday 05:00 |
+| `cnpj_pipeline` | download → select month → DuckDB transform to Parquet (one task per ZIP) → load each table → refresh search views | Monthly, 2nd at 02:00 |
+| `finep_pipeline` | download both spreadsheets → load the 7 tables | Monthly, 2nd at 06:00 |
+| `inpi_pipeline` | download the 10 CSVs → stage → publish all tables in one transaction → search view | Weekly, Monday 05:00 |
 
-Schedule times are in Airflow's default timezone, America/Sao_Paulo. CNPJ transforms run in DuckDB SQL: ZIPs are extracted to CSV staging and written as Parquet, then bulk-loaded.
+`finep_nlp_topic` (topics and project similarity) is triggered by hand.
 
 ## Storage
 
-### MinIO (raw layer)
+**MinIO**, bucket `osint-raw`, keeps the downloads as they came: `cnpj/raw/<YYYY-MM>/*.zip` and `inpi/patentes/<YYYYMMDD>/*.csv`. FINEP spreadsheets are on the Airflow data volume; CNPJ CSV and Parquet staging is on the temp volume and can be regenerated.
 
-The bucket `osint-raw` is the source of truth for downloaded files:
-
-- `cnpj/raw/<YYYY-MM>/<File>.zip`: streamed straight from the Receita Federal server
-- `inpi/patentes/<YYYYMMDD>/<FILE>.csv`: one immutable snapshot per upstream version
-
-FINEP spreadsheets are kept on the Airflow data volume (`/opt/airflow/data/finep/`). CNPJ CSV staging and Parquet live on the Airflow temp volume and can be regenerated from the raw ZIPs.
-
-### PostgreSQL
-
-One database, one schema per domain, managed by Flyway (`infrastructure/postgres/migrations/`):
+**PostgreSQL**, one schema per domain, migrations in `infrastructure/postgres/migrations/` (Flyway):
 
 | Schema | Content |
 |---|---|
-| `cnpj` | Companies, establishments, partners, reference tables, download manifest, search materialized views |
-| `finep` | Contracts, disbursements, NLP topics and project similarity, download manifest |
-| `inpi` | 10 patent tables (applicants keep holder history: one row per holder with `data_inicio` / `data_fim`), `mv_patent_search`, download manifest |
-| `geo` | IBGE states and municipalities, CNPJ municipality mapping (the `geo-bootstrap` service loads the geometries; `cnpj_pipeline` rebuilds the mapping) |
-| `public` | Airflow metadata and the Flyway history |
+| `cnpj` | Companies, establishments, partners, reference tables, search materialized views |
+| `finep` | Contracts, disbursements, NLP topics, project similarity |
+| `inpi` | 10 patent tables (applicants with holder history), `mv_patent_search` |
+| `geo` | IBGE states and municipalities, CNPJ municipality mapping |
+| `public` | Airflow metadata, Flyway history |
 
-Cross-domain joins go through `cnpj_basico`: INPI applicants are resolved to `inpi.patentes_depositantes.cnpj_basico_resolved` at load time.
+Domains join on `cnpj_basico`; INPI applicants are resolved to it at load time.
 
-### Ownership networks and graph analysis
+## Ownership networks
 
-There is no graph database: the company and person networks are built from `cnpj.socio` (latest `reference_month`) by `backend/api/services/cnpj_network.py`, one indexed query per hop, stopping at the requested `max_edges` (default 200, at most `NETWORK_MAX_EDGES`). Depth 3 around the largest hubs takes milliseconds. Co-ownership analyses (FINEP companies sharing partners, holding chains above patent holders) run as SQL joins or recursive CTEs. FINEP project similarity is the table `finep.nlp_project_similarity`. If graph algorithms (communities, centrality) are needed, the plan is to extract the relevant subgraph in a DAG task, run NetworkX or igraph on it and write the results back to PostgreSQL.
+Built from `cnpj.socio` (latest month) by `backend/api/services/cnpj_network.py`: one indexed query per hop, up to depth 3, stopping at `max_edges` (default 200, at most `NETWORK_MAX_EDGES`). It relies on `idx_socio_cpf_nome` and the partial index `idx_socio_pj_cnpj_basico`. Wider analyses (shared partners, holding chains) are SQL joins or recursive CTEs.
 
-Neo4j was removed on 2026-10-25 (the plan, before it was carried out, is `docs/repo/NEO4J_REMOVAL_PLAN.md` in commit `21a5857`). Measured then, on 28.5M `socio` rows:
+On 28.5M partner rows:
 
 | Query | Time |
 |---|---|
-| Ego network, depth 3, p95 over the 20 companies with most partners / 20 people with most companies / 50 random companies (inside PostgreSQL) | 0.7 / 0.6 / 1.2 ms |
-| Same through the API: hub company depth 1, ordinary company depth 3, hub person depth 2 (200 edges) | 44 / 14 / 43 ms |
-| Hub company depth 3 with `max_edges=2000` | 36 ms |
-| FINEP companies → partners → every company those partners own (3,233 → 9,204 → 36,018) | 0.3 s |
-| Patent holders sharing a partner (28,629 holders, 3,888 pairs) | 3.6 s |
-| Holding chain above patent holders, 4 levels (recursive CTE) | 1.3 s |
-
-The network needs `idx_socio_cpf_nome` and the partial index `idx_socio_pj_cnpj_basico` (companies a company is a partner in); without the latter that lookup scans `socio` (about 1 s).
+| Depth 3, p95: companies with most partners / people with most companies / random companies (in PostgreSQL) | 0.7 / 0.6 / 1.2 ms |
+| Through the API: hub company depth 1 / ordinary company depth 3 / hub person depth 2 | 44 / 14 / 43 ms |
+| FINEP companies → partners → their other companies (3,233 → 9,204 → 36,018) | 0.3 s |
 
 ## API and frontend
 
-- **Backend:** FastAPI routers `auth`, `search`, `cnpj`, `finep`, `inpi` under `/api`; all except `auth` require a Keycloak token. PostgreSQL through SQLAlchemy async over asyncpg.
-- **Frontend:** pages for CNPJ search, company detail, person search and detail, FINEP overview and INPI overview. Cytoscape for networks, Leaflet for maps, ApexCharts for charts.
+- **Backend:** routers `auth`, `search`, `cnpj`, `finep`, `inpi` under `/api`; all but `auth` require a Keycloak token. SQLAlchemy async over asyncpg.
+- **Frontend:** CNPJ search, company detail, person search and detail, FINEP and INPI panels. Cytoscape, Leaflet, ApexCharts.
 
 ## Stack
 
-| Component | Tool |
-|---|---|
-| Containers | Docker Compose: shared `docker-compose.yml` plus `compose.prod.yml` / `compose.dev.yml` overlays |
-| Orchestration | Apache Airflow 2.10 (LocalExecutor, metadata in PostgreSQL) |
-| Relational | PostgreSQL 16 + PostGIS |
-| Object storage | MinIO (S3 API) |
-| Transforms | DuckDB, Python |
-| NLP | sentence-transformers, UMAP, HDBSCAN, BERTopic |
-| Auth | Keycloak 26 (OIDC) |
+Docker Compose (`docker-compose.yml` plus `compose.prod.yml` / `compose.dev.yml`), Airflow 2.10 (LocalExecutor), PostgreSQL 16 + PostGIS, MinIO, DuckDB, sentence-transformers / UMAP / HDBSCAN / BERTopic, Keycloak 26.
 
-Container paths are fixed (`/opt/airflow/data`, `/opt/airflow/temp_ssd`, `/var/lib/postgresql/data`, `/data` for MinIO); which host disk backs each one is set only by the `*_HOST_PATH` variables in `.env`.
+Container paths are fixed; the host disk behind each is set by the `*_HOST_PATH` variables in `.env`.
