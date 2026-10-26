@@ -1,4 +1,8 @@
-"""CNPJ transform step: one ZIP at a time from MinIO, through DuckDB SQL, to Parquet."""
+"""CNPJ transform step: one ZIP at a time from MinIO, through DuckDB SQL, to Parquet.
+
+Each Parquet file is kept locally for the load and copied to MinIO as silver:
+s3://osint-processed/cnpj/silver/<entity>/reference_month=<YYYY-MM>/<file>.parquet
+"""
 
 import io
 import logging
@@ -38,6 +42,49 @@ def parquet_name(file_name: str) -> str:
     if stem == "Simples" or stem in REFERENCE_TYPES:
         return f"{stem.lower()}.parquet"
     raise ValueError(f"Unknown CNPJ file: {file_name}")
+
+
+def silver_key(reference_month: str, file_name: str) -> str:
+    import downloader
+
+    name = parquet_name(file_name)
+    entity = re.sub(r"_\d+$", "", name.removesuffix(".parquet"))
+    return f"{downloader.silver_prefix()}/{entity}/reference_month={reference_month}/{name}"
+
+
+def _upload_silver(reference_month: str, file_name: str, parquet: Path) -> None:
+    import downloader
+
+    s3 = downloader.s3_client()
+    bucket, key = downloader.processed_bucket(), silver_key(reference_month, file_name)
+    downloader.ensure_bucket(s3, bucket)
+    s3.upload_file(str(parquet), bucket, key)
+    logger.info(f"{parquet.name} → s3://{bucket}/{key}")
+
+
+def _sync_silver(reference_month: str, file_name: str, parquet: Path) -> bool:
+    """Make the local Parquet and its silver copy both exist. False when neither does."""
+    import downloader
+    from botocore.exceptions import ClientError
+
+    s3 = downloader.s3_client()
+    bucket, key = downloader.processed_bucket(), silver_key(reference_month, file_name)
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        in_silver = True
+    except ClientError:
+        in_silver = False
+
+    if parquet.exists():
+        if not in_silver:
+            _upload_silver(reference_month, file_name, parquet)
+        return True
+    if in_silver:
+        parquet.parent.mkdir(parents=True, exist_ok=True)
+        s3.download_file(bucket, key, str(parquet))
+        logger.info(f"{parquet.name} restored from s3://{bucket}/{key}")
+        return True
+    return False
 
 
 def _query(file_name: str, csv_path: str, output_path: str) -> str:
@@ -94,7 +141,11 @@ def transform_file(reference_month: str, file_name: str, force_reprocess: bool) 
     from manifest_tracker import is_file_processed, mark_extracted, mark_failed, mark_transformed
 
     parquet = PROCESSED_PATH / reference_month / parquet_name(file_name)
-    if not force_reprocess and parquet.exists() and is_file_processed(reference_month, file_name, "transformed"):
+    if (
+        not force_reprocess
+        and is_file_processed(reference_month, file_name, "transformed")
+        and _sync_silver(reference_month, file_name, parquet)
+    ):
         logger.info(f"{file_name} already transformed: {parquet}")
         return {"file_name": file_name, "skipped": True}
 
@@ -121,6 +172,7 @@ def transform_file(reference_month: str, file_name: str, force_reprocess: bool) 
         finally:
             con.close()
         duration = time.time() - start
+        _upload_silver(reference_month, file_name, parquet)
         mark_transformed(reference_month, file_name, str(parquet), rows, duration)
         logger.info(f"{file_name} → {parquet.name}: {rows:,} rows in {duration:.1f}s")
         return {"file_name": file_name, "rows": rows, "skipped": False}

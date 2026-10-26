@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from cleaners import build_empresas_query, build_reference_query, build_socios_query
-from tasks.transform import extract_csv, parquet_name
+from tasks.transform import extract_csv, parquet_name, silver_key
 
 
 def test_extract_csv_decodes_latin1_including_bytes_duckdb_rejects(tmp_path):
@@ -47,6 +47,15 @@ def test_parquet_name(file_name, expected):
 def test_parquet_name_rejects_unknown_files():
     with pytest.raises(ValueError):
         parquet_name("Unknown.zip")
+
+
+@pytest.mark.parametrize("file_name, expected", [
+    ("Empresas0.zip", "cnpj/silver/empresas/reference_month=2026-10/empresas_0.parquet"),
+    ("Simples.zip", "cnpj/silver/simples/reference_month=2026-10/simples.parquet"),
+    ("Cnaes.zip", "cnpj/silver/cnaes/reference_month=2026-10/cnaes.parquet"),
+])
+def test_silver_key(file_name, expected):
+    assert silver_key("2026-10", file_name) == expected
 
 
 def test_empresas_cleaning(run_query):

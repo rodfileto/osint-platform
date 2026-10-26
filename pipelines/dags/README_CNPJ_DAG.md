@@ -17,7 +17,7 @@ download_release → update_manifest → select_month
 | `download_release` | `tasks/download.py` | Makes the month (requested, or the latest on the server) complete in MinIO; streams only missing or mismatched ZIPs; fails if files are still missing |
 | `update_manifest` | `tasks/download.py` | Registers every ZIP in MinIO in `cnpj.download_manifest`, keeping per-file progress |
 | `select_month` | `tasks/download.py` | Picks the month; skips the rest of the run when every main file is already transformed and loaded |
-| `transform_file` | `tasks/transform.py` | Downloads one ZIP from MinIO, extracts it, runs the DuckDB SQL from `scripts/cnpj/cleaners.py` to Parquet, deletes its staging files |
+| `transform_file` | `tasks/transform.py` | Downloads one ZIP from MinIO, extracts it, runs the DuckDB SQL from `scripts/cnpj/cleaners.py` to Parquet, copies it to MinIO silver, deletes its staging files |
 | `load_*` | `tasks/load_postgres.py` | Copies the Parquet into an unlogged staging table, then upserts one row per key (the most complete one when Receita publishes a key twice); `socio` replaces the month instead |
 | `rebuild_geo_mapping` | `scripts/geo/load_br_geo_reference.py` | Rebuilds the CNPJ municipality → IBGE mapping, which infers each municipality's state from its establishments |
 | `refresh_search_views` | `tasks/load_postgres.py` | Refreshes `cnpj.mv_company_search` and `cnpj.mv_company_search_inactive` (concurrently once populated) |
@@ -42,8 +42,12 @@ airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force
 ```
 osint-raw/cnpj/raw/<YYYY-MM>/<File>.zip         MinIO, source of truth
 /opt/airflow/temp_ssd/cnpj_staging/<YYYY-MM>/    CSV staging, removed after each file
-/opt/airflow/temp_ssd/cnpj_processed/<YYYY-MM>/  Parquet (about 5 GB per month), read by the load tasks
+/opt/airflow/temp_ssd/cnpj_processed/<YYYY-MM>/  Parquet (about 5.5 GB per month), read by the load tasks
+osint-processed/cnpj/silver/<entity>/reference_month=<YYYY-MM>/
+                                                 MinIO copy of the Parquet, kept for every month
 ```
+
+A transform that is skipped because the month is already done uploads a Parquet file missing from MinIO, or downloads one missing from the temp volume, so wiping the temp volume does not mean transforming again.
 
 `CNPJ_DUCKDB_MEMORY_LIMIT` (default `4GB`) caps DuckDB memory per transform task; it spills to `/opt/airflow/temp_ssd/duckdb_tmp`.
 

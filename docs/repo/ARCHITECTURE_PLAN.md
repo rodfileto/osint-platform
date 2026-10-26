@@ -28,7 +28,12 @@ One DAG per source. Each records its files in a `download_manifest` table, so no
 
 ## Storage
 
-**MinIO**, bucket `osint-raw`, keeps the downloads as they came: `cnpj/raw/<YYYY-MM>/*.zip` and `inpi/patentes/<YYYYMMDD>/*.csv`. FINEP spreadsheets are on the Airflow data volume; CNPJ CSV and Parquet staging is on the temp volume and can be regenerated.
+**MinIO** keeps:
+
+- `osint-raw`: the downloads as they came, `cnpj/raw/<YYYY-MM>/*.zip` and `inpi/patentes/<YYYYMMDD>/*.csv`.
+- `osint-processed`: the cleaned CNPJ Parquet (silver) of every month, `cnpj/silver/<entity>/reference_month=<YYYY-MM>/*.parquet`, about 5.5 GB per month. A transform skipped because the month is done restores missing local Parquet from here instead of transforming again.
+
+FINEP spreadsheets are on the Airflow data volume. The load reads Parquet from the temp volume, which also holds the CSV staging.
 
 **PostgreSQL**, one schema per domain, migrations in `infrastructure/postgres/migrations/` (Flyway):
 

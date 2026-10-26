@@ -6,6 +6,7 @@ import Badge from "@/components/ui/badge/Badge";
 import Button from "@/components/ui/button/Button";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import apiClient from "@/lib/apiClient";
+import { formatDateBR } from "@/lib/format";
 
 interface InpiResumoGeral {
   total_patentes: number;
@@ -86,11 +87,6 @@ function tipoColor(tipo: string | null): "primary" | "success" | "warning" | "er
   };
 
   return colors[tipo ?? ""] ?? "light";
-}
-
-function formatDate(value: string | null): string {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("pt-BR").format(new Date(value));
 }
 
 function barWidth(value: number, maxValue: number): string {
@@ -360,7 +356,7 @@ export default function InpiOverview() {
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{formatDate(patente.data_deposito)}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{formatDateBR(patente.data_deposito)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

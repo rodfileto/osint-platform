@@ -6,6 +6,7 @@ import Badge from "@/components/ui/badge/Badge";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import Pagination from "@/components/tables/Pagination";
 import apiClient from "@/lib/apiClient";
+import { formatDateBR } from "@/lib/format";
 
 const PersonNetworkGraph = lazy(() => import("@/components/cnpj/PersonNetworkGraph"));
 
@@ -184,7 +185,7 @@ export default function PessoaDetail({ cpfMascarado, nome }: PessoaDetailProps) 
                           {empresa.qualificacao_socio_descricao || empresa.qualificacao_socio || "—"}
                         </TableCell>
                         <TableCell className="whitespace-nowrap px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                          {empresa.data_entrada_sociedade ? new Date(empresa.data_entrada_sociedade).toLocaleDateString("pt-BR") : "—"}
+                          {formatDateBR(empresa.data_entrada_sociedade)}
                         </TableCell>
                         <TableCell className="whitespace-nowrap px-4 py-3">
                           {empresa.situacao_cadastral ? (

@@ -24,7 +24,7 @@ After about 7 minutes, open `http://localhost:13000`, sign in as `osint-admin` /
 
 - **Orchestrated ETL:** Apache Airflow DAGs for each source, from scheduled monthly downloads through transform and load to materialized-view refresh.
 - **Large-scale processing:** the CNPJ registry has tens of millions of companies and establishments. DuckDB SQL transforms one ~5M-row file in 3 to 4 seconds (about 4M rows/s), and Parquet shrinks it by about 70%.
-- **Layered storage:** raw ZIPs and CSVs land in MinIO (S3 API) and are cleaned into Parquet, then loaded into PostgreSQL/PostGIS, which serves search, ownership networks and maps.
+- **Layered storage:** raw ZIPs and CSVs land in MinIO (S3 API) and are cleaned into Parquet, also kept in MinIO for every month, then loaded into PostgreSQL/PostGIS, which serves search, ownership networks and maps.
 - **Idempotent and traceable:** download manifests record every file and reference month, so nothing is downloaded or reprocessed twice. Changes on the source are detected with ETag/Last-Modified checks.
 - **Schema as code:** Flyway migrations for each domain schema (`cnpj`, `finep`, `inpi`, `geo`).
 - **NLP (experimental, run by hand):** FINEP project texts are topic-modeled with multilingual sentence-transformers, UMAP, HDBSCAN and BERTopic. The k-NN similarity between projects is stored in PostgreSQL.
@@ -94,7 +94,7 @@ One DAG, `cnpj_pipeline`, runs monthly (on the 2nd at 02:00):
 |---|---|---|
 | Download | `download_release`, `update_manifest` | Streams the latest release's ZIPs straight to MinIO (`osint-raw/cnpj/raw/{YYYY-MM}/`) and records them in `cnpj.download_manifest` |
 | Select | `select_month` | Picks the month to process and skips the rest of the run if it is already loaded |
-| Transform | `transform_file` (one per ZIP) | Downloads the ZIP from MinIO, extracts it, and cleans and validates it in pure DuckDB SQL, writing Parquet |
+| Transform | `transform_file` (one per ZIP) | Downloads the ZIP from MinIO, extracts it, and cleans and validates it in pure DuckDB SQL, writing Parquet locally and to `osint-processed/cnpj/silver/` |
 | Load | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Stages each table, deduplicates it and upserts it into the `cnpj` schema |
 | Search index | `refresh_search_views` | Refreshes the `cnpj.mv_company_search` materialized views |
 
@@ -133,7 +133,7 @@ FINEP and INPI follow the same pattern: a downloader with a manifest, then loade
 
 ## Getting started
 
-Requirements: Docker and Docker Compose. Loading the latest CNPJ month plus INPI and FINEP needs about 105 GB of disk (150 GB recommended for headroom), and the default memory settings are sized for a 32 GB machine; see [How long a full load takes](#how-long-a-full-load-takes). The dev replica runs on much less.
+Requirements: Docker and Docker Compose. Loading the latest CNPJ month plus INPI and FINEP needs about 110 GB of disk (150 GB recommended for headroom), and the default memory settings are sized for a 32 GB machine; see [How long a full load takes](#how-long-a-full-load-takes). The dev replica runs on much less.
 
 ### Dev replica (sample data)
 
@@ -213,9 +213,10 @@ Disk used after that load:
 | CNPJ bronze in MinIO, per monthly release | 7.3 GB |
 | INPI bronze in MinIO, per snapshot (stored only when the content changes) | about 2.6 GB |
 | CNPJ Parquet on the Airflow temp volume | 5.1 GB |
+| CNPJ Parquet (silver) in MinIO, per month | 5.5 GB |
 | PostgreSQL: `cnpj` 79 GB (tables, indexes and search views), `inpi` 4 GB, `finep` and `geo` under 100 MB | 83 GB |
 | Temporary sort space while loading companies | about 6 GB |
-| **Total** | **about 105 GB**: 98 GB stored, plus about 6 GB used only during the load |
+| **Total** | **about 110 GB**: 104 GB stored, plus about 6 GB used only during the load |
 
 The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upserts, index builds and view refreshes.
 

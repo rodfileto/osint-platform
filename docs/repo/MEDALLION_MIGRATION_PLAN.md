@@ -109,6 +109,9 @@ cnpj_silver_backfill (manual; params: from_month, to_month, force)
 - **C.** Benchmark the ownership network as a recursive CTE against the current `cnpj.socio` (latest month only), at depth 1–3, on the companies with the most partners. This is the one assumption that removing Neo4j depends on. I will provide the SQL and a small script.
 
 ### Step 1: Silver in MinIO + DAG rework
+
+> **Partly done 2026-10-26:** `cnpj_pipeline`'s transform task copies each Parquet file to `s3://osint-processed/cnpj/silver/<entity>/reference_month=M/` and restores missing local files from there; the load still reads the local copy. Measured for 2026-10: estabelecimentos 3.6 GB, empresas 1.1 GB, socios 0.5 GB, simples 0.2 GB (5.5 GB per month). The DAG rework below is not done.
+
 - `cnpj_transform` becomes `cnpj_silver`. It writes Parquet to `s3://osint-processed/cnpj/silver/<entity>/reference_month=M/` (DuckDB `httpfs`/S3 secret) instead of `/opt/airflow/temp_ssd/cnpj_processed`. CSV staging stays on the local SSD.
 - Add the `trigger_publish` param, and a trigger to `cnpj_gold_publish` (an empty placeholder DAG until Step 3).
 - `cnpj_download` triggers `cnpj_silver` for each new month.

@@ -24,7 +24,7 @@ Depois de cerca de 7 minutos, abra `http://localhost:13000`, entre como `osint-a
 
 - **ETL orquestrado:** DAGs do Apache Airflow para cada fonte, do download mensal agendado à transformação, carga e refresh de materialized views.
 - **Processamento em larga escala:** o cadastro CNPJ tem dezenas de milhões de empresas e estabelecimentos. O DuckDB SQL transforma um arquivo de ~5 milhões de linhas em 3 a 4 segundos (cerca de 4 milhões de linhas/s), e o Parquet o reduz em cerca de 70%.
-- **Armazenamento em camadas:** ZIPs e CSVs brutos chegam ao MinIO (API S3) e são limpos em Parquet, depois carregados no PostgreSQL/PostGIS, que atende busca, redes societárias e mapas.
+- **Armazenamento em camadas:** ZIPs e CSVs brutos chegam ao MinIO (API S3) e são limpos em Parquet, também guardado no MinIO para cada mês, depois carregados no PostgreSQL/PostGIS, que atende busca, redes societárias e mapas.
 - **Idempotente e rastreável:** manifestos de download registram cada arquivo e mês de referência, então nada é baixado ou reprocessado duas vezes. Mudanças na fonte são detectadas com verificações de ETag/Last-Modified.
 - **Schema como código:** migrations Flyway para cada schema de domínio (`cnpj`, `finep`, `inpi`, `geo`).
 - **NLP (experimental, executado manualmente):** os textos dos projetos FINEP passam por modelagem de tópicos com sentence-transformers multilíngue, UMAP, HDBSCAN e BERTopic. A similaridade k-NN entre projetos fica no PostgreSQL.
@@ -94,7 +94,7 @@ Uma DAG, `cnpj_pipeline`, roda mensalmente (no dia 2, às 02:00):
 |---|---|---|
 | Download | `download_release`, `update_manifest` | Transmite os ZIPs do release mais recente direto para o MinIO (`osint-raw/cnpj/raw/{AAAA-MM}/`) e os registra em `cnpj.download_manifest` |
 | Seleção | `select_month` | Escolhe o mês a processar e pula o resto da execução se ele já estiver carregado |
-| Transformação | `transform_file` (uma por ZIP) | Baixa o ZIP do MinIO, extrai, limpa e valida em DuckDB SQL puro, gravando Parquet |
+| Transformação | `transform_file` (uma por ZIP) | Baixa o ZIP do MinIO, extrai, limpa e valida em DuckDB SQL puro, gravando Parquet localmente e em `osint-processed/cnpj/silver/` |
 | Carga | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Faz o staging de cada tabela, remove duplicatas e faz upsert no schema `cnpj` |
 | Índice de busca | `refresh_search_views` | Atualiza as materialized views `cnpj.mv_company_search` |
 
@@ -133,7 +133,7 @@ FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas 
 
 ## Primeiros passos
 
-Requisitos: Docker e Docker Compose. Carregar o mês mais recente do CNPJ mais INPI e FINEP exige cerca de 105 GB de disco (150 GB recomendado para folga), e as configurações de memória padrão são dimensionadas para uma máquina de 32 GB; veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa). A réplica de dev roda com bem menos.
+Requisitos: Docker e Docker Compose. Carregar o mês mais recente do CNPJ mais INPI e FINEP exige cerca de 110 GB de disco (150 GB recomendado para folga), e as configurações de memória padrão são dimensionadas para uma máquina de 32 GB; veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa). A réplica de dev roda com bem menos.
 
 ### Réplica de dev (dados de amostra)
 
@@ -213,9 +213,10 @@ Espaço em disco após essa carga:
 | Bronze do CNPJ no MinIO, por release mensal | 7,3 GB |
 | Bronze do INPI no MinIO, por snapshot (gravado só quando o conteúdo muda) | cerca de 2,6 GB |
 | Parquet do CNPJ no volume temporário do Airflow | 5,1 GB |
+| Parquet do CNPJ (silver) no MinIO, por mês | 5,5 GB |
 | PostgreSQL: `cnpj` 79 GB (tabelas, índices e views de busca), `inpi` 4 GB, `finep` e `geo` abaixo de 100 MB | 83 GB |
 | Espaço temporário de ordenação durante a carga de empresas | cerca de 6 GB |
-| **Total** | **cerca de 105 GB**: 98 GB armazenados, mais cerca de 6 GB usados só durante a carga |
+| **Total** | **cerca de 110 GB**: 104 GB armazenados, mais cerca de 6 GB usados só durante a carga |
 
 O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criação de índices e o refresh das views no PostgreSQL.
 

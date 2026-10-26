@@ -54,6 +54,14 @@ def raw_prefix() -> str:
     return os.getenv("MINIO_PREFIX_CNPJ_RAW", "cnpj/raw").rstrip("/")
 
 
+def processed_bucket() -> str:
+    return os.getenv("MINIO_BUCKET_PROCESSED", "osint-processed")
+
+
+def silver_prefix() -> str:
+    return os.getenv("MINIO_PREFIX_CNPJ_SILVER", "cnpj/silver").rstrip("/")
+
+
 def _propfind(session: requests.Session, url: str) -> ET.Element:
     response = session.request("PROPFIND", url, headers={"Depth": "1"})
     response.raise_for_status()
@@ -83,13 +91,17 @@ def list_server_files(month: str) -> dict[str, dict]:
     return files
 
 
-def ensure_raw_bucket(s3) -> None:
+def ensure_bucket(s3, bucket: str) -> None:
     from botocore.exceptions import ClientError
 
     try:
-        s3.head_bucket(Bucket=raw_bucket())
+        s3.head_bucket(Bucket=bucket)
     except ClientError:
-        s3.create_bucket(Bucket=raw_bucket())
+        s3.create_bucket(Bucket=bucket)
+
+
+def ensure_raw_bucket(s3) -> None:
+    ensure_bucket(s3, raw_bucket())
 
 
 def list_minio_objects(prefix: str) -> list[dict]:
