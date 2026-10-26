@@ -53,6 +53,18 @@ def _query(file_name: str, csv_path: str, output_path: str) -> str:
     return cleaners.build_reference_query(csv_path, output_path, REFERENCE_TYPES[stem])
 
 
+def extract_csv(zip_path: Path, csv_path: Path) -> None:
+    """Write the single CSV inside a Receita ZIP to csv_path as UTF-8."""
+    with zipfile.ZipFile(zip_path) as archive:
+        members = [m for m in archive.infolist() if not m.is_dir()]
+        if len(members) != 1:
+            raise ValueError(f"{zip_path.name}: expected one CSV inside, found {len(members)}")
+        # Receita publishes Latin-1. DuckDB's own latin-1 reader rejects some valid bytes
+        # (0x1A, 0x8F) and its default UTF-8 reader drops accented rows, so decode here.
+        with archive.open(members[0]) as raw, open(csv_path, "w", encoding="utf-8", newline="") as out:
+            shutil.copyfileobj(io.TextIOWrapper(raw, encoding="latin-1", newline=""), out, 16 * 1024 * 1024)
+
+
 def files_for_month(reference_month: str) -> list[str]:
     from manifest_tracker import get_db_connection
 
@@ -93,14 +105,7 @@ def transform_file(reference_month: str, file_name: str, force_reprocess: bool) 
         zip_path = work_dir / file_name
         _download(reference_month, file_name, zip_path)
         csv_path = work_dir / (file_name.removesuffix(".zip") + ".csv")
-        with zipfile.ZipFile(zip_path) as archive:
-            members = [m for m in archive.infolist() if not m.is_dir()]
-            if len(members) != 1:
-                raise ValueError(f"{file_name}: expected one CSV inside, found {len(members)}")
-            # Receita publishes Latin-1. DuckDB's own latin-1 reader rejects some valid bytes
-            # (0x1A, 0x8F) and its default UTF-8 reader drops accented rows, so decode here.
-            with archive.open(members[0]) as raw, open(csv_path, "w", encoding="utf-8", newline="") as out:
-                shutil.copyfileobj(io.TextIOWrapper(raw, encoding="latin-1", newline=""), out, 16 * 1024 * 1024)
+        extract_csv(zip_path, csv_path)
         zip_path.unlink()
         mark_extracted(reference_month, file_name, str(csv_path))
 

@@ -39,11 +39,5 @@ jobs:
       - name: Verify docker compose availability
         run: docker compose version
 
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Verify ripgrep availability
-        run: rg --version
-
       - name: Run compose guardrails
         run: bash ./scripts/check-compose-guardrails.sh

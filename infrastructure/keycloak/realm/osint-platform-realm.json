@@ -21,7 +21,6 @@
         "http://127.0.0.1:3000/*",
         "http://localhost:13000/*",
         "http://127.0.0.1:13000/*",
-        "https://app.lab-srd.com/*",
         "https://app.yourdomain.com/*"
       ],
       "webOrigins": [
@@ -29,12 +28,11 @@
         "http://127.0.0.1:3000",
         "http://localhost:13000",
         "http://127.0.0.1:13000",
-        "https://app.lab-srd.com",
         "https://app.yourdomain.com"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:3000/*##http://127.0.0.1:3000/*##http://localhost:13000/*##http://127.0.0.1:13000/*##https://app.lab-srd.com/*##https://app.yourdomain.com/*"
+        "post.logout.redirect.uris": "http://localhost:3000/*##http://127.0.0.1:3000/*##http://localhost:13000/*##http://127.0.0.1:13000/*##https://app.yourdomain.com/*"
       }
     }
   ],

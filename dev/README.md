@@ -102,7 +102,27 @@ cp .env.example .env
 - Backend: `http://localhost:18000`
 - Airflow: `http://localhost:18080` when started with `--with-airflow`
 - MinIO Console: `http://localhost:19001`
+- Keycloak: `http://localhost:18081`
 - PostgreSQL: `localhost:15432`
+
+## Logins
+
+The defaults from `dev/.env.example` and the imported Keycloak realm. They are for local use only.
+
+| Service | User | Password |
+|---|---|---|
+| App (`http://localhost:13000`) | `osint-admin` | `osint123` |
+| Airflow | `airflow` | `airflow` |
+| MinIO Console | `minioadmin` | `minioadmin123` |
+| Keycloak admin console | `admin` | `admin` |
+
+## Stop
+
+Stops the containers and keeps the data in `dev/volumes/`:
+
+```bash
+docker compose -p osint_platform_dev --env-file dev/.env -f docker-compose.yml -f compose.dev.yml --profile airflow down
+```
 
 ## Reset
 

@@ -1,5 +1,7 @@
 # OSINT Platform
 
+[![Tests](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml/badge.svg)](https://github.com/rodfileto/osint-platform/actions/workflows/tests.yml)
+
 Uma plataforma de inteligência de fontes abertas (OSINT) para dados públicos brasileiros. Ela ingere o cadastro federal de empresas (CNPJ), o fomento à inovação da FINEP e as patentes do INPI. Limpa os dados em escala e os disponibiliza como tabelas relacionais pesquisáveis, incluindo a rede de empresas e seus sócios.
 
 [Read in English](README.md)
@@ -106,7 +108,7 @@ chmod +x dev/scripts/*.sh
 ./dev/scripts/start.sh --with-airflow  # mais a UI e os workers do Airflow
 ```
 
-Veja [`dev/README.md`](dev/README.md).
+Depois abra `http://localhost:13000` e entre como `osint-admin` / `osint123`. A primeira subida leva cerca de 7 minutos (build das imagens e download da FINEP); veja [`dev/README.md`](dev/README.md) para os outros logins e como parar.
 
 ### Stack local production-like
 
@@ -178,6 +180,17 @@ Espaço em disco após essa carga:
 | **Total** | **cerca de 105 GB**: 98 GB armazenados, mais cerca de 6 GB usados só durante a carga |
 
 O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criação de índices e o refresh das views no PostgreSQL.
+
+## Testes
+
+`tests/` contém suítes pytest que a CI roda a cada push ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)), junto com a checagem de tipos e o build do frontend:
+
+- `tests/pipelines`: o SQL de limpeza em DuckDB (códigos, decimais brasileiros, datas, linhas inválidas), a extração Latin-1 dos ZIPs da Receita e o casamento de cabeçalhos do loader da FINEP. Precisa de `duckdb`, `openpyxl` e `pytest`.
+- `tests/backend`: a rede societária e a busca de empresas sobre um PostgreSQL com as migrations do Flyway e o seed de dev. Defina `POSTGRES_HOST` e as demais variáveis `POSTGRES_*`; sem elas a suíte é pulada.
+
+```bash
+pip install duckdb openpyxl pytest && pytest tests/pipelines
+```
 
 ## Fontes de dados
 
