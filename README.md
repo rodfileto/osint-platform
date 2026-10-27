@@ -224,11 +224,15 @@ The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upser
 
 `tests/` holds pytest suites that CI runs on every push ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)), together with the frontend type check and build:
 
-- `tests/pipelines`: the DuckDB cleaning SQL (codes, Brazilian decimals, dates, invalid rows), the Latin-1 extraction of Receita ZIPs, and the FINEP loader's header matching. Needs `duckdb`, `openpyxl`, `psycopg2-binary` and `pytest`.
-- `tests/backend`: the ownership network and company search against a PostgreSQL with the Flyway migrations and the dev seed. Set `POSTGRES_HOST` and the other `POSTGRES_*` variables; without them the suite is skipped.
+- `tests/pipelines`: the DuckDB cleaning SQL (codes, Brazilian decimals, dates, invalid rows), the Latin-1 extraction of Receita ZIPs, the FINEP loader's header matching, and the dbt gold models and data tests over a three-month silver fixture.
+- `tests/backend`: the ownership network, company search and partner history against a PostgreSQL with the Flyway migrations and the dev seed. Set `POSTGRES_HOST` and the other `POSTGRES_*` variables; without them the suite is skipped.
+- `tests/pipelines/test_gold_publish.py`: the gold build and the swap into PostgreSQL, against the same database.
+
+`scripts/run-tests.sh` runs all three the way CI does. It needs Docker and [uv](https://docs.astral.sh/uv/), starts a throwaway PostGIS on a free port, applies the migrations and the seed, and removes it on exit:
 
 ```bash
-pip install duckdb openpyxl psycopg2-binary pytest && pytest tests/pipelines
+scripts/run-tests.sh            # everything
+scripts/run-tests.sh pipelines  # only tests/pipelines, no database
 ```
 
 ## Data sources

@@ -224,11 +224,15 @@ O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criaç�
 
 `tests/` contém suítes pytest que a CI roda a cada push ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)), junto com a checagem de tipos e o build do frontend:
 
-- `tests/pipelines`: o SQL de limpeza em DuckDB (códigos, decimais brasileiros, datas, linhas inválidas), a extração Latin-1 dos ZIPs da Receita e o casamento de cabeçalhos do loader da FINEP. Precisa de `duckdb`, `openpyxl`, `psycopg2-binary` e `pytest`.
-- `tests/backend`: a rede societária e a busca de empresas sobre um PostgreSQL com as migrations do Flyway e o seed de dev. Defina `POSTGRES_HOST` e as demais variáveis `POSTGRES_*`; sem elas a suíte é pulada.
+- `tests/pipelines`: o SQL de limpeza em DuckDB (códigos, decimais brasileiros, datas, linhas inválidas), a extração Latin-1 dos ZIPs da Receita, o casamento de cabeçalhos do loader da FINEP, e os modelos e testes de dados do dbt (gold) sobre um fixture silver de três meses.
+- `tests/backend`: a rede societária, a busca de empresas e o histórico de sócios sobre um PostgreSQL com as migrations do Flyway e o seed de dev. Defina `POSTGRES_HOST` e as demais variáveis `POSTGRES_*`; sem elas a suíte é pulada.
+- `tests/pipelines/test_gold_publish.py`: o build gold e a troca (swap) para o PostgreSQL, sobre o mesmo banco.
+
+`scripts/run-tests.sh` roda as três como a CI. Precisa de Docker e [uv](https://docs.astral.sh/uv/), sobe um PostGIS descartável numa porta livre, aplica as migrations e o seed, e o remove ao sair:
 
 ```bash
-pip install duckdb openpyxl psycopg2-binary pytest && pytest tests/pipelines
+scripts/run-tests.sh            # tudo
+scripts/run-tests.sh pipelines  # só tests/pipelines, sem banco
 ```
 
 ## Fontes de dados

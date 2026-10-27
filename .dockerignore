@@ -1,0 +1,8 @@
+# Build context of the Airflow image (docker-compose.yml: context ".", infrastructure/airflow/Dockerfile).
+# The Dockerfile copies only these files; everything else stays out of the context, including
+# container-owned data the build cannot read (dev/volumes/postgres/data), downloaded data and logs.
+# The backend and frontend images build from their own folders and are not affected.
+# When the Dockerfile COPYs a new file, list it here too.
+*
+!pipelines/requirements.txt
+!pipelines/dbt/requirements.txt
