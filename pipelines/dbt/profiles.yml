@@ -10,8 +10,11 @@ osint_platform:
         - httpfs
         - parquet
       # Same memory cap and SSD spill directory as the transform step; socio_history
-      # windows over every silver month and spills well past the cap.
-      settings:
+      # windows over every silver month and spills well past the cap. These go in
+      # config_options (applied once, when the database opens), not settings: dbt-duckdb
+      # re-runs settings as SET on every cursor, and DuckDB refuses to change
+      # temp_directory once a model has spilled to it.
+      config_options:
         memory_limit: "{{ env_var('CNPJ_DUCKDB_MEMORY_LIMIT', '4GB') }}"
         temp_directory: "{{ env_var('DBT_DUCKDB_TEMP_DIR', '/opt/airflow/temp_ssd/duckdb_tmp') }}"
         preserve_insertion_order: false

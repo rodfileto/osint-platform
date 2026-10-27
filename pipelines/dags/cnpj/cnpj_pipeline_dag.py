@@ -71,16 +71,22 @@ with DAG(
 
     transformed = transform_file.partial(reference_month=month).expand(file_name=list_files(month))
 
+    # The selected month reaches the gold commands as an environment variable (env is a
+    # templated field; append_env keeps the container's MinIO and PostgreSQL settings).
+    GOLD_ENV = {"REFERENCE_MONTH": "{{ ti.xcom_pull(task_ids='select_month') }}"}
+
     # dbt-duckdb builds the gold Parquet (latest-month tables + socio_history) in MinIO
     # from the silver layer. The guard skips the build for months older than the latest silver.
     build_gold = BashOperator(
         task_id="build_gold",
         bash_command=(
-            'python /opt/airflow/scripts/cnpj/gold_guard.py "{{ task_instance.xcom_pull(task_ids=\\"select_month\\") }}" '
+            'python /opt/airflow/scripts/cnpj/gold_guard.py "$REFERENCE_MONTH" '
             "&& mkdir -p /opt/airflow/temp_ssd/dbt "
             "&& dbt build --project-dir /opt/airflow/dbt --profiles-dir /opt/airflow/dbt "
-            "--select cnpj_gold --vars '{\"reference_month\": \"{{ task_instance.xcom_pull(task_ids=\\\"select_month\\\") }}\"}'"
+            '--select cnpj_gold --vars "{\\"reference_month\\": \\"$REFERENCE_MONTH\\"}"'
         ),
+        env=GOLD_ENV,
+        append_env=True,
         skip_exit_code=2,
         execution_timeout=timedelta(hours=4),
         retries=1,
@@ -91,10 +97,9 @@ with DAG(
     # The publish copies the gold Parquet into *_next tables and swaps them in atomically.
     publish_gold = BashOperator(
         task_id="publish_gold",
-        bash_command=(
-            'python /opt/airflow/scripts/cnpj/gold_publish.py '
-            '"{{ task_instance.xcom_pull(task_ids=\\"select_month\\") }}"'
-        ),
+        bash_command='python /opt/airflow/scripts/cnpj/gold_publish.py "$REFERENCE_MONTH"',
+        env=GOLD_ENV,
+        append_env=True,
         skip_exit_code=2,
         execution_timeout=timedelta(hours=4),
         retries=1,
