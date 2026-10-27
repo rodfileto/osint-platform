@@ -24,22 +24,21 @@ compose() {
 echo "Loading PostgreSQL sample..."
 compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 < "$DEV_DIR/data/postgres/seed_sample.sql"
 
-echo "Validating PostgreSQL sample and materialized views..."
+echo "Validating PostgreSQL sample..."
 sample_counts=$(compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT
     (SELECT COUNT(*) FROM cnpj.empresa),
     (SELECT COUNT(*) FROM cnpj.estabelecimento),
-    (SELECT COUNT(*) FROM cnpj.mv_company_search),
-    (SELECT COUNT(*) FROM cnpj.mv_company_search_inactive);")
-IFS='|' read -r empresa_count estabelecimento_count active_mv_count inactive_mv_count <<< "$sample_counts"
+    (SELECT COUNT(*) FROM cnpj.company_search);")
+IFS='|' read -r empresa_count estabelecimento_count search_count <<< "$sample_counts"
 
-if [[ "$empresa_count" -eq 0 || "$estabelecimento_count" -eq 0 || "$active_mv_count" -eq 0 ]]; then
-    echo "Bootstrap validation failed: PostgreSQL sample or active materialized view is empty."
-    echo "Counts => empresas: $empresa_count, estabelecimentos: $estabelecimento_count, mv_company_search: $active_mv_count, mv_company_search_inactive: $inactive_mv_count"
+if [[ "$empresa_count" -eq 0 || "$estabelecimento_count" -eq 0 || "$search_count" -eq 0 ]]; then
+    echo "Bootstrap validation failed: PostgreSQL sample or company search is empty."
+    echo "Counts => empresas: $empresa_count, estabelecimentos: $estabelecimento_count, company_search: $search_count"
     exit 1
 fi
 
 echo "PostgreSQL sample loaded successfully."
-echo "Counts => empresas: $empresa_count, estabelecimentos: $estabelecimento_count, mv_company_search: $active_mv_count, mv_company_search_inactive: $inactive_mv_count"
+echo "Counts => empresas: $empresa_count, estabelecimentos: $estabelecimento_count, company_search: $search_count"
 
 echo "Loading full FINEP dataset..."
 compose run --rm \

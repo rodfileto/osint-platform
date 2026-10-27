@@ -1,0 +1,59 @@
+version: 2
+
+sources:
+  - name: cnpj_silver
+    description: |
+      Cleaned and typed CNPJ Parquet (silver), written by the cnpj_pipeline
+      transform task, one hive partition per reference month:
+      s3://osint-processed/cnpj/silver/<entity>/reference_month=YYYY-MM/*.parquet
+    tables:
+      - name: empresas
+        description: Companies, one row per cnpj_basico per month.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/empresas/reference_month=*/empresas_*.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: estabelecimentos
+        description: Establishments (matrix and branches), one row per CNPJ-14 per month.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/estabelecimentos/reference_month=*/estabelecimentos_*.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: socios
+        description: Partner records, one row per partnership per month.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/socios/reference_month=*/socios_*.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: simples
+        description: Simples Nacional / MEI opt-in data, one row per cnpj_basico per month.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/simples/reference_month=*/simples.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: cnaes
+        description: CNAE codes and descriptions.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/cnaes/reference_month=*/cnaes.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: motivos
+        description: Registration status reason codes.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/motivos/reference_month=*/motivos.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: municipios
+        description: Municipality codes and names.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/municipios/reference_month=*/municipios.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: naturezas
+        description: Legal nature codes.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/naturezas/reference_month=*/naturezas.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: paises
+        description: Country codes and names.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/paises/reference_month=*/paises.parquet', hive_partitioning=true)"
+          formatter: oldstyle
+      - name: qualificacoes
+        description: Partner qualification codes.
+        config:
+          external_location: "read_parquet('{{ env_var('DBT_STORAGE_ROOT', 's3://osint-processed') }}/cnpj/silver/qualificacoes/reference_month=*/qualificacoes.parquet', hive_partitioning=true)"
+          formatter: oldstyle

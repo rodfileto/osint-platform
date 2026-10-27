@@ -67,19 +67,6 @@ def count_rows(connection, table_name: str) -> int:
         return int(cursor.fetchone()[0])
 
 
-def get_matview_state(connection, view_name: str) -> tuple[bool, int]:
-    query = f"""
-        SELECT relispopulated
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'cnpj' AND c.relname = '{view_name}'
-    """
-    row = query_single_row(connection, query)
-    is_populated = bool(row[0])
-    row_count = count_rows(connection, f"cnpj.{view_name}") if is_populated else 0
-    return is_populated, row_count
-
-
 def run_postgres_sql_file(connection, path: Path) -> None:
     log(f"Applying PostgreSQL seed from {path}.")
     with connection.cursor() as cursor:
@@ -87,45 +74,31 @@ def run_postgres_sql_file(connection, path: Path) -> None:
     connection.commit()
 
 
-def refresh_cnpj_matviews(connection) -> None:
-    log("Refreshing CNPJ materialized views.")
-    with connection.cursor() as cursor:
-        cursor.execute("REFRESH MATERIALIZED VIEW cnpj.mv_company_search;")
-        cursor.execute("REFRESH MATERIALIZED VIEW cnpj.mv_company_search_inactive;")
-        cursor.execute("ANALYZE cnpj.mv_company_search;")
-        cursor.execute("ANALYZE cnpj.mv_company_search_inactive;")
-    connection.commit()
-
-
 def ensure_postgres_sample(connection) -> None:
     empresa_count = count_rows(connection, "cnpj.empresa")
     estabelecimento_count = count_rows(connection, "cnpj.estabelecimento")
-    active_populated, active_count = get_matview_state(connection, "mv_company_search")
+    search_count = count_rows(connection, "cnpj.company_search")
 
-    if empresa_count == 0 or estabelecimento_count == 0:
+    if empresa_count == 0 or estabelecimento_count == 0 or search_count == 0:
         run_postgres_sql_file(connection, SEED_SQL_PATH)
-    elif not active_populated or active_count == 0:
-        refresh_cnpj_matviews(connection)
     else:
         log("PostgreSQL CNPJ sample already available. Skipping seed reload.")
 
     empresa_count = count_rows(connection, "cnpj.empresa")
     estabelecimento_count = count_rows(connection, "cnpj.estabelecimento")
-    active_populated, active_count = get_matview_state(connection, "mv_company_search")
-    inactive_populated, inactive_count = get_matview_state(connection, "mv_company_search_inactive")
+    search_count = count_rows(connection, "cnpj.company_search")
 
-    if empresa_count == 0 or estabelecimento_count == 0 or not active_populated or active_count == 0:
+    if empresa_count == 0 or estabelecimento_count == 0 or search_count == 0:
         raise RuntimeError(
-            "PostgreSQL bootstrap validation failed: CNPJ sample or active materialized view is empty. "
+            "PostgreSQL bootstrap validation failed: CNPJ sample or company search is empty. "
             f"empresas={empresa_count}, estabelecimentos={estabelecimento_count}, "
-            f"mv_company_search={active_count}, mv_company_search_inactive={inactive_count}"
+            f"company_search={search_count}"
         )
 
     log(
         "PostgreSQL CNPJ sample ready. "
         f"empresas={empresa_count}, estabelecimentos={estabelecimento_count}, "
-        f"mv_company_search={active_count}, mv_company_search_inactive={inactive_count}, "
-        f"inactive_populated={inactive_populated}"
+        f"company_search={search_count}"
     )
 
 

@@ -1,0 +1,175 @@
+version: 2
+
+models:
+  - name: empresa
+    description: Latest-month companies, one row per cnpj_basico.
+    columns:
+      - name: cnpj_basico
+        description: 8-digit base CNPJ.
+        tests:
+          - unique
+          - not_null
+      - name: porte_empresa
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['00', '01', '03', '05']
+      - name: reference_month
+        tests:
+          - not_null
+
+  - name: estabelecimento
+    description: Latest-month establishments, one row per CNPJ-14.
+    columns:
+      - name: cnpj_basico
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('empresa')
+                field: cnpj_basico
+              config:
+                severity: warn
+      - name: cnpj_ordem
+        tests:
+          - not_null
+      - name: cnpj_dv
+        tests:
+          - not_null
+    tests:
+      - unique:
+          arguments:
+            column_name: "(cnpj_basico || cnpj_ordem || cnpj_dv)"
+
+  - name: simples_nacional
+    description: Latest-month Simples Nacional opt-ins.
+    columns:
+      - name: cnpj_basico
+        tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('empresa')
+                field: cnpj_basico
+              config:
+                severity: warn
+
+  - name: socio
+    description: Latest-month partner records (quadro societário snapshot).
+    columns:
+      - name: cnpj_basico
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('empresa')
+                field: cnpj_basico
+              config:
+                severity: warn
+      - name: reference_month
+        tests:
+          - not_null
+    tests:
+      - unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [cnpj_basico, identificador_socio, cpf_cnpj_socio, nome_socio_razao_social, qualificacao_socio]
+
+  - name: socio_history
+    description: |
+      Partnership periods over all silver months: one row per continuous period,
+      with valid_from / valid_to / is_current. See MEDALLION_MIGRATION_PLAN.md.
+    columns:
+      - name: cnpj_basico
+        tests:
+          - not_null
+      - name: valid_from
+        tests:
+          - not_null
+      - name: valid_to
+        tests:
+          - not_null
+    tests:
+      - expression_is_true:
+          arguments:
+            expression: "valid_from <= valid_to"
+
+  - name: company_search
+    description: |
+      Denormalised search table: every matrix establishment with its lookup
+      labels and an is_active flag. Replaces mv_company_search and
+      mv_company_search_inactive.
+    columns:
+      - name: cnpj_14
+        tests:
+          - unique
+          - not_null
+      - name: is_active
+        tests:
+          - not_null
+
+  - name: cnae
+    description: CNAE codes and descriptions.
+    columns:
+      - name: cnae_fiscal
+        tests:
+          - unique
+          - not_null
+      - name: descricao
+        tests:
+          - not_null
+
+  - name: motivo_situacao_cadastral
+    description: Registration status reason codes.
+    columns:
+      - name: codigo
+        tests:
+          - unique
+          - not_null
+      - name: descricao
+        tests:
+          - not_null
+
+  - name: municipio
+    description: Municipality codes and names.
+    columns:
+      - name: codigo
+        tests:
+          - unique
+          - not_null
+      - name: nome
+        tests:
+          - not_null
+
+  - name: natureza_juridica
+    description: Legal nature codes.
+    columns:
+      - name: codigo
+        tests:
+          - unique
+          - not_null
+      - name: descricao
+        tests:
+          - not_null
+
+  - name: pais
+    description: Country codes and names.
+    columns:
+      - name: codigo
+        tests:
+          - unique
+          - not_null
+      - name: nome
+        tests:
+          - not_null
+
+  - name: qualificacao_socio
+    description: Partner qualification codes.
+    columns:
+      - name: codigo
+        tests:
+          - unique
+          - not_null
+      - name: descricao
+        tests:
+          - not_null

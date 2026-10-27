@@ -121,6 +121,27 @@ class PersonCompanyItem(BaseModel):
     uf: str | None = None
     municipio_nome: str | None = None
     reference_month: str
+    is_current: bool = True
+
+
+class PartnerHistoryItem(BaseModel):
+    cnpj_basico: str
+    identificador_socio: int | None = None
+    cpf_cnpj_socio: str | None = None
+    nome_socio_razao_social: str | None = None
+    qualificacao_socio: str | None = None
+    qualificacao_socio_descricao: str | None = None
+    data_entrada_sociedade: date | None = None
+    faixa_etaria: int | None = None
+    valid_from: date
+    valid_to: date
+    is_current: bool
+
+
+class PartnerHistoryResponse(BaseModel):
+    cnpj_basico: str
+    total: int
+    history: list[PartnerHistoryItem]
 
 
 class PersonDetailResponse(BaseModel):

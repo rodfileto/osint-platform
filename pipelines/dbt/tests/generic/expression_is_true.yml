@@ -1,0 +1,9 @@
+version: 2
+
+tests:
+  - name: expression_is_true
+    config:
+      arguments:
+        - name: expression
+          type: string
+          description: SQL expression that must evaluate to true for every row.

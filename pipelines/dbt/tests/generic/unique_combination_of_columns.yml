@@ -1,0 +1,9 @@
+version: 2
+
+tests:
+  - name: unique_combination_of_columns
+    config:
+      arguments:
+        - name: combination_of_columns
+          type: array
+          description: Columns whose combination must be unique.

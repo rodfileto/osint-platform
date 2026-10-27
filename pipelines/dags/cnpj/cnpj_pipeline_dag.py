@@ -1,5 +1,5 @@
 """
-CNPJ pipeline: Receita Federal release → MinIO → Parquet → PostgreSQL → search views.
+CNPJ pipeline: Receita Federal release → MinIO → Parquet → gold → PostgreSQL.
 
 Runs monthly. With the default params it downloads the latest release (if MinIO is missing any
 file), then processes the newest month in the manifest unless it is already fully loaded.
@@ -14,10 +14,9 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.decorators import task
 from airflow.models.param import Param
+from airflow.operators.bash import BashOperator
 
-from tasks import download, load_postgres, transform
-
-MAIN_TABLES = ("empresa", "simples_nacional", "estabelecimento", "socio")
+from tasks import download, transform
 
 with DAG(
     dag_id="cnpj_pipeline",
@@ -54,11 +53,6 @@ with DAG(
     def transform_file(file_name: str, reference_month: str, params=None):
         return transform.transform_file(reference_month, file_name, params["force_reprocess"])
 
-    @task(execution_timeout=None)
-    def load_reference_tables(reference_month: str):
-        for table in load_postgres.REFERENCE_TABLES:
-            load_postgres.load_table(table, reference_month)
-
     @task
     def rebuild_geo_mapping():
         import sys
@@ -72,29 +66,42 @@ with DAG(
         finally:
             conn.close()
 
-    def load_main_table(table: str):
-        @task(task_id=f"load_{table}", execution_timeout=None)
-        def _load(reference_month: str):
-            return load_postgres.load_table(table, reference_month)
-        return _load
-
-    @task(execution_timeout=None)
-    def refresh_search_views():
-        load_postgres.refresh_search_views()
-
     month = select_month()
     download_release() >> update_manifest() >> month
 
     transformed = transform_file.partial(reference_month=month).expand(file_name=list_files(month))
-    previous = load_reference_tables(month)
-    transformed >> previous
+
+    # dbt-duckdb builds the gold Parquet (latest-month tables + socio_history) in MinIO
+    # from the silver layer. The guard skips the build for months older than the latest silver.
+    build_gold = BashOperator(
+        task_id="build_gold",
+        bash_command=(
+            'python /opt/airflow/scripts/cnpj/gold_guard.py "{{ task_instance.xcom_pull(task_ids=\\"select_month\\") }}" '
+            "&& mkdir -p /opt/airflow/temp_ssd/dbt "
+            "&& dbt build --project-dir /opt/airflow/dbt --profiles-dir /opt/airflow/dbt "
+            "--select cnpj_gold --vars '{\"reference_month\": \"{{ task_instance.xcom_pull(task_ids=\\\"select_month\\\") }}\"}'"
+        ),
+        skip_exit_code=2,
+        execution_timeout=timedelta(hours=4),
+        retries=1,
+        retry_delay=timedelta(minutes=5),
+    )
+    transformed >> build_gold
+
+    # The publish copies the gold Parquet into *_next tables and swaps them in atomically.
+    publish_gold = BashOperator(
+        task_id="publish_gold",
+        bash_command=(
+            'python /opt/airflow/scripts/cnpj/gold_publish.py '
+            '"{{ task_instance.xcom_pull(task_ids=\\"select_month\\") }}"'
+        ),
+        skip_exit_code=2,
+        execution_timeout=timedelta(hours=4),
+        retries=1,
+        retry_delay=timedelta(minutes=5),
+    )
+    build_gold >> publish_gold
+
     # The mapping infers each municipality's state from its establishments.
     geo_mapping = rebuild_geo_mapping()
-    for table in MAIN_TABLES:
-        current = load_main_table(table)(month)
-        previous >> current
-        previous = current
-        if table == "estabelecimento":
-            current >> geo_mapping
-
-    [previous, geo_mapping] >> refresh_search_views()
+    publish_gold >> geo_mapping

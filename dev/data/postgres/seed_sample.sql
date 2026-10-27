@@ -9,6 +9,8 @@ TRUNCATE TABLE
     finep.projetos_credito_descentralizado,
     finep.projetos_operacao_direta,
     cnpj.download_manifest,
+    cnpj.socio_history,
+    cnpj.company_search,
     cnpj.simples_nacional,
     cnpj.socio,
     cnpj.estabelecimento,
@@ -157,7 +159,78 @@ INSERT INTO cnpj.download_manifest (
     ('2026-02', 'dev_empresas_sample.parquet', 'empresas', 4096, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 5, 5, '/opt/airflow/data/dev/cnpj/processed/dev_empresas_sample.parquet'),
     ('2026-02', 'dev_estabelecimentos_sample.parquet', 'estabelecimentos', 8192, 'dev://sample', CURRENT_TIMESTAMP, 'loaded', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 6, 6, '/opt/airflow/data/dev/cnpj/processed/dev_estabelecimentos_sample.parquet');
 
-REFRESH MATERIALIZED VIEW cnpj.mv_company_search;
-REFRESH MATERIALIZED VIEW cnpj.mv_company_search_inactive;
-ANALYZE cnpj.mv_company_search;
-ANALYZE cnpj.mv_company_search_inactive;
+-- The dev replica has no pipeline, so the denormalised search table is built here
+-- from the sample companies and matrix establishments (the same shape the dbt
+-- company_search model produces).
+INSERT INTO cnpj.company_search (
+    cnpj_basico,
+    razao_social,
+    nome_fantasia,
+    cnpj_ordem,
+    cnpj_dv,
+    cnpj_14,
+    situacao_cadastral,
+    codigo_municipio,
+    municipio_nome,
+    uf,
+    cnae_fiscal_principal,
+    cnae_descricao,
+    porte_empresa,
+    natureza_juridica,
+    natureza_juridica_descricao,
+    capital_social,
+    data_inicio_atividade,
+    correio_eletronico,
+    reference_month,
+    is_active
+)
+SELECT
+    emp.cnpj_basico,
+    emp.razao_social,
+    est.nome_fantasia,
+    est.cnpj_ordem,
+    est.cnpj_dv,
+    emp.cnpj_basico || est.cnpj_ordem || est.cnpj_dv AS cnpj_14,
+    est.situacao_cadastral,
+    est.codigo_municipio,
+    m.nome AS municipio_nome,
+    est.uf,
+    est.cnae_fiscal_principal,
+    c.descricao AS cnae_descricao,
+    emp.porte_empresa,
+    emp.natureza_juridica,
+    nj.descricao AS natureza_juridica_descricao,
+    emp.capital_social,
+    est.data_inicio_atividade,
+    est.correio_eletronico,
+    emp.reference_month,
+    (est.situacao_cadastral = '02') AS is_active
+FROM cnpj.empresa emp
+JOIN cnpj.estabelecimento est
+    ON est.cnpj_basico = emp.cnpj_basico
+   AND est.identificador_matriz_filial = 1
+LEFT JOIN cnpj.municipio m  ON m.codigo = est.codigo_municipio
+LEFT JOIN cnpj.cnae c       ON c.cnae_fiscal = est.cnae_fiscal_principal
+LEFT JOIN cnpj.natureza_juridica nj ON nj.codigo = emp.natureza_juridica;
+
+ANALYZE cnpj.company_search;
+
+-- A couple of past partnerships so the person detail (current vs past) and the
+-- partner-history endpoint have data in the replica.
+INSERT INTO cnpj.socio_history (
+    cnpj_basico,
+    identificador_socio,
+    cpf_cnpj_socio,
+    nome_socio_razao_social,
+    qualificacao_socio,
+    valid_from,
+    valid_to,
+    is_current,
+    data_entrada_sociedade,
+    faixa_etaria,
+    pais
+) VALUES
+    ('44556677', 2, '***222333**', 'ANA PAULA TESTE', '49', '2019-04-22', '2025-11-01', false, '2019-04-22', 4, '105'),
+    ('99887766', 2, '***123123**', 'CARLOS EDUARDO', '49', '2019-01-01', '2025-12-01', false, '2019-01-01', 4, '105'),
+    -- A company that is no longer in the latest snapshot (not in cnpj.empresa).
+    ('55443322', 2, '***123123**', 'CARLOS EDUARDO', '22', '2016-03-01', '2018-12-01', false, '2016-03-01', 4, '105');

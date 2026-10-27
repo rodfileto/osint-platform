@@ -9,6 +9,7 @@ Each step below is one reviewable change. Work stops after each step until it is
 1. **Partner history:** publish a compact `cnpj.socio_history` to PostgreSQL (one row per continuous period of a partnership, with `valid_from` / `valid_to`).
 2. **Silver retention:** keep all months.
 3. **Existing data:** rebuild silver from bronze for every month. The DAGs are adjusted so that silver triggers the gold build and the PostgreSQL publish.
+4. **Gold layer in dbt (confirmed 2026-10-27):** the gold models live in a dbt-duckdb project at [`pipelines/dbt/`](../../pipelines/dbt/): one SQL model per gold table, data tests in YAML, gold written as Parquet to `s3://osint-processed/cnpj/gold/<table>/`. Silver stays the current Airflow per-file DuckDB transform (fan-out and Latin-1 decoding stay in Python). Airflow invokes dbt through the `dbt build` CLI (BashOperator); dbt is installed in its own virtualenv in the Airflow image (`/opt/dbt-venv`, pinned in `pipelines/dbt/requirements.txt`) so it never conflicts with Airflow's dependencies. The PostgreSQL publish (Step 3) stays custom: DuckDB ATTACH + swap, not dbt-postgres.
 
 ## Target architecture
 
@@ -16,11 +17,11 @@ Each step below is one reviewable change. Work stops after each step until it is
 Receita Federal ─▶ BRONZE  s3://osint-raw/cnpj/raw/YYYY-MM/*.zip            (unchanged)
                      │  DuckDB clean + type
                      ▼
-                   SILVER  s3://osint-processed/cnpj/silver/<entity>/reference_month=YYYY-MM/*.parquet
+                    SILVER  s3://osint-processed/cnpj/silver/<entity>/reference_month=YYYY-MM/*.parquet
                      │  all months kept; history and ad-hoc analysis via DuckDB
-                     │  DuckDB SQL models
+                     │  dbt-duckdb models (pipelines/dbt/models/cnpj_gold)
                      ▼
-                   GOLD    s3://osint-processed/cnpj/gold/<table>/*.parquet
+                    GOLD    s3://osint-processed/cnpj/gold/<table>/*.parquet
                      │  latest-month tables + socio_history (built over all silver months)
                      │  COPY into *_next tables → index → swap in one transaction
                      ▼
@@ -60,7 +61,7 @@ Table names stay the same where possible so the API and other domains change as 
 ### `socio_history` design
 
 - **Partnership key:** `cnpj_basico`, `identificador_socio`, `cpf_cnpj_socio`, `nome_socio_razao_social`, `qualificacao_socio`. A change of qualification (e.g., partner → administrator) opens a new period.
-- **Periods:** a gaps-and-islands calculation over the months in which the key appears. A partner who leaves and comes back gets two rows.
+- **Periods:** a gaps-and-islands calculation over the months in which the key appears. A partner who leaves and comes back gets two rows. Months are counted over the ones present in silver, not the calendar, so a month that was never downloaded does not split a period (it also hides an absence during that month).
 - **Columns:**
   - the key;
   - `valid_from` and `valid_to` (first and last month seen);
@@ -98,6 +99,7 @@ cnpj_silver_backfill (manual; params: from_month, to_month, force)
 ```
 
 - During the backfill, the individual `cnpj_silver` runs **do not** trigger a publish (`trigger_publish=False`). Only the final step does, so PostgreSQL is rebuilt once and not 49 times.
+- **Implemented (2026-10-27) as a single DAG:** `cnpj_pipeline` keeps download → transform, then runs `build_gold` (dbt) → `publish_gold` → `rebuild_geo_mapping` → `refresh_search_views` (MVs only until Step 4). A separate `cnpj_silver_backfill` DAG is still pending (Step 7).
 - **Replaced:** `cnpj_transform` (becomes `cnpj_silver`), `cnpj_load_postgres` and `cnpj_matview_refresh` (become `cnpj_gold_publish`). `cnpj_load_neo4j` is deleted.
 - The manifest keeps tracking `transformed_at` (silver). New columns or a small table record `gold_built_at` / `published_at` per month.
 
@@ -121,28 +123,48 @@ cnpj_silver_backfill (manual; params: from_month, to_month, force)
 - **Verify:** silver for one month in dev; object listing and row counts against the old local Parquet; measure Parquet size per entity.
 - **Rollback:** config flag back to the local path.
 
-### Step 2: Gold build (DuckDB SQL models)
-- New `pipelines/scripts/cnpj/gold/` with one `.sql` file per gold table (including `socio_history`) and a small runner that writes gold Parquet to MinIO.
-- Data-quality checks in the runner: row counts versus silver, PK uniqueness, share of orphan `cnpj_basico` (logged, not fatal), `socio_history` invariant (current rows = latest-month `socio` rows).
+### Step 2: Gold build (dbt-duckdb SQL models)
+
+> **Done 2026-10-27, via dbt instead of a hand-rolled runner.** The gold layer is a dbt-duckdb project in [`pipelines/dbt/`](../../pipelines/dbt/): one model per gold table (`empresa`, `estabelecimento`, `simples_nacional`, `socio`, `socio_history`, `company_search`, six lookups) written as `external` materializations to `s3://osint-processed/cnpj/gold/<table>/<table>.parquet`. Data-quality checks are dbt tests (unique/not_null/relationships with warn severity for orphans, `socio_history` invariant, in-month partnership-key uniqueness). The `cnpj_pipeline` DAG runs `dbt build` after the transform (guarded by `gold_guard.py`, which skips months older than the latest silver). The CI runs `dbt build` over a locally generated silver fixture (`tests/pipelines/test_dbt_gold.py`).
+>
+> Notes: `socio_history` is a gaps-and-islands model over all silver months (attributes from the last month of each period via `arg_max`); `company_search` replaces both materialized views with one table with an `is_active` flag. The old plan below (one `.sql` per table + a small runner) is superseded.
+
+- ~~New `pipelines/scripts/cnpj/gold/` with one `.sql` file per gold table (including `socio_history`) and a small runner that writes gold Parquet to MinIO.~~
+- ~~Data-quality checks in the runner: row counts versus silver, PK uniqueness, share of orphan `cnpj_basico` (logged, not fatal), `socio_history` invariant (current rows = latest-month `socio` rows).~~
 - **Verify:** compare gold `company_search` counts with the current `mv_company_search` + `mv_company_search_inactive`; check `socio_history` on a few known companies across months.
 
 ### Step 3: Publish gold to PostgreSQL
-- Flyway migration:
+
+> **Done 2026-10-27.** Flyway `V2026.10.27.001` creates `cnpj.company_search` and `cnpj.socio_history`, drops the inbound geo FK (`geo.cnpj_br_municipality_map → cnpj.municipio`, now a soft reference) and the dead `updated_at` triggers, and detaches `socio_id_seq` from the column so it survives the swaps. The `cnpj_pipeline` DAG now runs `gold_publish.py` after the dbt build instead of the old load tasks: gold Parquet → `*_next` tables (COPY via DuckDB postgres extension) → indexes with `_next` names → one metadata-only transaction that drops the live canonical indexes/PKs, renames `live→_old` / `_next→live`, renames indexes and PK constraints to their canonical names, and recreates the dependent views (`cnpj.estabelecimento_completo`, `geo.v_cnpj_br_municipality`) and the search MVs (empty; refreshed by the existing `refresh_search_views` task) from versioned SQL files. `_old` is kept until the next run.
+>
+> **Deviations from the plan above:**
+> - **`socio.id` is kept for now** (dropped in Step 4 with the backend change): `backend/api/services/cnpj_network.py` still uses it as the BFS seen key, so dropping it here would break the network endpoints. The publish fills it with `row_number()` and syncs the sequence with `setval`.
+> - DuckDB's postgres extension writes NULL for omitted columns instead of applying defaults, so `created_at`/`updated_at` (and `socio.id`) are generated in the COPY select.
+> - The search MVs must be recreated inside the swap transaction: renaming the swapped tables rewrites their stored queries to the `_old` tables, and the next publish's `DROP *_old CASCADE` would drop them. `serving_mvs.sql` recreates them empty; search results are briefly empty until `refresh_search_views` repopulates them (removed in Step 4).
+>
+> Verified by `tests/pipelines/test_gold_publish.py` (run against the migrated PostgreSQL in CI): row counts, generated `socio.id`, canonical index/PK names, recreated views, MV refresh after two publishes, and idempotent re-publish.
+
+- ~~Flyway migration:~~
   - create `cnpj.company_search` and `cnpj.socio_history` structures;
   - drop the inbound hard FKs listed above;
-  - drop `socio.id`;
+  - ~~drop `socio.id`~~ (deferred to Step 4, see the deviation note above);
   - the materialized views are dropped in Step 4, once the API no longer uses them.
-- `cnpj_gold_publish` DAG:
+- ~~`cnpj_gold_publish` DAG:~~ implemented as the `publish_gold` task inside `cnpj_pipeline`:
   1. `CREATE TABLE cnpj.<t>_next (LIKE …)`;
   2. COPY from gold Parquet (DuckDB `postgres` extension);
   3. build indexes, `ANALYZE`;
   4. `BEGIN` → rename live→`_old`, `_next`→live → recreate dependent views → `COMMIT`;
   5. keep `_old` until the next run for rollback.
-- Disable `cnpj_load_postgres` and `cnpj_matview_refresh` (deleted in Step 6).
+- Disable `cnpj_load_postgres` and `cnpj_matview_refresh` (deleted in Step 6): **done**, the load tasks no longer run in the DAG; only `refresh_search_views` remains until Step 4.
 - **Verify:** publish in dev; API endpoints return the same results as before; the swap holds locks only for the rename.
 
 ### Step 4: Backend on the new serving model
-- Search, FINEP and INPI routers: two MV queries → one `company_search` query with `is_active`. Then a migration drops the two MVs.
+
+> **Done 2026-10-27.** The API reads `cnpj.company_search` (one table, `is_active` flag) in `search`, `finep` and `inpi`; the `cnpj` search endpoints take an `is_active` filter instead of two MVs. The network service dedups by the natural partnership key instead of `socio.id`. Person detail reads current partnerships from `socio` and past ones from `socio_history` (new `is_current` flag on each company), and a new `/empresa/{cnpj_basico}/socios/history` endpoint lists a company's partner periods. Flyway `V2026.10.27.002` drops the two MVs and `socio.id`. The dev seed now builds `company_search` directly (no pipeline in the replica) and seeds a couple of `socio_history` rows; `dev/scripts/compose_bootstrap.py` validates `company_search` instead of the MVs.
+>
+> Verified by `tests/backend/` (network, search, person history) against the migrated + seeded PostgreSQL.
+
+- ~~Search, FINEP and INPI routers: two MV queries → one `company_search` query with `is_active`. Then a migration drops the two MVs.~~
 - Ownership network (`/network/{cnpj}`, `/pessoa-network/...`): **done 2026-10-25** with the Neo4j removal: level-by-level indexed queries over `cnpj.socio` (latest month), same response schema, edge cap as the `max_edges` request param. Hubs at depth 3 answer in under 40 ms over HTTP.
 - Person detail reads current partnerships from `socio` and past ones from `socio_history`. A new endpoint lists a company's partner history (frontend tab is optional, decide during review).
 - Unified search: remove the Neo4j branch. **Done 2026-10-25.**

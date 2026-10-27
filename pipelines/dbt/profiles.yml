@@ -1,0 +1,27 @@
+osint_platform:
+  target: default
+  outputs:
+    default:
+      type: duckdb
+      # Persists the catalog so downstream refs to external models survive partial runs.
+      path: "{{ env_var('DBT_DUCKDB_PATH', '/opt/airflow/temp_ssd/dbt/gold.duckdb') }}"
+      threads: 4
+      extensions:
+        - httpfs
+        - parquet
+      # Same memory cap and SSD spill directory as the transform step; socio_history
+      # windows over every silver month and spills well past the cap.
+      settings:
+        memory_limit: "{{ env_var('CNPJ_DUCKDB_MEMORY_LIMIT', '4GB') }}"
+        temp_directory: "{{ env_var('DBT_DUCKDB_TEMP_DIR', '/opt/airflow/temp_ssd/duckdb_tmp') }}"
+        preserve_insertion_order: false
+      # MinIO credentials live here, not in a hook: dbt-duckdb runs secrets on the
+      # connection without writing them to dbt.log. Unused when DBT_STORAGE_ROOT is local.
+      secrets:
+        - type: s3
+          name: osint_minio
+          key_id: "{{ env_var('MINIO_ROOT_USER', env_var('MINIO_ACCESS_KEY', '')) }}"
+          secret: "{{ env_var('MINIO_ROOT_PASSWORD', env_var('MINIO_SECRET_KEY', '')) }}"
+          endpoint: "{{ env_var('MINIO_ENDPOINT_URL', 'http://minio:9000') | replace('https://', '') | replace('http://', '') }}"
+          url_style: path
+          use_ssl: "{{ env_var('MINIO_ENDPOINT_URL', 'http://minio:9000').startswith('https://') }}"

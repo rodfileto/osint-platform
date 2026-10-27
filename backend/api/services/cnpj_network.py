@@ -17,9 +17,18 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from core.database import DatabaseManager
 
-EDGE_COLUMNS = """
-    s.id, s.cnpj_basico, s.identificador_socio, s.cpf_cnpj_socio, s.nome_socio_razao_social,
-    s.faixa_etaria, s.qualificacao_socio, s.data_entrada_sociedade, s.reference_month
+# The natural partnership key stands in for the surrogate id: the gold socio table keeps
+# one row per (company, partner, qualification), so this uniquely identifies an edge.
+SOCIO_KEY = (
+    "s.cnpj_basico || ':' || coalesce(s.identificador_socio, 0)::text || ':' || "
+    "coalesce(s.cpf_cnpj_socio, '') || ':' || coalesce(s.nome_socio_razao_social, '') || ':' || "
+    "coalesce(s.qualificacao_socio, '')"
+)
+
+EDGE_COLUMNS = f"""
+    {SOCIO_KEY} AS socio_key, s.cnpj_basico, s.identificador_socio, s.cpf_cnpj_socio,
+    s.nome_socio_razao_social, s.faixa_etaria, s.qualificacao_socio,
+    s.data_entrada_sociedade, s.reference_month
 """
 
 # Rows that cannot become an edge: a corporate partner without a full CNPJ, or a person with neither
@@ -31,7 +40,7 @@ VALID_PARTNER = """
 
 PARTNERS_OF_COMPANIES = text(f"""
     SELECT {EDGE_COLUMNS} FROM cnpj.socio s
-    WHERE s.cnpj_basico = ANY(:companies) AND s.reference_month = :month AND s.id <> ALL(:seen)
+    WHERE s.cnpj_basico = ANY(:companies) AND s.reference_month = :month AND {SOCIO_KEY} <> ALL(:seen)
       AND {VALID_PARTNER}
     LIMIT :limit
 """)
@@ -39,7 +48,7 @@ PARTNERS_OF_COMPANIES = text(f"""
 COMPANIES_AS_PARTNERS = text(f"""
     SELECT {EDGE_COLUMNS} FROM cnpj.socio s
     WHERE s.identificador_socio = 1 AND left(s.cpf_cnpj_socio, 8) = ANY(:companies)
-      AND s.reference_month = :month AND s.id <> ALL(:seen)
+      AND s.reference_month = :month AND {SOCIO_KEY} <> ALL(:seen)
       AND {VALID_PARTNER}
     LIMIT :limit
 """)
@@ -48,7 +57,7 @@ COMPANIES_OF_PEOPLE = text(f"""
     SELECT {EDGE_COLUMNS} FROM cnpj.socio s
     JOIN unnest(CAST(:cpfs AS text[]), CAST(:names AS text[])) AS p(cpf, nome)
       ON s.cpf_cnpj_socio = p.cpf AND s.nome_socio_razao_social = p.nome
-    WHERE s.identificador_socio IN (2, 3) AND s.reference_month = :month AND s.id <> ALL(:seen)
+    WHERE s.identificador_socio IN (2, 3) AND s.reference_month = :month AND {SOCIO_KEY} <> ALL(:seen)
       AND {VALID_PARTNER}
     LIMIT :limit
 """)
@@ -71,7 +80,7 @@ async def _expand(
     """Edges (socio row, partner node) within `hops` of `start`, nearest first, and whether truncated."""
     month = (await connection.execute(text("SELECT max(reference_month) FROM cnpj.socio"))).scalar()
     edges: list[tuple[dict[str, Any], tuple[str, Any]]] = []
-    seen_edges: list[int] = []
+    seen_edges: list[str] = []
     seen_nodes = {start}
     frontier = [start]
 
@@ -89,7 +98,7 @@ async def _expand(
             limit = max_edges + 1 - len(edges)
             result = await connection.execute(query, {**params, "month": month, "seen": seen_edges, "limit": limit})
             for row in result.mappings():
-                seen_edges.append(row["id"])
+                seen_edges.append(row["socio_key"])
                 partner = _partner_key(row)
                 edges.append((dict(row), partner))
                 for node in (partner, ("empresa", row["cnpj_basico"])):
@@ -118,7 +127,7 @@ async def _companies(connection: AsyncConnection, cnpjs: set[str]) -> dict[str, 
 def _edge(row: dict[str, Any], source_id: str) -> dict[str, Any]:
     entry = row["data_entrada_sociedade"]
     return {
-        "id": f"edge:{row['id']}",
+        "id": f"edge:{row['socio_key']}",
         "source": source_id,
         "target": f"empresa:{row['cnpj_basico']}",
         "type": "SOCIO_DE",

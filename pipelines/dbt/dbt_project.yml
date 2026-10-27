@@ -1,0 +1,27 @@
+name: osint_platform
+version: "1.0.0"
+config-version: 2
+
+profile: osint_platform
+
+flags:
+  # No usage events to dbt Labs: the data and the runs stay on this machine.
+  send_anonymous_usage_stats: false
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+clean-targets:
+  - target
+  - dbt_packages
+
+vars:
+  # Month the gold tables snapshot: 'auto' picks the latest silver month.
+  # Set per run with --vars (the DAG passes the selected month).
+  reference_month: "auto"
+
+models:
+  osint_platform:
+    cnpj_gold:
+      +materialized: external

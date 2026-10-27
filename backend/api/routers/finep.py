@@ -287,7 +287,7 @@ async def _fetch_company_lookup(database: DatabaseManager, cnpjs: set[str]) -> d
     if not cnpjs:
         return {}
 
-    active_rows = await database.fetch_all(
+    rows = await database.fetch_all(
         """
         SELECT
             cnpj_14,
@@ -304,41 +304,16 @@ async def _fetch_company_lookup(database: DatabaseManager, cnpjs: set[str]) -> d
             capital_social,
             data_inicio_atividade,
             reference_month,
-            'active' AS match_source
-        FROM cnpj.mv_company_search
+            CASE WHEN is_active THEN 'active' ELSE 'inactive' END AS match_source
+        FROM cnpj.company_search
         WHERE cnpj_14 = ANY(:cnpjs)
+        ORDER BY is_active DESC, cnpj_14
         """,
         {"cnpjs": list(cnpjs)},
     )
-    lookup = {row["cnpj_14"]: FinepCompanyLookup.model_validate(row) for row in active_rows}
-
-    missing = sorted(cnpjs.difference(lookup.keys()))
-    if missing:
-        inactive_rows = await database.fetch_all(
-            """
-            SELECT
-                cnpj_14,
-                razao_social,
-                nome_fantasia,
-                situacao_cadastral,
-                municipio_nome,
-                uf,
-                cnae_fiscal_principal,
-                cnae_descricao,
-                porte_empresa,
-                natureza_juridica,
-                natureza_juridica_descricao,
-                capital_social,
-                data_inicio_atividade,
-                reference_month,
-                'inactive' AS match_source
-            FROM cnpj.mv_company_search_inactive
-            WHERE cnpj_14 = ANY(:cnpjs)
-            """,
-            {"cnpjs": missing},
-        )
-        lookup.update({row["cnpj_14"]: FinepCompanyLookup.model_validate(row) for row in inactive_rows})
-
+    lookup: dict[str, FinepCompanyLookup] = {}
+    for row in rows:
+        lookup.setdefault(row["cnpj_14"], FinepCompanyLookup.model_validate(row))
     return lookup
 
 

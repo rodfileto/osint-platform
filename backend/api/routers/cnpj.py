@@ -17,6 +17,8 @@ from api.schemas.cnpj import (
     EstablishmentContact,
     PaginatedCompanySearchResponse,
     PaginatedPersonSearchResponse,
+    PartnerHistoryItem,
+    PartnerHistoryResponse,
     PersonCompanyItem,
     PersonDetailResponse,
     PersonNetworkResponse,
@@ -54,6 +56,7 @@ IMPLEMENTED_ENDPOINTS = [
     "/search-inactive",
     "/search-inactive/{cnpj_14}",
     "/empresa/{cnpj_basico}",
+    "/empresa/{cnpj_basico}/socios/history",
     "/pessoa/search",
     "/pessoa/detail",
     "/pessoa/{cpf}",
@@ -167,7 +170,7 @@ def _build_company_search_filters(
 async def _fetch_company_search_page(
     database: DatabaseManager,
     request: Request,
-    table_name: str,
+    is_active: bool,
     q: str | None,
     uf: str | None,
     municipio: str | None,
@@ -176,13 +179,15 @@ async def _fetch_company_search_page(
     page_size: int,
 ) -> PaginatedCompanySearchResponse:
     where_clause, parameters = _build_company_search_filters(q, uf, municipio, cnae)
+    parameters["is_active"] = is_active
+    active_clause = " AND is_active = :is_active" if where_clause else "WHERE is_active = :is_active"
     offset = (page - 1) * page_size
 
     count_row = await database.fetch_one(
         f"""
         SELECT COUNT(*) AS total
-        FROM {table_name}
-        {where_clause}
+        FROM cnpj.company_search
+        {where_clause}{active_clause}
         """,
         parameters,
     )
@@ -208,8 +213,8 @@ async def _fetch_company_search_page(
             data_inicio_atividade,
             correio_eletronico,
             reference_month
-        FROM {table_name}
-        {where_clause}
+        FROM cnpj.company_search
+        {where_clause}{active_clause}
         ORDER BY razao_social, cnpj_14
         LIMIT :limit OFFSET :offset
         """,
@@ -237,14 +242,14 @@ async def _fetch_company_search_page(
 
 async def _fetch_company_search_detail(
     database: DatabaseManager,
-    table_name: str,
+    is_active: bool,
     cnpj_14: str,
 ) -> CompanySearchItem:
     if not (cnpj_14.isdigit() and len(cnpj_14) == 14):
         raise HTTPException(status_code=422, detail="Informe um CNPJ válido com 14 dígitos numéricos.")
 
     row = await database.fetch_one(
-        f"""
+        """
         SELECT
             cnpj_14,
             cnpj_basico,
@@ -263,11 +268,11 @@ async def _fetch_company_search_detail(
             data_inicio_atividade,
             correio_eletronico,
             reference_month
-        FROM {table_name}
-        WHERE cnpj_14 = :cnpj_14
+        FROM cnpj.company_search
+        WHERE cnpj_14 = :cnpj_14 AND is_active = :is_active
         LIMIT 1
         """,
-        {"cnpj_14": cnpj_14},
+        {"cnpj_14": cnpj_14, "is_active": is_active},
     )
 
     if row is None:
@@ -506,7 +511,9 @@ async def _fetch_person_detail(
             detail="Informe o nome da pessoa com ao menos 3 caracteres.",
         )
 
-    rows = await database.fetch_all(
+    params = {"cpf_masked": cpf_masked, "nome": normalized_name}
+
+    current_rows = await database.fetch_all(
         """
         SELECT
             socio.nome_socio_razao_social AS nome,
@@ -534,28 +541,54 @@ async def _fetch_person_detail(
         WHERE socio.cpf_cnpj_socio = :cpf_masked
           AND socio.identificador_socio IN (2, 3)
           AND socio.nome_socio_razao_social = :nome
-        ORDER BY empresa.razao_social, socio.reference_month DESC
+        ORDER BY empresa.razao_social
         """,
-        {
-            "cpf_masked": cpf_masked,
-            "nome": normalized_name,
-        },
+        params,
     )
 
-    if not rows:
+    past_rows = await database.fetch_all(
+        """
+        SELECT
+            hist.nome_socio_razao_social AS nome,
+            hist.cpf_cnpj_socio,
+            hist.faixa_etaria,
+            hist.cnpj_basico,
+            empresa.razao_social,
+            hist.qualificacao_socio,
+            qualificacao.descricao AS qualificacao_socio_descricao,
+            hist.data_entrada_sociedade,
+            matriz.situacao_cadastral,
+            matriz.uf,
+            municipio.nome AS municipio_nome,
+            to_char(hist.valid_to, 'YYYY-MM') AS reference_month
+        FROM cnpj.socio_history AS hist
+        LEFT JOIN cnpj.empresa AS empresa
+            ON empresa.cnpj_basico = hist.cnpj_basico
+        LEFT JOIN cnpj.qualificacao_socio AS qualificacao
+            ON qualificacao.codigo = hist.qualificacao_socio
+        LEFT JOIN cnpj.estabelecimento AS matriz
+            ON matriz.cnpj_basico = hist.cnpj_basico
+           AND matriz.identificador_matriz_filial = 1
+        LEFT JOIN cnpj.municipio AS municipio
+            ON municipio.codigo = matriz.codigo_municipio
+        WHERE hist.cpf_cnpj_socio = :cpf_masked
+          AND hist.identificador_socio IN (2, 3)
+          AND hist.nome_socio_razao_social = :nome
+          AND hist.is_current = FALSE
+        ORDER BY hist.valid_to DESC
+        """,
+        params,
+    )
+
+    if not current_rows and not past_rows:
         raise HTTPException(
             status_code=404,
             detail="Pessoa não encontrada para o par nome + CPF mascarado informado.",
         )
 
-    first = rows[0]
-    seen_companies: dict[str, PersonCompanyItem] = {}
-    for row in rows:
-        cnpj_basico = row["cnpj_basico"]
-        if cnpj_basico in seen_companies:
-            continue
-        seen_companies[cnpj_basico] = PersonCompanyItem(
-            cnpj_basico=cnpj_basico,
+    def to_item(row, is_current):
+        return PersonCompanyItem(
+            cnpj_basico=row["cnpj_basico"],
             razao_social=row["razao_social"],
             qualificacao_socio=row["qualificacao_socio"],
             qualificacao_socio_descricao=row["qualificacao_socio_descricao"],
@@ -564,14 +597,57 @@ async def _fetch_person_detail(
             uf=row["uf"],
             municipio_nome=row["municipio_nome"],
             reference_month=row["reference_month"],
+            is_current=is_current,
         )
 
+    seen_companies: dict[str, PersonCompanyItem] = {}
+    for row in current_rows:
+        seen_companies.setdefault(row["cnpj_basico"], to_item(row, True))
+    for row in past_rows:
+        if row["cnpj_basico"] not in seen_companies:
+            seen_companies[row["cnpj_basico"]] = to_item(row, False)
+
+    first = (current_rows or past_rows)[0]
     return PersonDetailResponse(
         cpf_mascarado=cpf_masked,
         nome=first["nome"],
         faixa_etaria=first["faixa_etaria"],
         total_empresas=len(seen_companies),
         empresas=list(seen_companies.values()),
+    )
+
+
+async def _fetch_partner_history(
+    database: DatabaseManager,
+    cnpj_basico: str,
+) -> PartnerHistoryResponse:
+    rows = await database.fetch_all(
+        """
+        SELECT
+            hist.cnpj_basico,
+            hist.identificador_socio,
+            hist.cpf_cnpj_socio,
+            hist.nome_socio_razao_social,
+            hist.qualificacao_socio,
+            qualificacao.descricao AS qualificacao_socio_descricao,
+            hist.data_entrada_sociedade,
+            hist.faixa_etaria,
+            hist.valid_from,
+            hist.valid_to,
+            hist.is_current
+        FROM cnpj.socio_history AS hist
+        LEFT JOIN cnpj.qualificacao_socio AS qualificacao
+            ON qualificacao.codigo = hist.qualificacao_socio
+        WHERE hist.cnpj_basico = :cnpj_basico
+        ORDER BY hist.is_current DESC, hist.valid_to DESC, hist.nome_socio_razao_social
+        """,
+        {"cnpj_basico": cnpj_basico},
+    )
+
+    return PartnerHistoryResponse(
+        cnpj_basico=cnpj_basico,
+        total=len(rows),
+        history=[PartnerHistoryItem.model_validate(row) for row in rows],
     )
 
 
@@ -654,7 +730,7 @@ def get_router() -> APIRouter:
         return await _fetch_company_search_page(
             database=database,
             request=request,
-            table_name="cnpj.mv_company_search",
+            is_active=True,
             q=q,
             uf=uf,
             municipio=municipio,
@@ -668,7 +744,7 @@ def get_router() -> APIRouter:
         cnpj_14: str,
         database: DatabaseManager = Depends(get_database_manager),
     ) -> CompanySearchItem:
-        return await _fetch_company_search_detail(database, "cnpj.mv_company_search", cnpj_14)
+        return await _fetch_company_search_detail(database, True, cnpj_14)
 
     @router.get(
         "/search-inactive",
@@ -688,7 +764,7 @@ def get_router() -> APIRouter:
         return await _fetch_company_search_page(
             database=database,
             request=request,
-            table_name="cnpj.mv_company_search_inactive",
+            is_active=False,
             q=q,
             uf=uf,
             municipio=municipio,
@@ -706,7 +782,7 @@ def get_router() -> APIRouter:
         cnpj_14: str,
         database: DatabaseManager = Depends(get_database_manager),
     ) -> CompanySearchItem:
-        return await _fetch_company_search_detail(database, "cnpj.mv_company_search_inactive", cnpj_14)
+        return await _fetch_company_search_detail(database, False, cnpj_14)
 
     @router.get("/empresa/{cnpj_basico}", response_model=CompanyDetailResponse, summary="Get company detail")
     async def get_company_detail(
@@ -714,6 +790,19 @@ def get_router() -> APIRouter:
         database: DatabaseManager = Depends(get_database_manager),
     ) -> CompanyDetailResponse:
         return await _fetch_company_detail(database, cnpj_basico)
+
+    @router.get(
+        "/empresa/{cnpj_basico}/socios/history",
+        response_model=PartnerHistoryResponse,
+        summary="List a company's partner history (periods)",
+    )
+    async def get_partner_history(
+        cnpj_basico: str,
+        database: DatabaseManager = Depends(get_database_manager),
+    ) -> PartnerHistoryResponse:
+        if not (cnpj_basico.isdigit() and len(cnpj_basico) == 8):
+            raise HTTPException(status_code=422, detail="Informe um CNPJ básico válido com 8 dígitos numéricos.")
+        return await _fetch_partner_history(database, cnpj_basico)
 
     @router.get(
         "/pessoa/search",

@@ -62,54 +62,7 @@ async def _search_postgres_companies(
     where_clause = f"WHERE {' OR '.join(clauses)}" if clauses else ""
     rows = await database.fetch_all(
         f"""
-        WITH ranked_matches AS (
-            SELECT
-                cnpj_14,
-                cnpj_basico,
-                razao_social,
-                nome_fantasia,
-                situacao_cadastral,
-                codigo_municipio,
-                municipio_nome,
-                uf,
-                cnae_fiscal_principal,
-                cnae_descricao,
-                porte_empresa,
-                natureza_juridica,
-                natureza_juridica_descricao,
-                capital_social,
-                data_inicio_atividade,
-                correio_eletronico,
-                reference_month,
-                'active' AS match_source
-            FROM cnpj.mv_company_search
-            {where_clause}
-
-            UNION ALL
-
-            SELECT
-                cnpj_14,
-                cnpj_basico,
-                razao_social,
-                nome_fantasia,
-                situacao_cadastral,
-                codigo_municipio,
-                municipio_nome,
-                uf,
-                cnae_fiscal_principal,
-                cnae_descricao,
-                porte_empresa,
-                natureza_juridica,
-                natureza_juridica_descricao,
-                capital_social,
-                data_inicio_atividade,
-                correio_eletronico,
-                reference_month,
-                'inactive' AS match_source
-            FROM cnpj.mv_company_search_inactive
-            {where_clause}
-        )
-        SELECT DISTINCT ON (cnpj_14)
+        SELECT
             cnpj_14,
             cnpj_basico,
             razao_social,
@@ -127,8 +80,9 @@ async def _search_postgres_companies(
             data_inicio_atividade,
             correio_eletronico,
             reference_month
-        FROM ranked_matches
-        ORDER BY cnpj_14, match_source, razao_social
+        FROM cnpj.company_search
+        {where_clause}
+        ORDER BY is_active DESC, razao_social, cnpj_14
         LIMIT :limit
         """,
         params,

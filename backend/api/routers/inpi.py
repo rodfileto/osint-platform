@@ -69,7 +69,7 @@ async def _fetch_company_lookup_by_cnpj_basico(
         return {}
 
     lookup: dict[str, InpiCompanyLookup] = {}
-    active_rows = await database.fetch_all(
+    rows = await database.fetch_all(
         """
         SELECT
             cnpj_14,
@@ -87,53 +87,19 @@ async def _fetch_company_lookup_by_cnpj_basico(
             capital_social,
             data_inicio_atividade,
             reference_month,
-            'active' AS match_source
-        FROM cnpj.mv_company_search
+            CASE WHEN is_active THEN 'active' ELSE 'inactive' END AS match_source
+        FROM cnpj.company_search
         WHERE cnpj_basico = ANY(:cnpj_basicos)
-        ORDER BY cnpj_basico, cnpj_14
+        ORDER BY cnpj_basico, is_active DESC, cnpj_14
         """,
         {"cnpj_basicos": list(cnpj_basicos)},
     )
-    for row in active_rows:
+    for row in rows:
         basico = row["cnpj_basico"]
-        existing = lookup.get(basico)
-        is_matriz = row["cnpj_14"][8:12] == "0001"
-        if existing is None or is_matriz:
+        # company_search holds only matrix rows; ORDER BY puts active before inactive,
+        # so the first row per cnpj_basico is the preferred (active) one.
+        if basico not in lookup:
             lookup[basico] = InpiCompanyLookup.model_validate(row)
-
-    missing = sorted(cnpj_basicos.difference(lookup.keys()))
-    if missing:
-        inactive_rows = await database.fetch_all(
-            """
-            SELECT
-                cnpj_14,
-                cnpj_basico,
-                razao_social,
-                nome_fantasia,
-                situacao_cadastral,
-                municipio_nome,
-                uf,
-                cnae_fiscal_principal,
-                cnae_descricao,
-                porte_empresa,
-                natureza_juridica,
-                natureza_juridica_descricao,
-                capital_social,
-                data_inicio_atividade,
-                reference_month,
-                'inactive' AS match_source
-            FROM cnpj.mv_company_search_inactive
-            WHERE cnpj_basico = ANY(:cnpj_basicos)
-            ORDER BY cnpj_basico, cnpj_14
-            """,
-            {"cnpj_basicos": missing},
-        )
-        for row in inactive_rows:
-            basico = row["cnpj_basico"]
-            existing = lookup.get(basico)
-            is_matriz = row["cnpj_14"][8:12] == "0001"
-            if existing is None or is_matriz:
-                lookup[basico] = InpiCompanyLookup.model_validate(row)
 
     return lookup
 

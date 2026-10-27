@@ -12,14 +12,17 @@ const PersonNetworkGraph = lazy(() => import("@/components/cnpj/PersonNetworkGra
 
 interface EmpresaSocio {
   cnpj_basico: string;
-  razao_social: string;
+  // Null when the company is no longer in the latest snapshot (past partnerships only).
+  razao_social: string | null;
   qualificacao_socio: string | null;
   qualificacao_socio_descricao: string | null;
   data_entrada_sociedade: string | null;
   situacao_cadastral: string | null;
   uf: string | null;
   municipio_nome: string | null;
+  // Latest month for current partnerships; last month seen for past ones.
   reference_month: string;
+  is_current: boolean;
 }
 
 interface PessoaDetailResponse {
@@ -124,6 +127,8 @@ export default function PessoaDetail({ cpfMascarado, nome }: PessoaDetailProps) 
   const paginatedEmpresas = data
     ? data.empresas.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
     : [];
+  const currentCount = data ? data.empresas.filter((empresa) => empresa.is_current).length : 0;
+  const pastCount = data ? data.empresas.length - currentCount : 0;
 
   return (
     <div className="space-y-5">
@@ -145,20 +150,23 @@ export default function PessoaDetail({ cpfMascarado, nome }: PessoaDetailProps) 
                 label="Faixa etária"
                 value={data.faixa_etaria != null ? FAIXA_ETARIA_LABEL[data.faixa_etaria] ?? String(data.faixa_etaria) : "—"}
               />
-              <InfoItem label="Empresas no QSA" value={data.total_empresas.toLocaleString("pt-BR")} />
+              <InfoItem
+                label="Empresas no QSA"
+                value={`${currentCount.toLocaleString("pt-BR")} atuais · ${pastCount.toLocaleString("pt-BR")} anteriores`}
+              />
             </div>
           </ComponentCard>
 
           <ComponentCard
             title="Quadro Societário"
-            desc={`${data.total_empresas.toLocaleString("pt-BR")} empresa${data.total_empresas !== 1 ? "s" : ""}`}
+            desc={`${data.total_empresas.toLocaleString("pt-BR")} empresa${data.total_empresas !== 1 ? "s" : ""}, atuais primeiro`}
           >
             <div className="space-y-4">
               <div className="overflow-x-auto">
                 <Table className="table-auto">
                   <TableHeader>
                     <TableRow className="border-b border-gray-100 dark:border-gray-800">
-                      {["CNPJ básico", "Razão Social", "Qualificação", "Entrada", "Situação", "UF", "Município", "Ref.", "Ações"].map((header) => (
+                      {["CNPJ básico", "Razão Social", "Vínculo", "Qualificação", "Entrada", "Situação", "UF", "Município", "Ref.", "Ações"].map((header) => (
                         <TableCell
                           key={header}
                           isHeader
@@ -179,7 +187,16 @@ export default function PessoaDetail({ cpfMascarado, nome }: PessoaDetailProps) 
                           {empresa.cnpj_basico}
                         </TableCell>
                         <TableCell className="max-w-xs px-4 py-3">
-                          <p className="truncate text-sm font-medium text-gray-800 dark:text-white/90">{empresa.razao_social}</p>
+                          {empresa.razao_social ? (
+                            <p className="truncate text-sm font-medium text-gray-800 dark:text-white/90">{empresa.razao_social}</p>
+                          ) : (
+                            <p className="text-sm italic text-gray-400">Fora do cadastro atual</p>
+                          )}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap px-4 py-3">
+                          <Badge variant="light" size="sm" color={empresa.is_current ? "success" : "light"}>
+                            {empresa.is_current ? "Atual" : "Anterior"}
+                          </Badge>
                         </TableCell>
                         <TableCell className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
                           {empresa.qualificacao_socio_descricao || empresa.qualificacao_socio || "—"}
@@ -207,15 +224,17 @@ export default function PessoaDetail({ cpfMascarado, nome }: PessoaDetailProps) 
                           {empresa.municipio_nome || "—"}
                         </TableCell>
                         <TableCell className="whitespace-nowrap px-4 py-3 font-mono text-xs text-gray-400">
-                          {empresa.reference_month}
+                          {empresa.is_current ? empresa.reference_month : `até ${empresa.reference_month}`}
                         </TableCell>
                         <TableCell className="whitespace-nowrap px-4 py-3">
-                          <Link
-                            to={`/cnpj/${empresa.cnpj_basico}`}
-                            className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-white/[0.03] dark:hover:text-gray-300"
-                          >
-                            Ver empresa
-                          </Link>
+                          {empresa.razao_social ? (
+                            <Link
+                              to={`/cnpj/${empresa.cnpj_basico}`}
+                              className="inline-flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-3 text-sm font-medium text-gray-700 ring-1 ring-inset ring-gray-300 transition hover:bg-gray-50 dark:bg-gray-800 dark:text-gray-400 dark:ring-gray-700 dark:hover:bg-white/[0.03] dark:hover:text-gray-300"
+                            >
+                              Ver empresa
+                            </Link>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ))}

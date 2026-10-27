@@ -1,15 +1,15 @@
 # CNPJ pipeline DAG
 
-`cnpj_pipeline` ([cnpj/cnpj_pipeline_dag.py](cnpj/cnpj_pipeline_dag.py)) ingests the Receita Federal company registry in one run: download, transform, load, search views. It runs monthly on the 2nd at 02:00 (America/Sao_Paulo).
+`cnpj_pipeline` ([cnpj/cnpj_pipeline_dag.py](cnpj/cnpj_pipeline_dag.py)) ingests the Receita Federal company registry in one run: download, transform, build gold with dbt, publish to PostgreSQL. It runs monthly on the 2nd at 02:00 (America/Sao_Paulo).
 
 ## Flow
 
 ```
 download_release → update_manifest → select_month
   → transform_file ×N (one per ZIP, 4 at a time)
-  → load_reference_tables → load_empresa → load_simples_nacional → load_estabelecimento → load_socio
-                                                                     └→ rebuild_geo_mapping
-  → refresh_search_views (after load_socio and rebuild_geo_mapping)
+  → build_gold (dbt-duckdb, silver → gold Parquet in MinIO)
+  → publish_gold (gold Parquet → PostgreSQL, build-and-swap)
+  → rebuild_geo_mapping
 ```
 
 | Task | Module | What it does |
@@ -18,9 +18,9 @@ download_release → update_manifest → select_month
 | `update_manifest` | `tasks/download.py` | Registers every ZIP in MinIO in `cnpj.download_manifest`, keeping per-file progress |
 | `select_month` | `tasks/download.py` | Picks the month; skips the rest of the run when every main file is already transformed and loaded |
 | `transform_file` | `tasks/transform.py` | Downloads one ZIP from MinIO, extracts it, runs the DuckDB SQL from `scripts/cnpj/cleaners.py` to Parquet, copies it to MinIO silver, deletes its staging files |
-| `load_*` | `tasks/load_postgres.py` | Copies the Parquet into an unlogged staging table, then upserts one row per key (the most complete one when Receita publishes a key twice); `socio` replaces the month instead |
+| `build_gold` | `dbt` (`pipelines/dbt`) | Builds the gold Parquet (latest-month tables + `socio_history` + `company_search`) in MinIO from the silver layer; `gold_guard.py` skips months older than the latest silver |
+| `publish_gold` | `scripts/cnpj/gold_publish.py` | Copies the gold Parquet into `*_next` tables and swaps them in atomically (indexes, PKs and dependent views recreated inside one transaction) |
 | `rebuild_geo_mapping` | `scripts/geo/load_br_geo_reference.py` | Rebuilds the CNPJ municipality → IBGE mapping, which infers each municipality's state from its establishments |
-| `refresh_search_views` | `tasks/load_postgres.py` | Refreshes `cnpj.mv_company_search` and `cnpj.mv_company_search_inactive` (concurrently once populated) |
 
 Each task is idempotent, so a retry repeats only that step. Per-file progress (`extracted_at`, `transformed_at`, `loaded_postgres_at`) lives in `cnpj.download_manifest`; a file is marked loaded only after its table's upsert commits.
 

@@ -9,6 +9,13 @@ RUN apt-get update && apt-get install -y \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
+# dbt runs in its own virtualenv so its dependencies never clash with Airflow's
+# constraints; only the dbt command is put on the PATH (the DAG's BashOperator calls it).
+COPY pipelines/dbt/requirements.txt /dbt-requirements.txt
+RUN python -m venv /opt/dbt-venv \
+    && /opt/dbt-venv/bin/pip install --no-cache-dir -r /dbt-requirements.txt \
+    && ln -s /opt/dbt-venv/bin/dbt /usr/local/bin/dbt
+
 # Switch back to airflow user
 USER airflow
 
