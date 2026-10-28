@@ -10,6 +10,15 @@ Each step below is one reviewable change. Work stops after each step until it is
 2. **Code:** the `openalex-lake` modules are ported to `pipelines/scripts/openalex/`, with a new `openalex_pipeline` DAG. A small CLI stays for manual runs.
 3. **History:** the code is copied in one commit that names the `openalex-lake` commit it came from. The old repo stays as an archive.
 
+## OpenAlex releases
+
+New full releases of the public snapshot (`s3://openalex/data/`) come out quarterly, on the second Wednesday of January, April, July and October (UTC): 2026-10-14, then 2027-01-13, 2027-04-14, 2027-07-14. Each release replaces the bucket contents in place; OpenAlex keeps no older release.
+
+Consequences for the design:
+- **Schedule:** the DAG only needs to run around those dates (see DAG flow).
+- **A release can be read mid-replacement.** While OpenAlex rewrites the bucket, the manifest, the file listing and the files can disagree. The sync therefore never trusts a partial state: every downloaded file must match the manifest's size and record count and the listing's ETag, and any mismatch fails the run, which the next day's run retries. Stale files are removed only after every file of the new release is in.
+- **Our copy is the only copy of the previous release** once OpenAlex replaces it. Bronze is updated in place too (as in openalex-lake), so during a sync our bronze is also a mix of two releases. Silver and the catalog's `lake_release` change only after `verify` passes, so they always describe one release; bronze queries during the sync window are the exception.
+
 ## Open decision
 
 - **DuckDB catalog (`lake.duckdb`):** keep it, recreated by the DAG as the query entry point (recommended), or drop it and query Parquet paths directly until gold defines access. With bronze in MinIO, queries on the bronze views need the MinIO S3 secret in the caller's DuckDB session; silver views are plain NVMe paths. Step 5 depends on this.
@@ -57,14 +66,14 @@ Silver is rebuilt for a file when the recorded `source_etag` differs from the br
 
 ### Sizing
 
-- Bronze: 660 GB per release in MinIO on the HDD (5.0 TB free). Only the latest release is kept; a new release replaces the files whose size or ETag changed. How much of `works` changes between releases is not measured yet (Step 7).
+- Bronze: 660 GB per release in MinIO on the HDD (5.0 TB free). Only the latest release is kept; each quarterly release replaces the files whose size or ETag changed. How much of `works` changes between releases is not measured yet (Step 7).
 - Silver: 215 GB on the NVMe (2.5 TB free). Not counted against the HDD.
 - Download and build times are not recorded from the first sync. Estimates to check in Step 7: a full release download is bound by the network (660 GB), and a full silver rebuild reads all of bronze from MinIO on the HDD, so it is bound by HDD reads.
 
 ## DAG flow
 
 ```
-openalex_pipeline (weekly; paused when created, like the other DAGs)
+openalex_pipeline (daily at 06:00 UTC on the 8th–21st of Jan, Apr, Jul, Oct; paused when created, like the other DAGs)
    check_release      fetch the OpenAlex manifest; short-circuit when its date equals the synced release
    sync               plan = files missing or with a different size/ETag; download → SSD → MinIO, 8 at a time;
                       stale objects of older releases removed only after every file is in
@@ -75,11 +84,13 @@ openalex_pipeline (weekly; paused when created, like the other DAGs)
 
 Params: `force_silver` (rebuild every silver file), `tables` (subset of silver tables), `dry_run` (sync plan only).
 
+Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cron: Airflow's croniter treats day-of-month and weekday as OR (`0 6 8-14 1,4,7,10 3` fires on 2027-01-06, 01-08, 01-09, …). The second Wednesday always falls on the 8th–14th; running daily until the 21st also covers a late release and retries a sync that hit a mid-replacement bucket. After the release is in, each run ends at `check_release` in seconds. A manual trigger works at any time.
+
 ## Steps
 
 ### Pre-checks (no code changes)
 - **A.** Run the existing `lake verify` against `/mnt/data10tb/openalex_lake/bronze` (pass `OPENALEX_BRONZE`, since the config still points at the old `/run/media/...` mount). A clean result means the import in Step 2 copies a complete release.
-- **B.** Fetch the current OpenAlex manifest date. If a release newer than 2026-09-23 is out, decide whether to import the old one and let the DAG update it, or sync the new one directly.
+- **B.** Fetch the current OpenAlex manifest date. The local copy's manifest says 2026-09-23 (a Wednesday, but not a release day), while the October release came out on 2026-10-14. Either the manifest date is the snapshot's data date, or the October release is newer than the local copy. If it is newer, decide whether to import the old copy and let the DAG update it, or sync the new release directly.
 - **C.** Confirm the disk figures above (`df -h /mnt/data10tb /`) on the day of the import.
 
 ### Step 1: Port the code and tests, behaviour unchanged
