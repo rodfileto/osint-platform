@@ -62,24 +62,29 @@ flowchart LR
         RF["Receita Federal<br/>cadastro CNPJ"]
         FINEP["FINEP<br/>planilhas de fomento"]
         INPI["INPI<br/>dados abertos de patentes"]
+        OPENALEX["OpenAlex<br/>snapshot de trabalhos acadêmicos"]
     end
 
     subgraph Airflow["Apache Airflow"]
-        DL["DAGs de download<br/>(cron mensal + manifesto)"]
+        DL["DAGs de download<br/>(cron + manifesto)"]
         TR["transformação<br/>(DuckDB SQL)"]
-        LD["DAGs de carga"]
+        GOLD["gold CNPJ<br/>(dbt-duckdb)"]
+        LD["publicação / carga<br/>(troca de tabelas)"]
         NLP["DAG de tópicos NLP<br/>(BERTopic)"]
     end
 
-    RAW[("MinIO / S3<br/>ZIP, CSV, XLSX brutos")]
-    PQ[("Parquet<br/>camada processada")]
+    RAW[("MinIO / S3 bronze<br/>ZIP, CSV, XLSX, Parquet OpenAlex")]
+    PQ[("Parquet silver<br/>CNPJ no MinIO, OpenAlex no NVMe")]
+    GQ[("Parquet gold<br/>CNPJ, no MinIO")]
+    CAT[("Catálogo DuckDB<br/>lake.duckdb do OpenAlex")]
     PG[("PostgreSQL + PostGIS<br/>cnpj, finep, inpi, geo")]
     API["Backend FastAPI"]
     UI["Frontend React<br/>busca, redes, mapas"]
     KC["Keycloak (OIDC)"]
 
-    RF & FINEP & INPI --> DL --> RAW --> TR --> PQ --> LD
-    LD --> PG
+    RF & FINEP & INPI & OPENALEX --> DL --> RAW --> TR --> PQ
+    PQ --> GOLD --> GQ --> LD --> PG
+    PQ --> CAT
     PG <--> NLP
     PG --> API --> UI
     KC -. tokens .-> UI
@@ -95,10 +100,11 @@ Uma DAG, `cnpj_pipeline`, roda mensalmente (no dia 2, às 02:00):
 | Download | `download_release`, `update_manifest` | Transmite os ZIPs do release mais recente direto para o MinIO (`osint-raw/cnpj/raw/{AAAA-MM}/`) e os registra em `cnpj.download_manifest` |
 | Seleção | `select_month` | Escolhe o mês a processar e pula o resto da execução se ele já estiver carregado |
 | Transformação | `transform_file` (uma por ZIP) | Baixa o ZIP do MinIO, extrai, limpa e valida em DuckDB SQL puro, gravando Parquet localmente e em `osint-processed/cnpj/silver/` |
-| Carga | `load_reference_tables`, `load_empresa`, `load_simples_nacional`, `load_estabelecimento`, `load_socio` | Faz o staging de cada tabela, remove duplicatas e faz upsert no schema `cnpj` |
-| Índice de busca | `refresh_search_views` | Atualiza as materialized views `cnpj.mv_company_search` |
+| Gold | `build_gold` | `dbt build` sobre o Parquet silver (dbt-duckdb, [`pipelines/dbt/`](pipelines/dbt/)): tabelas do mês mais recente com chaves duplicadas resolvidas, `socio_history` sobre todos os meses do silver e `company_search`, gravadas como Parquet gold em `osint-processed/cnpj/gold/`, com 42 testes de dados |
+| Publicação | `publish_gold` | Copia o gold para tabelas `cnpj.*_next` vazias, indexa e as troca numa única transação (as anteriores ficam como `*_old` para rollback); a API nunca vê uma carga parcial |
+| Geo | `rebuild_geo_mapping` | Liga os municípios do CNPJ às geometrias do IBGE |
 
-Uma execução mensal leva cerca de 1 h 20 min quando o release já está no MinIO (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa)). Para processar um mês específico de novo:
+Veja a organização em camadas em [docs/repo/MEDALLION_MIGRATION_PLAN.md](docs/repo/MEDALLION_MIGRATION_PLAN.md). Uma execução mensal leva cerca de 1 h 10 min quando o release já está no MinIO (veja [Quanto tempo leva uma carga completa](#quanto-tempo-leva-uma-carga-completa)). Para processar um mês específico de novo:
 
 ```bash
 airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force_reprocess": true}'
@@ -106,12 +112,37 @@ airflow dags trigger cnpj_pipeline --conf '{"reference_month": "2026-10", "force
 
 FINEP e INPI seguem o mesmo padrão: um downloader com manifesto, depois cargas para cada dataset. Veja [`pipelines/dags/README_CNPJ_DAG.md`](pipelines/dags/README_CNPJ_DAG.md) para detalhes.
 
+### O lake OpenAlex
+
+`openalex_pipeline` mantém uma cópia local do [OpenAlex](https://openalex.org/), o catálogo aberto de trabalhos acadêmicos, em camadas bronze e silver para consultas em DuckDB (ainda sem gold nem tabelas no PostgreSQL; veja [docs/repo/OPENALEX_INTEGRATION_PLAN.md](docs/repo/OPENALEX_INTEGRATION_PLAN.md)). O OpenAlex publica um snapshot completo a cada trimestre, na segunda quarta-feira de janeiro, abril, julho e outubro; por isso a DAG roda diariamente nos dias 8 a 21 desses meses e para na primeira tarefa quando o release já está disponível.
+
+| Etapa | Tarefa | O que faz |
+|---|---|---|
+| Verificação | `check_release` | Compara o release do manifesto de origem com `openalex.release` e pula a execução quando ele já está construído |
+| Bronze | `sync_bronze`, `verify_bronze` | Espelha `s3://openalex/data/parquet/` (sem `authors` e `awards`) em `osint-raw/openalex/parquet/` e confere o tamanho e a contagem de registros Parquet de cada objeto contra o manifesto; recusa um bucket substituído pela metade |
+| Silver | `build_silver` (7 tabelas, 2 por vez) | Achata `works` em `works_core`, `work_references`, `work_authorships`, `work_topics`, `work_keywords`, `work_concepts` e `work_abstracts` com DuckDB SQL, um arquivo por arquivo bronze, no NVMe (`OPENALEX_LAKE_PATH`); um arquivo só é refeito quando o arquivo bronze mudou |
+| Catálogo | `build_catalog` | Recria o `lake.duckdb`: views sobre cada entidade bronze e tabela silver, e `lake_release` |
+
+Consulte de qualquer sessão DuckDB (as views bronze também precisam do secret do MinIO):
+
+```sql
+ATTACH '/srv/osint/openalex/lake.duckdb' AS lake (READ_ONLY);
+SELECT release_date FROM lake.lake_release;
+SELECT publication_year, count(*) FROM lake.works_core GROUP BY 1 ORDER BY 1 DESC LIMIT 5;
+
+CREATE SECRET osint_minio (TYPE S3, KEY_ID '<MINIO_ROOT_USER>', SECRET '<MINIO_ROOT_PASSWORD>',
+                           ENDPOINT 'localhost:<MINIO_API_PORT>', URL_STYLE 'path', USE_SSL false);
+SELECT display_name, country_code FROM lake.institutions WHERE country_code = 'BR' LIMIT 5;
+```
+
+O estado operacional (quais arquivos bronze e silver existem, e de qual versão de origem) fica no schema `openalex` do PostgreSQL. `work_abstracts` serve só para busca interna no corpus, não para redistribuição (por exemplo, num app web): os resumos podem ter direitos autorais das editoras, e é por isso que o OpenAlex os distribui apenas como índice invertido.
+
 ## Stack técnico
 
 | Camada | Ferramentas |
 |---|---|
 | Orquestração | Apache Airflow 2.10 |
-| Processamento | Python, DuckDB, pandas, Parquet |
+| Processamento | Python, DuckDB, dbt (dbt-duckdb), pandas, Parquet |
 | Armazenamento | PostgreSQL 16 + PostGIS, MinIO (S3) |
 | Gestão de schema | Flyway, scripts de inicialização Cypher |
 | NLP / ML | sentence-transformers, UMAP, HDBSCAN, BERTopic, scikit-learn |
@@ -187,7 +218,7 @@ C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
 
-`cnpj_pipeline` faz download → transformação → PostgreSQL → views de busca, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes e os carrega.
+`cnpj_pipeline` faz download → transformação (silver) → gold com dbt → publicação no PostgreSQL, `finep_pipeline` baixa as duas planilhas e carrega as 7 tabelas FINEP, e `inpi_pipeline` baixa os 10 CSVs de patentes e os carrega. `openalex_pipeline` é separada e bem maior (cerca de 750 GB por release); despause-a do mesmo jeito quando o disco estiver pronto.
 
 Os downloads podem ser repetidos com segurança: arquivos que já estão no MinIO são ignorados ou registrados sem novo download.
 
@@ -227,8 +258,9 @@ O perfil de 64 GB do `.env.example` acelera principalmente os upserts, a criaç�
 - `tests/pipelines`: o SQL de limpeza em DuckDB (códigos, decimais brasileiros, datas, linhas inválidas), a extração Latin-1 dos ZIPs da Receita, o casamento de cabeçalhos do loader da FINEP, e os modelos e testes de dados do dbt (gold) sobre um fixture silver de três meses.
 - `tests/backend`: a rede societária, a busca de empresas e o histórico de sócios sobre um PostgreSQL com as migrations do Flyway e o seed de dev. Defina `POSTGRES_HOST` e as demais variáveis `POSTGRES_*`; sem elas a suíte é pulada.
 - `tests/pipelines/test_gold_publish.py`: o build gold e a troca (swap) para o PostgreSQL, sobre o mesmo banco.
+- `tests/pipelines/test_openalex_lake.py`: o lake OpenAlex de ponta a ponta (sync de um bucket de origem falso, verificação, silver, catálogo, um segundo release, um bucket substituído pela metade), sobre um MinIO e o mesmo banco.
 
-`scripts/run-tests.sh` roda as três como a CI. Precisa de Docker e [uv](https://docs.astral.sh/uv/), sobe um PostGIS descartável numa porta livre, aplica as migrations e o seed, e o remove ao sair:
+`scripts/run-tests.sh` roda essas suítes como a CI. Precisa de Docker e [uv](https://docs.astral.sh/uv/), sobe um PostGIS e um MinIO descartáveis em portas livres, aplica as migrations e o seed, e remove os dois ao sair:
 
 ```bash
 scripts/run-tests.sh            # tudo
@@ -237,12 +269,13 @@ scripts/run-tests.sh pipelines  # só tests/pipelines, sem banco
 
 ## Fontes de dados
 
-Todos os dados vêm de portais brasileiros de dados abertos:
+Todos os dados vêm de fontes de dados abertos:
 
 - **CNPJ:** o cadastro de empresas da Receita Federal (empresas, estabelecimentos, sócios)
 - **FINEP:** planilhas públicas de contratações e liberações (`download.finep.gov.br`)
 - **INPI:** dados de patentes em [dadosabertos.inpi.gov.br](https://dadosabertos.inpi.gov.br/index/patentes/)
 - **Geografia:** limites do IBGE via [geobr](https://github.com/ipeaGIT/geobr)
+- **OpenAlex:** o snapshot do [OpenAlex](https://openalex.org/) com trabalhos acadêmicos, instituições, fontes e tópicos (CC0), do seu bucket S3 público
 
 Os registros de sócios incluem nomes de pessoas reais, que são dados pessoais pela LGPD mesmo sendo publicados abertamente. O repositório não contém datasets reais: as seeds de dev usam pessoas fictícias.
 

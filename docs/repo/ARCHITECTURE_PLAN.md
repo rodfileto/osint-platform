@@ -7,7 +7,7 @@ How the platform is built. Setup and configuration are in the [README](../../REA
 | Layer | Role | Where |
 |---|---|---|
 | Pipelines | Download, transform and load each source | `pipelines/` (Airflow) |
-| Storage | Raw files; relational tables | MinIO; PostgreSQL + PostGIS |
+| Storage | Raw files and Parquet layers; relational tables; OpenAlex silver and catalog | MinIO; PostgreSQL + PostGIS; NVMe folder (`OPENALEX_LAKE_PATH`) |
 | API | Read-only gateway for the UI | `backend/` (FastAPI) |
 | Frontend | Search, detail pages, networks, maps | `frontend/` (React + Vite) |
 | Auth | OIDC login for UI and API | Keycloak |
@@ -16,13 +16,14 @@ The API only reads what the pipelines wrote.
 
 ## Pipelines
 
-One DAG per source. Each records its files in a `download_manifest` table, so nothing is downloaded or loaded twice.
+One DAG per source. Each records its files in PostgreSQL (a `download_manifest` table, or the `openalex` schema), so nothing is downloaded or loaded twice.
 
 | DAG | Steps | Schedule (America/Sao_Paulo) |
 |---|---|---|
-| `cnpj_pipeline` | download → select month → DuckDB transform to Parquet (one task per ZIP) → load each table → refresh search views | Monthly, 2nd at 02:00 |
+| `cnpj_pipeline` | download → select month → DuckDB transform to silver Parquet (one task per ZIP) → dbt gold build → publish to PostgreSQL (table swap) → geo mapping | Monthly, 2nd at 02:00 |
 | `finep_pipeline` | download both spreadsheets → load the 7 tables | Monthly, 2nd at 06:00 |
 | `inpi_pipeline` | download the 10 CSVs → stage → publish all tables in one transaction → search view | Weekly, Monday 05:00 |
+| `openalex_pipeline` | check release → mirror the snapshot into MinIO → verify → 7 silver tables → DuckDB catalog | Daily 06:00 on the 8th–21st of Jan, Apr, Jul, Oct (OpenAlex releases on the second Wednesday) |
 
 `finep_nlp_topic` (topics and project similarity) is experimental and triggered by hand.
 
@@ -30,8 +31,12 @@ One DAG per source. Each records its files in a `download_manifest` table, so no
 
 **MinIO** keeps:
 
-- `osint-raw`: the downloads as they came, `cnpj/raw/<YYYY-MM>/*.zip` and `inpi/patentes/<YYYYMMDD>/*.csv`.
+- `osint-raw`: the downloads as they came, `cnpj/raw/<YYYY-MM>/*.zip`, `inpi/patentes/<YYYYMMDD>/*.csv` and the OpenAlex snapshot `openalex/parquet/<entity>/updated_date=…/*.parquet` (latest release only).
 - `osint-processed`: the cleaned CNPJ Parquet (silver) of every month, `cnpj/silver/<entity>/reference_month=<YYYY-MM>/*.parquet`, about 5.5 GB per month. A transform skipped because the month is done restores missing local Parquet from here instead of transforming again.
+
+- `osint-processed`: also the CNPJ gold Parquet, `cnpj/gold/<table>/<table>.parquet`, which the publish copies into PostgreSQL.
+
+**The NVMe folder `OPENALEX_LAKE_PATH`** (default `/srv/osint/openalex`, mounted at the same path in Airflow) keeps the OpenAlex silver tables and `lake.duckdb`, the catalog of views over bronze and silver ([OPENALEX_INTEGRATION_PLAN.md](OPENALEX_INTEGRATION_PLAN.md)).
 
 FINEP spreadsheets are on the Airflow data volume. The load reads Parquet from the temp volume, which also holds the CSV staging.
 
