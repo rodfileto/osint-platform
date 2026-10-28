@@ -64,9 +64,9 @@ Silver is rebuilt for a file when the `source_etag` it was built from differs fr
 
 ### Sizing
 
-- Bronze: 660 GB per release in MinIO on the HDD (5.0 TB free). Only the latest release is kept; each quarterly release replaces the files whose size or ETag changed. How much of `works` changes between releases is not measured yet (Step 7).
-- Silver: 215 GB on the NVMe (2.5 TB free). Not counted against the HDD.
-- Download and build times are not recorded from the first sync. Estimates to check in Step 7: a full release download is bound by the network (660 GB), and a full silver rebuild reads all of bronze from MinIO on the HDD, so it is bound by HDD reads.
+- Bronze: 744.8 GB for release 2026-10-14 (without `authors` and `awards`) in MinIO on the HDD. Only the latest release is kept; each quarterly release replaces the files whose size or ETag changed. Only 12 files of the 2026-09-23 copy matched 2026-10-14, so a release can change nearly every file.
+- Silver: 225 GB on the NVMe. Not counted against the HDD.
+- Times of the first full run are in Step 7 below.
 
 ## DAG flow
 
@@ -96,6 +96,13 @@ Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cr
 - **Pre-checks (2026-10-28):** A: `lake verify` on the 2026-09-23 mirror, 2583 files, 0 problems. B: OpenAlex already serves release **2026-10-14** (2361 files, 744.8 GB); only 12 files match the local copy and 1110 local files are gone upstream. So the old mirror is **not imported**: the DAG syncs 2026-10-14 straight into MinIO and builds silver from it, and the old bronze (`/mnt/data10tb/openalex_lake/bronze`) and silver (`openalex-lake/data/silver`) stay untouched as a fallback until they are deleted after approval. C: HDD 5.0 TB free, NVMe 2.6 TB free.
 - **Step 1** done: code ported (`68bcde6`); the two SQL files with `x -> …` lambdas changed to DuckDB 2 syntax.
 - **Steps 2–5** done in code: bronze sync and verify against MinIO, state in PostgreSQL, silver from MinIO to `OPENALEX_LAKE_PATH` (default `/srv/osint/openalex`, mounted at the same path in Airflow), the DAG and the catalog. `tests/pipelines/test_openalex_lake.py` runs the whole flow against a throwaway MinIO and PostgreSQL, including a second release and a bucket caught mid-replacement.
+- **Step 6** done: README (EN and PT-BR) and ARCHITECTURE_PLAN document the lake (`1413ccf`); the load times and sizes below are in the README tables. The `openalex-lake/ROADMAP.md` line waits for approval.
+- **Step 7** done (2026-10-28), run `scheduled__2026-10-20T09:00:00+00:00` on release 2026-10-14:
+  - `sync_bronze` 6 h 38 min (2361 files, 744.8 GB listed, about 31 MB/s, 0 stale), `verify_bronze` 1 min 23 s with 0 problems.
+  - `build_silver`, 2 at a time, 1898 `works` files per table: `works_core` 2 h 08, `work_references` 1 h 22, `work_authorships` 1 h 40, `work_topics` 47 min, `work_keywords` 1 h 09, `work_concepts` 1 h 09, `work_abstracts` 2 h 39. About 6 h 40 min of wall clock in a run without failures; `build_catalog` 4 s.
+  - `work_abstracts` failed at first: some `abstract_inverted_index` objects repeat a key (e.g. W2566358801 has `"development"` twice), and the JSON → MAP cast fails the whole file. Fixed in `7ac4829`: rows whose cast fails are rebuilt from `json_each`, keeping both entries; 7 s vs 146 s for `json_each` alone on the largest file. The two finished tasks were cleared and rerun in the same run.
+  - Sizes (decimal GB): bronze 744.8; silver 225.3 (`work_abstracts` 81.0, `work_authorships` 39.8, `works_core` 29.7, `work_concepts` 25.9, `work_keywords` 22.4, `work_references` 18.7, `work_topics` 7.8). Catalog: 19 bronze and 7 silver views; `works_core` 464,765,485 rows, `work_references` 3,089,492,607, `work_authorships` 1,272,969,307, `work_abstracts` 257,920,532. All four `openalex.release` marks are set.
+  - The old copies (`/mnt/data10tb/openalex_lake/bronze` 660 GB, `openalex-lake/data/silver` 215 GB) are still there; they are deleted only after approval.
 
 ### Step 1: Port the code and tests, behaviour unchanged
 - Copy `src/openalex_lake/{config,sync,silver,catalog}.py` and `sql/*.sql` to `pipelines/scripts/openalex/`, and the tests to `tests/pipelines/test_openalex_{sync,silver,catalog}.py`. Commit message names `openalex-lake@fa251ea`.

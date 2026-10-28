@@ -34,8 +34,8 @@ After about 7 minutes, open `http://localhost:13000`, sign in as `osint-admin` /
 
 - **No graph database.** Ownership networks used to be loaded into Neo4j every month. They are now built in PostgreSQL with one indexed query per hop over the 28.5 million partner rows: depth 3 around the largest hubs takes 0.6 to 1.2 ms (p95) in the database and 14 to 44 ms through the API. One service and 56 GB of disk fewer, and no second copy of the data to keep in sync. Measurements in [ARCHITECTURE_PLAN.md](docs/repo/ARCHITECTURE_PLAN.md#ownership-networks).
 - **Search that uses its indexes.** Company search scanned the whole search views (17 to 30 s). Prefix indexes on the CNPJ columns and dropping a `COALESCE` that hid the name column from its index brought it to 3 to 660 ms.
-- **One DAG instead of five.** The CNPJ load was five chained DAGs that passed parameters as strings (so `'False'` counted as true), downloaded every ZIP twice and marked files as loaded before the upsert committed. It is now a single `cnpj_pipeline` with typed parameters and staged, deduplicated upserts; the rewrite deleted 9,547 lines and added 1,510.
-- **Keep the raw files.** Downloads stay in MinIO as they came from the source, with a manifest of every file and month. The database can be dropped and rebuilt without downloading again: a full rebuild of the 2026-10 release took 1 h 20 min for CNPJ, 8 min for INPI and under 1 min for FINEP.
+- **One DAG instead of five.** The CNPJ load was five chained DAGs that passed parameters as strings (so `'False'` counted as true), downloaded every ZIP twice and marked files as loaded before the upsert committed. It is now a single `cnpj_pipeline` with typed parameters that builds gold with dbt and publishes it with a table swap; the rewrite deleted 9,547 lines and added 1,510.
+- **Keep the raw files.** Downloads stay in MinIO as they came from the source, with a manifest of every file and month. The database can be dropped and rebuilt without downloading again: a full rebuild of the 2026-10 release took 1 h 10 min for CNPJ, 8 min for INPI and under 1 min for FINEP.
 - **Tested on every push.** GitHub Actions runs the DuckDB cleaning SQL and FINEP loader tests, the network and search queries against PostgreSQL with the real migrations, and the frontend build.
 
 ## Screenshots
@@ -164,7 +164,7 @@ Operational state (which bronze and silver files exist, and from which upstream 
 
 ## Getting started
 
-Requirements: Docker and Docker Compose. Loading the latest CNPJ month plus INPI and FINEP needs about 110 GB of disk (150 GB recommended for headroom), and the default memory settings are sized for a 32 GB machine; see [How long a full load takes](#how-long-a-full-load-takes). The dev replica runs on much less.
+Requirements: Docker and Docker Compose. Loading the latest CNPJ month plus INPI and FINEP needs about 180 GB of disk (250 GB recommended for headroom), and the default memory settings are sized for a 32 GB machine; see [How long a full load takes](#how-long-a-full-load-takes). The dev replica runs on much less.
 
 ### Dev replica (sample data)
 
@@ -218,24 +218,25 @@ C="docker compose --env-file .env -f docker-compose.yml -f compose.prod.yml"
 for dag in cnpj_pipeline finep_pipeline inpi_pipeline; do $C exec airflow-scheduler airflow dags unpause $dag; done
 ```
 
-`cnpj_pipeline` runs download → transform (silver) → dbt gold → publish to PostgreSQL, `finep_pipeline` downloads both spreadsheets and loads the 7 FINEP tables, and `inpi_pipeline` downloads the 10 patent CSVs and loads them. `openalex_pipeline` is separate and much larger (about 750 GB per release); unpause it the same way when the disk is ready.
+`cnpj_pipeline` runs download → transform (silver) → dbt gold → publish to PostgreSQL, `finep_pipeline` downloads both spreadsheets and loads the 7 FINEP tables, and `inpi_pipeline` downloads the 10 patent CSVs and loads them. `openalex_pipeline` is separate and much larger (about 745 GB of bronze on the HDD and 225 GB of silver on the NVMe per release); unpause it the same way when the disk is ready.
 
 Downloads are safe to re-run: files already in MinIO are skipped or registered instead of downloaded again.
 
 ### How long a full load takes
 
-Measured with the default memory settings from `.env.example`, which are sized for a 32 GB machine (PostgreSQL `shared_buffers` 2 GB, DuckDB 4 GB per transform task); the containers used about 12 GB. The machine itself has 8 cores and 60 GB of RAM, with PostgreSQL on NVMe and MinIO on an HDD; the spare RAM serves as operating-system file cache, so a machine with only 32 GB may be somewhat slower. Loading the 2026-10 CNPJ release (the download time is from the first load; the other rows are from a load from scratch with the files already in MinIO):
+Measured with the default memory settings from `.env.example`, which are sized for a 32 GB machine (PostgreSQL `shared_buffers` 2 GB and `maintenance_work_mem` 1 GB; DuckDB 4 GB for the CNPJ transform and dbt, 8 GB per OpenAlex silver task). The machine itself has 8 cores and 60 GB of RAM, with PostgreSQL and the OpenAlex silver on NVMe and MinIO on an HDD; the spare RAM serves as operating-system file cache, so a machine with only 32 GB may be somewhat slower. Loading the 2026-10 CNPJ release (the download time is from the first load; the other rows are from a load from scratch with the files already in MinIO):
 
 | Step | Time |
 |---|---|
 | CNPJ download: about 7.3 GB, served by Receita Federal at roughly 2.5 MB/s | ~1 h |
-| CNPJ transform: 37 ZIPs to Parquet, 4 at a time | 3 min |
-| CNPJ load into PostgreSQL: companies 23 min, establishments 21, Simples 6, partners 5, municipality mapping 2 | ~58 min |
-| CNPJ search views (`mv_company_search`, active and inactive) | 21 min |
+| CNPJ transform (silver): 37 ZIPs to Parquet, 4 at a time | 4 min |
+| CNPJ gold: `dbt build`, 12 models and their tests, including `company_search` and `socio_history` | 13 min |
+| CNPJ publish: gold Parquet into `*_next` tables, indexes, then the swap (under 1 s of locks) | 52 min |
+| Municipality mapping (`rebuild_geo_mapping`) | 2 min |
 | INPI: stage and publish the 10 patent tables, refresh the search view | ~8 min, plus downloading about 2.6 GB from INPI |
 | FINEP: both spreadsheets, 7 tables | under 1 min |
-| **First run from scratch** | **about 2 h 20 min**; the three pipelines run in parallel and CNPJ is the longest |
-| **Monthly CNPJ run with the release already in MinIO** | **about 1 h 20 min** |
+| **First run from scratch** | **about 2 h 10 min**; the three pipelines run in parallel and CNPJ is the longest |
+| **Monthly CNPJ run with the release already in MinIO** | **about 1 h 10 min** |
 
 Disk used after that load:
 
@@ -243,13 +244,35 @@ Disk used after that load:
 |---|---|
 | CNPJ bronze in MinIO, per monthly release | 7.3 GB |
 | INPI bronze in MinIO, per snapshot (stored only when the content changes) | about 2.6 GB |
-| CNPJ Parquet on the Airflow temp volume | 5.1 GB |
-| CNPJ Parquet (silver) in MinIO, per month | 5.5 GB |
-| PostgreSQL: `cnpj` 79 GB (tables, indexes and search views), `inpi` 4 GB, `finep` and `geo` under 100 MB | 83 GB |
-| Temporary sort space while loading companies | about 6 GB |
-| **Total** | **about 110 GB**: 104 GB stored, plus about 6 GB used only during the load |
+| CNPJ Parquet on the Airflow temp volume | 5.2 GB |
+| CNPJ silver Parquet in MinIO, per month | 5.2 GB |
+| CNPJ gold Parquet in MinIO (latest month only) | 8.9 GB |
+| dbt working files on the Airflow temp volume | 4 GB |
+| PostgreSQL: `cnpj` 88 GB live (tables, indexes, `company_search`), `inpi` 4 GB, `finep` and `geo` under 100 MB | 92 GB |
+| PostgreSQL: the previous publish's `cnpj.*_old` tables, kept until the next run for rollback (no indexes) | 55 GB |
+| **Total** | **about 180 GB** |
 
-The 64 GB memory profile in `.env.example` mostly speeds up the PostgreSQL upserts, index builds and view refreshes.
+The second publish onwards needs no extra room at its peak: it drops the `_old` tables before building the `_next` ones. The 64 GB memory profile in `.env.example` mostly speeds up the index builds in the publish step.
+
+#### OpenAlex
+
+The first full load of release 2026-10-14 (2,361 files, 744.8 GB upstream), on the same machine:
+
+| Step | Time |
+|---|---|
+| `sync_bronze`: download to the SSD, upload to MinIO, 8 files at a time, about 31 MB/s | 6 h 38 min |
+| `verify_bronze`: sizes and Parquet footers of every object against the manifest | 1.5 min |
+| `build_silver`, 2 tables at a time, 1,898 `works` files each: `works_core` 2 h 08, `work_abstracts` 2 h 39, `work_authorships` 1 h 40, `work_references` 1 h 22, `work_keywords` 1 h 09, `work_concepts` 1 h 09, `work_topics` 47 min | about 6 h 40 min |
+| `build_catalog` | 4 s |
+| **First run from scratch** | **about 13 h 20 min** |
+
+A later release downloads and rebuilds only the files whose size or ETag changed.
+
+| Data | Size |
+|---|---|
+| Bronze in MinIO (HDD), latest release only | 745 GB |
+| Silver on the NVMe: `work_abstracts` 81 GB, `work_authorships` 40, `works_core` 30, `work_concepts` 26, `work_keywords` 22, `work_references` 19, `work_topics` 8 | 225 GB |
+| `lake.duckdb` catalog (views only) | under 1 MB |
 
 ## Tests
 
