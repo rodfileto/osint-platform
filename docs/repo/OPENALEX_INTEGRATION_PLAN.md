@@ -71,7 +71,7 @@ Silver is rebuilt for a file when the `source_etag` it was built from differs fr
 ## DAG flow
 
 ```
-openalex_pipeline (daily at 06:00 UTC on the 8th–21st of Jan, Apr, Jul, Oct; paused when created, like the other DAGs)
+openalex_pipeline (daily at 06:00 America/Sao_Paulo, the platform's Airflow timezone, on the 8th–21st of Jan, Apr, Jul, Oct; paused when created, like the other DAGs)
    check_release      fetch the OpenAlex manifest; short-circuit when its date equals the synced release
    sync               plan = files missing or with a different size/ETag; download → SSD → MinIO, 8 at a time;
                       stale objects of older releases removed only after every file is in
@@ -82,7 +82,7 @@ openalex_pipeline (daily at 06:00 UTC on the 8th–21st of Jan, Apr, Jul, Oct; p
 
 Params: `force_silver` (rebuild every silver file), `tables` (subset of silver tables), `dry_run` (sync plan only).
 
-Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cron: Airflow's croniter treats day-of-month and weekday as OR (`0 6 8-14 1,4,7,10 3` fires on 2027-01-06, 01-08, 01-09, …). The second Wednesday always falls on the 8th–14th; running daily until the 21st also covers a late release and retries a sync that hit a mid-replacement bucket. After the release is in, each run ends at `check_release` in seconds. A manual trigger works at any time.
+Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cron: Airflow's croniter treats day-of-month and weekday as OR (`0 6 8-14 1,4,7,10 3` fires on 2027-01-06, 01-08, 01-09, …). The schedule runs in the platform's Airflow timezone (America/Sao_Paulo, 09:00 UTC). The second Wednesday always falls on the 8th–14th; running daily until the 21st also covers a late release and retries a sync that hit a mid-replacement bucket. After the release is in, each run ends at `check_release` in seconds. A manual trigger works at any time.
 
 ## Steps
 

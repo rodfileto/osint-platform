@@ -3,7 +3,8 @@ OpenAlex pipeline: public Parquet snapshot → bronze (MinIO) → silver (NVMe) 
 
 OpenAlex publishes a full release quarterly, on the second Wednesday of January, April, July and
 October (UTC), replacing its bucket in place. Cron cannot say "second Wednesday" (croniter ORs
-day-of-month and weekday), so the DAG runs daily on the 8th-21st of those months; once a release
+day-of-month and weekday), so the DAG runs daily (06:00 in the platform's America/Sao_Paulo
+timezone) on the 8th-21st of those months; once a release
 is synced, verified and built, each run stops at check_release. A run that meets the bucket while
 it is being replaced fails in sync and the next day's run retries it.
 
