@@ -1,7 +1,6 @@
-import os
 from pathlib import Path
 
-from openalex.silver import connect, is_stale, sample
+from openalex.silver import connect, sample, stale, target
 
 
 def test_short_id_macro():
@@ -20,15 +19,17 @@ def test_sample_spreads_across_files():
     assert sample(files, 20) == files
 
 
-def test_is_stale_compares_mtime(tmp_path):
-    src, dest = tmp_path / "src", tmp_path / "dest"
-    src.write_text("x")
-    assert is_stale(src, dest)
-    dest.write_text("y")
-    os.utime(src, (1, 1))
-    assert not is_stale(src, dest)
-    os.utime(src, (2**31, 2**31))
-    assert is_stale(src, dest)
+def test_stale_compares_source_etag_and_output(tmp_path):
+    out = tmp_path / "work_references"
+    sources = {"works/u=1/a.parquet": (10, "e1"), "works/u=1/b.parquet": (10, "e2")}
+    for key in sources:
+        target(key, "works", out).parent.mkdir(parents=True, exist_ok=True)
+        target(key, "works", out).write_bytes(b"x")
+    built = {"works/u=1/a.parquet": "e1", "works/u=1/b.parquet": "old"}
+    assert stale(sources, built, out, "works") == ["works/u=1/b.parquet"]
+    assert stale(sources, built, out, "works", force=True) == sorted(sources)
+    target("works/u=1/a.parquet", "works", out).unlink()
+    assert stale(sources, built, out, "works") == sorted(sources)
 
 
 def test_work_references_explodes_and_shortens_ids(tmp_path):
@@ -44,7 +45,7 @@ def test_work_references_explodes_and_shortens_ids(tmp_path):
         ) t(id, publication_year, referenced_works)) TO '{src}' (FORMAT parquet)
     """)
     sql = (SQL_DIR / "work_references.sql").read_text()
-    assert build_file(con, sql, src, dest) == 2
+    assert build_file(con, sql, str(src), dest) == 2
     assert con.execute(f"SELECT * FROM '{dest}'").fetchall() == [
         ("W2", "W1", 2020),
         ("W2", "W9", 2020),
@@ -72,7 +73,7 @@ def test_work_authorships_one_row_per_authorship(tmp_path):
         ] AS authorships) TO '{src}' (FORMAT parquet)
     """)
     sql = (SQL_DIR / "work_authorships.sql").read_text()
-    assert build_file(con, sql, src, dest) == 2
+    assert build_file(con, sql, str(src), dest) == 2
     rows = con.execute(
         f"SELECT work_id, author_seq, author_id, orcid, is_corresponding, institution_ids "
         f"FROM '{dest}'"
@@ -98,12 +99,12 @@ def test_work_concepts_and_keywords_drop_repeated_ids(tmp_path):
         ) TO '{src}' (FORMAT parquet)
     """)
     out = tmp_path / "concepts.parquet"
-    assert build_file(con, (SQL_DIR / "work_concepts.sql").read_text(), src, out) == 2
+    assert build_file(con, (SQL_DIR / "work_concepts.sql").read_text(), str(src), out) == 2
     assert con.execute(f"SELECT concept_id, level, score FROM '{out}'").fetchall() == [
         ("C2", 2, 0.75), ("C1", 0, 0.5)
     ]
     out = tmp_path / "keywords.parquet"
-    assert build_file(con, (SQL_DIR / "work_keywords.sql").read_text(), src, out) == 2
+    assert build_file(con, (SQL_DIR / "work_keywords.sql").read_text(), str(src), out) == 2
     assert con.execute(f"SELECT keyword_id FROM '{out}'").fetchall() == [("xml",), ("rdf/xml",)]
 
 
@@ -120,7 +121,7 @@ def test_work_abstracts_rebuilds_text_in_position_order(tmp_path):
             ('https://openalex.org/W3', '{{"truncated": [0], "[19')
         ) t(id, abstract_inverted_index)) TO '{src}' (FORMAT parquet)
     """)
-    assert build_file(con, (SQL_DIR / "work_abstracts.sql").read_text(), src, dest) == 1
+    assert build_file(con, (SQL_DIR / "work_abstracts.sql").read_text(), str(src), dest) == 1
     assert con.execute(f"SELECT * FROM '{dest}'").fetchall() == [
         ("W1", 'the fox "quoted" the end.')
     ]

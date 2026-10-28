@@ -1,9 +1,17 @@
-"""Build silver tables: one output file per bronze file, rebuilt only when the bronze file is newer."""
+"""Build silver tables from bronze: one output file per bronze file, on the NVMe.
+
+A silver file is rebuilt when the bronze file it came from has another source ETag than the one
+recorded in openalex.silver_file (or the output is missing); silver files whose bronze file left
+the release are removed.
+"""
 
 import time
 from pathlib import Path
 
 import duckdb
+
+from . import state, storage
+from .config import Lake
 
 SQL_DIR = Path(__file__).parent / "sql"
 
@@ -18,49 +26,37 @@ TABLES = {
     "work_abstracts": "works",
 }
 
-SHORT_ID_REGEX = r"^https?://openalex\.org/([a-z-]+s/)?"
+
+def connect(lake: Lake | None = None, threads: int | None = None) -> duckdb.DuckDBPyConnection:
+    return storage.duckdb_connect(lake, threads)
 
 
-def short_id_sql(expr: str) -> str:
-    return f"nullif(regexp_replace({expr}, '{SHORT_ID_REGEX}', ''), '')"
-
-
-MACROS = f"CREATE OR REPLACE MACRO short_id(url) AS {short_id_sql('url')};"
-
-
-def _quote(path: Path) -> str:
+def _quote(path) -> str:
     return str(path).replace("'", "''")
 
 
-def connect(threads: int | None = None) -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect()
-    if threads:
-        con.execute(f"SET threads = {threads}")
-    con.execute(MACROS)
-    return con
+def sample(keys: list, n: int) -> list:
+    """Pick n keys spread evenly across the list (covers old and recent partitions)."""
+    if n >= len(keys):
+        return keys
+    step = len(keys) / n
+    return [keys[int(i * step)] for i in range(n)]
 
 
-def sources(bronze: Path, entity: str) -> list[Path]:
-    return sorted((bronze / entity).glob("*/*.parquet"))
+def target(key: str, entity: str, out_dir: Path) -> Path:
+    return out_dir / key.removeprefix(f"{entity}/")
 
 
-def sample(files: list[Path], n: int) -> list[Path]:
-    """Pick n files spread evenly across the list (covers old and recent partitions)."""
-    if n >= len(files):
-        return files
-    step = len(files) / n
-    return [files[int(i * step)] for i in range(n)]
+def stale(sources: dict[str, tuple[int, str]], built: dict[str, str], out_dir: Path, entity: str,
+          force: bool = False) -> list[str]:
+    """Bronze keys whose silver file is missing or was built from another source ETag."""
+    return [
+        key for key, (_, etag) in sorted(sources.items())
+        if force or built.get(key) != etag or not target(key, entity, out_dir).exists()
+    ]
 
 
-def target(src: Path, bronze: Path, entity: str, out_dir: Path) -> Path:
-    return out_dir / src.relative_to(bronze / entity)
-
-
-def is_stale(src: Path, dest: Path) -> bool:
-    return not dest.exists() or dest.stat().st_mtime < src.stat().st_mtime
-
-
-def build_file(con: duckdb.DuckDBPyConnection, sql: str, src: Path, dest: Path) -> int:
+def build_file(con: duckdb.DuckDBPyConnection, sql: str, src: str, dest: Path) -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     query = sql.strip().rstrip(";").replace("{src}", _quote(src))
@@ -69,41 +65,45 @@ def build_file(con: duckdb.DuckDBPyConnection, sql: str, src: Path, dest: Path) 
     return con.execute("SELECT count(*) FROM read_parquet(?)", [str(dest)]).fetchone()[0]
 
 
-def prune(out_dir: Path, srcs: list[Path], bronze: Path, entity: str) -> int:
-    keep = {target(s, bronze, entity, out_dir) for s in srcs}
+def prune(conn, table: str, out_dir: Path, sources: dict, built: dict, entity: str) -> int:
+    keep = {target(key, entity, out_dir) for key in sources}
     removed = 0
-    for p in out_dir.rglob("*"):
-        if p.is_file() and p not in keep:
-            p.unlink()
-            removed += 1
+    if out_dir.exists():
+        for p in out_dir.rglob("*"):
+            if p.is_file() and p not in keep:
+                p.unlink()
+                removed += 1
+    gone = [key for key in built if key not in sources]
+    if gone:
+        state.forget_silver(conn, table, gone)
     return removed
 
 
-def build_table(
-    table: str,
-    bronze: Path,
-    silver: Path,
-    limit: int | None = None,
-    force: bool = False,
-    threads: int | None = None,
-    log=print,
-) -> None:
+def build_table(lake: Lake, table: str, limit: int | None = None, force: bool = False,
+                threads: int | None = None, log=print) -> None:
     entity = TABLES[table]
     sql = (SQL_DIR / f"{table}.sql").read_text()
-    out_dir = silver / table
-    all_srcs = sources(bronze, entity)
-    srcs = sample(all_srcs, limit) if limit else all_srcs
-    if not limit:
-        removed = prune(out_dir, all_srcs, bronze, entity)
-        if removed:
-            log(f"{table}: removed {removed} orphaned files")
-
-    todo = [s for s in srcs if force or is_stale(s, target(s, bronze, entity, out_dir))]
-    log(f"{table}: {len(srcs)} source files, {len(todo)} to build")
-    con = connect(threads)
-    start, rows = time.time(), 0
-    for i, src in enumerate(todo, 1):
-        rows += build_file(con, sql, src, target(src, bronze, entity, out_dir))
-        log(f"[{i}/{len(todo)}] {rows:,} rows, {time.time() - start:.0f}s "
-            f"{src.relative_to(bronze)}")
-    log(f"{table}: done")
+    out_dir = lake.silver / table
+    conn = state.connect()
+    try:
+        sources = state.bronze_files(conn, entity)
+        built = state.silver_files(conn, table)
+        if not limit:
+            removed = prune(conn, table, out_dir, sources, built, entity)
+            if removed:
+                log(f"{table}: removed {removed} silver files whose bronze file left the release")
+        todo = stale(sources, built, out_dir, entity, force)
+        if limit:
+            todo = sample(todo, limit)
+        log(f"{table}: {len(sources)} bronze files, {len(todo)} to build")
+        con = connect(lake, threads)
+        start, rows = time.time(), 0
+        for i, key in enumerate(todo, 1):
+            n = build_file(con, sql, lake.s3_url(key), target(key, entity, out_dir))
+            state.record_silver(conn, table, key, sources[key][1], n)
+            rows += n
+            log(f"[{i}/{len(todo)}] {rows:,} rows, {time.time() - start:.0f}s {key}")
+        con.close()
+        log(f"{table}: done")
+    finally:
+        conn.close()

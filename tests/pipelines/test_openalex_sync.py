@@ -1,4 +1,4 @@
-from openalex.sync import FileSpec, manifest_files, parse_listing, plan, stale_paths
+from openalex.sync import FileSpec, manifest_files, parse_listing, plan, stale_keys
 
 MANIFEST = {
     "date": "2026-09-23",
@@ -17,25 +17,21 @@ def test_manifest_files_excludes_entities_and_maps_paths():
     files = manifest_files(MANIFEST, excluded={"authors"})
     assert files == [FileSpec("data/parquet/works/updated_date=2026-01-01/part_0000.parquet", 5, 2)]
     assert files[0].rel_path == "works/updated_date=2026-01-01/part_0000.parquet"
+    assert files[0].entity == "works"
 
 
-def test_plan_skips_only_matching_size_and_etag(tmp_path):
+def test_plan_skips_only_matching_size_and_etag():
     f = FileSpec("data/parquet/works/u=1/a.parquet", 5, 1, "e1")
-    dest = tmp_path / f.rel_path
-    dest.parent.mkdir(parents=True)
-    dest.write_bytes(b"12345")
-    assert plan([f], tmp_path, {f.key: "e1"}) == []
-    assert plan([f], tmp_path, {f.key: "old"}) == [f]
-    dest.write_bytes(b"1234")
-    assert plan([f], tmp_path, {f.key: "e1"}) == [f]
+    assert plan([f], {f.rel_path: (5, "e1")}) == []
+    assert plan([f], {f.rel_path: (5, "old")}) == [f]
+    assert plan([f], {f.rel_path: (4, "e1")}) == [f]
+    assert plan([f], {}) == [f]
 
 
-def test_stale_paths_only_within_synced_entities(tmp_path):
+def test_stale_keys_are_present_files_the_release_no_longer_has():
     keep = FileSpec("data/parquet/works/u=2/a.parquet", 1, 1)
-    for rel in ["works/u=2/a.parquet", "works/u=1/old.parquet", "authors/u=1/x.parquet"]:
-        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / rel).write_bytes(b"x")
-    assert stale_paths(tmp_path, [keep]) == [tmp_path / "works/u=1/old.parquet"]
+    present = {"works/u=2/a.parquet", "works/u=1/old.parquet"}
+    assert stale_keys(present, [keep]) == ["works/u=1/old.parquet"]
 
 
 def test_parse_listing_reads_etags_and_token():

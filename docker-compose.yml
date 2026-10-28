@@ -22,6 +22,8 @@ x-airflow-common:
     - ./pipelines/dbt:/opt/airflow/dbt
     - ${AIRFLOW_DATA_HOST_PATH:-./data/airflow/data}:/opt/airflow/data
     - ${AIRFLOW_TEMP_SSD_HOST_PATH:-./data/airflow/temp_ssd}:/opt/airflow/temp_ssd
+    # Same path inside as on the host: the OpenAlex catalog stores absolute silver paths.
+    - ${OPENALEX_LAKE_PATH:-/srv/osint/openalex}:${OPENALEX_LAKE_PATH:-/srv/osint/openalex}
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
@@ -134,8 +136,8 @@ services:
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD}
       FLYWAY_DEFAULT_SCHEMA: public
       FLYWAY_TABLE: flyway_schema_history
-      FLYWAY_SCHEMAS: cnpj,finep,geo,airflow,naturalization,sanctions,contracts,inpi
-      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo,filesystem:/flyway/sql/inpi
+      FLYWAY_SCHEMAS: cnpj,finep,geo,airflow,naturalization,sanctions,contracts,inpi,openalex
+      FLYWAY_LOCATIONS: filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo,filesystem:/flyway/sql/inpi,filesystem:/flyway/sql/openalex
       FLYWAY_VALIDATE_MIGRATION_NAMING: 'true'
       FLYWAY_CLEAN_DISABLED: 'true'
       FLYWAY_CONNECT_RETRIES: '60'

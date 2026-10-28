@@ -57,9 +57,10 @@ Principles, the same as the CNPJ medallion:
 ### Operational state (Flyway, schema `openalex`)
 
 - `openalex.release`: one row per release seen (`release_date`, `manifest_etag`, `synced_at`, `verified_at`, `silver_built_at`).
-- `openalex.file_manifest`: one row per bronze file of the current release (`key`, `entity`, `size_bytes`, `record_count`, `source_etag`, `synced_at`, `minio_etag`), plus one row per silver output (`silver_table`, `source_key`, `source_etag`, `built_at`, `rows`).
+- `openalex.bronze_file`: one row per bronze file of the current release (`key` relative to the prefix, `entity`, `size_bytes`, `record_count`, `source_etag` from the OpenAlex listing, `release_date`, `synced_at`).
+- `openalex.silver_file`: one row per silver output (`silver_table`, `source_key`, `source_etag` it was built from, `rows`, `built_at`).
 
-Silver is rebuilt for a file when the recorded `source_etag` differs from the bronze file's, replacing today's mtime check, which does not carry over to objects copied into MinIO.
+Silver is rebuilt for a file when the `source_etag` it was built from differs from the bronze file's, replacing openalex-lake's mtime check, which does not carry over to objects copied into MinIO.
 
 ### Sizing
 
@@ -89,6 +90,12 @@ Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cr
 - **A.** Run the existing `lake verify` against `/mnt/data10tb/openalex_lake/bronze` (pass `OPENALEX_BRONZE`, since the config still points at the old `/run/media/...` mount). A clean result means the import in Step 2 copies a complete release.
 - **B.** Fetch the current OpenAlex manifest date. The local copy's manifest says 2026-09-23 (a Wednesday, but not a release day), while the October release came out on 2026-10-14. Either the manifest date is the snapshot's data date, or the October release is newer than the local copy. If it is newer, decide whether to import the old copy and let the DAG update it, or sync the new release directly.
 - **C.** Confirm the disk figures above (`df -h /mnt/data10tb /`) on the day of the import.
+
+## Progress
+
+- **Pre-checks (2026-10-28):** A: `lake verify` on the 2026-09-23 mirror, 2583 files, 0 problems. B: OpenAlex already serves release **2026-10-14** (2361 files, 744.8 GB); only 12 files match the local copy and 1110 local files are gone upstream. So the old mirror is **not imported**: the DAG syncs 2026-10-14 straight into MinIO and builds silver from it, and the old bronze (`/mnt/data10tb/openalex_lake/bronze`) and silver (`openalex-lake/data/silver`) stay untouched as a fallback until they are deleted after approval. C: HDD 5.0 TB free, NVMe 2.6 TB free.
+- **Step 1** done: code ported (`68bcde6`); the two SQL files with `x -> …` lambdas changed to DuckDB 2 syntax.
+- **Steps 2–5** done in code: bronze sync and verify against MinIO, state in PostgreSQL, silver from MinIO to `OPENALEX_LAKE_PATH` (default `/srv/osint/openalex`, mounted at the same path in Airflow), the DAG and the catalog. `tests/pipelines/test_openalex_lake.py` runs the whole flow against a throwaway MinIO and PostgreSQL, including a second release and a bucket caught mid-replacement.
 
 ### Step 1: Port the code and tests, behaviour unchanged
 - Copy `src/openalex_lake/{config,sync,silver,catalog}.py` and `sql/*.sql` to `pipelines/scripts/openalex/`, and the tests to `tests/pipelines/test_openalex_{sync,silver,catalog}.py`. Commit message names `openalex-lake@fa251ea`.

@@ -1,8 +1,14 @@
-"""Mirror the OpenAlex parquet snapshot into bronze, keeping only the latest release."""
+"""Mirror the OpenAlex Parquet snapshot into bronze (MinIO), keeping only the latest release.
+
+OpenAlex replaces its bucket in place each quarter, so the manifest, the listing and the files can
+disagree while a release is being written. A sync only starts when every manifest file is listed
+upstream, every downloaded file must match the manifest size, and stale files of the previous
+release are removed only after every file of the new one is in. manifest.json is written to bronze
+last: its presence means the release is complete.
+"""
 
 import http.client
 import json
-import threading
 import time
 import urllib.parse
 import urllib.request
@@ -11,11 +17,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import BUCKET_URL, EXCLUDED_ENTITIES, PREFIX
+from . import state, storage
+from .config import EXCLUDED_ENTITIES, UPSTREAM_PREFIX, Lake
 
 S3_NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 CHUNK = 8 * 1024 * 1024
-STATE_FILE = "_state.json"
 MANIFEST_FILE = "manifest.json"
 
 
@@ -28,15 +34,19 @@ class FileSpec:
 
     @property
     def rel_path(self) -> str:
-        return self.key.removeprefix(PREFIX)
+        return self.key.removeprefix(UPSTREAM_PREFIX)
+
+    @property
+    def entity(self) -> str:
+        return self.rel_path.split("/", 1)[0]
 
 
 def http_get(url: str, headers: dict | None = None, timeout: int = 60):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout)
 
 
-def fetch_manifest() -> dict:
-    with http_get(f"{BUCKET_URL}/{PREFIX}manifest.json") as r:
+def fetch_manifest(upstream_url: str) -> dict:
+    with http_get(f"{upstream_url}/{UPSTREAM_PREFIX}{MANIFEST_FILE}") as r:
         return json.loads(r.read())
 
 
@@ -50,13 +60,13 @@ def parse_listing(xml_bytes: bytes) -> tuple[dict[str, str], str | None]:
     return etags, token
 
 
-def list_etags(prefix: str) -> dict[str, str]:
+def list_etags(upstream_url: str, prefix: str) -> dict[str, str]:
     etags, token = {}, None
     while True:
         params = {"list-type": "2", "prefix": prefix}
         if token:
             params["continuation-token"] = token
-        with http_get(f"{BUCKET_URL}/?{urllib.parse.urlencode(params)}") as r:
+        with http_get(f"{upstream_url}/?{urllib.parse.urlencode(params)}") as r:
             page, token = parse_listing(r.read())
         etags.update(page)
         if not token:
@@ -74,32 +84,23 @@ def manifest_files(manifest: dict, excluded: set[str] = EXCLUDED_ENTITIES) -> li
     return files
 
 
-def plan(files: list[FileSpec], root: Path, state: dict[str, str]) -> list[FileSpec]:
-    todo = []
-    for f in files:
-        dest = root / f.rel_path
-        if dest.exists() and dest.stat().st_size == f.size and state.get(f.key) == f.etag:
-            continue
-        todo.append(f)
-    return todo
+def plan(files: list[FileSpec], present: dict[str, tuple[int, str]]) -> list[FileSpec]:
+    """Files whose bronze copy is missing or has another size or source ETag."""
+    return [f for f in files if present.get(f.rel_path) != (f.size, f.etag)]
 
 
-def stale_paths(root: Path, files: list[FileSpec]) -> list[Path]:
-    keep = {root / f.rel_path for f in files}
-    entities = {f.rel_path.split("/", 1)[0] for f in files}
-    stale = []
-    for ent in entities:
-        for p in (root / ent).rglob("*"):
-            if p.is_file() and p not in keep:
-                stale.append(p)
-    return stale
+def stale_keys(present: set[str], files: list[FileSpec]) -> list[str]:
+    """Bronze files of entities still synced that the release no longer has."""
+    keep = {f.rel_path for f in files}
+    return sorted(key for key in present if key not in keep)
 
 
-def download(f: FileSpec, root: Path, retries: int = 6) -> None:
-    dest = root / f.rel_path
+def download(f: FileSpec, upstream_url: str, staging: Path, retries: int = 6) -> Path:
+    """Download one file to staging, resuming a partial download; returns the finished file."""
+    dest = staging / f.rel_path
     part = dest.with_name(dest.name + ".part")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    url = f"{BUCKET_URL}/{urllib.parse.quote(f.key)}"
+    url = f"{upstream_url}/{urllib.parse.quote(f.key)}"
     for attempt in range(retries):
         try:
             have = part.stat().st_size if part.exists() else 0
@@ -116,73 +117,85 @@ def download(f: FileSpec, root: Path, retries: int = 6) -> None:
             if part.stat().st_size != f.size:
                 raise OSError(f"size mismatch {part.stat().st_size} != {f.size}")
             part.replace(dest)
-            return
+            return dest
         except (OSError, http.client.HTTPException):
             if attempt == retries - 1:
                 raise
             time.sleep(2**attempt)
 
 
-def _load_state(root: Path) -> dict[str, str]:
-    p = root / STATE_FILE
-    return json.loads(p.read_text()) if p.exists() else {}
+def _transfer(f: FileSpec, lake: Lake, s3) -> FileSpec:
+    local = download(f, lake.upstream_url, lake.staging)
+    key = lake.object_key(f.rel_path)
+    s3.upload_file(str(local), lake.bucket, key)
+    size = s3.head_object(Bucket=lake.bucket, Key=key)["ContentLength"]
+    local.unlink()
+    if size != f.size:
+        raise OSError(f"{key}: {size} bytes in MinIO, manifest says {f.size}")
+    return f
 
 
-def _save_state(root: Path, state: dict[str, str]) -> None:
-    tmp = root / (STATE_FILE + ".tmp")
-    tmp.write_text(json.dumps(state))
-    tmp.replace(root / STATE_FILE)
+def upstream_release(lake: Lake) -> str:
+    return fetch_manifest(lake.upstream_url)["date"]
 
 
-def sync(root: Path, workers: int = 8, dry_run: bool = False, log=print) -> bool:
-    root.mkdir(parents=True, exist_ok=True)
-    manifest = fetch_manifest()
+def sync(lake: Lake, workers: int = 8, dry_run: bool = False, log=print) -> bool:
+    manifest = fetch_manifest(lake.upstream_url)
     files = manifest_files(manifest)
-    entities = sorted({f.rel_path.split("/", 1)[0] for f in files})
     etags = {}
-    for ent in entities:
-        etags.update(list_etags(f"{PREFIX}{ent}/"))
-    files = [FileSpec(f.key, f.size, f.records, etags.get(f.key, "")) for f in files]
-
-    state = _load_state(root)
-    todo = plan(files, root, state)
-    stale = stale_paths(root, files)
-    total_gb = sum(f.size for f in todo) / 1e9
-    log(f"release {manifest['date']}: {len(files)} files, {len(todo)} to download "
-        f"({total_gb:.1f} GB), {len(stale)} stale to remove")
-    if dry_run:
-        return True
-
-    (root / MANIFEST_FILE).unlink(missing_ok=True)
-    for p in stale:
-        p.unlink()
-
-    lock = threading.Lock()
-    done_bytes, failed, start = 0, [], time.time()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(download, f, root): f for f in todo}
-        for i, fut in enumerate(as_completed(futures), 1):
-            f = futures[fut]
-            try:
-                fut.result()
-            except (OSError, http.client.HTTPException) as e:
-                failed.append(f)
-                log(f"FAILED {f.key}: {e}")
-                continue
-            with lock:
-                state[f.key] = f.etag
-                done_bytes += f.size
-                if i % 10 == 0 or i == len(todo):
-                    _save_state(root, state)
-            rate = done_bytes / 1e6 / max(time.time() - start, 1)
-            log(f"[{i}/{len(todo)}] {done_bytes / 1e9:.1f}/{total_gb:.1f} GB "
-                f"{rate:.0f} MB/s {f.rel_path}")
-
-    state = {f.key: state[f.key] for f in files if f.key in state}
-    _save_state(root, state)
-    if failed:
-        log(f"{len(failed)} files failed; rerun `lake sync` to retry")
+    for ent in sorted({f.entity for f in files}):
+        etags.update(list_etags(lake.upstream_url, f"{UPSTREAM_PREFIX}{ent}/"))
+    unlisted = [f.key for f in files if f.key not in etags]
+    if unlisted:
+        log(f"release {manifest['date']}: {len(unlisted)} manifest files are not listed upstream "
+            f"(e.g. {unlisted[0]}); the bucket is probably being replaced, try again later")
         return False
-    (root / MANIFEST_FILE).write_text(json.dumps(manifest))
-    log(f"release {manifest['date']} complete")
-    return True
+    files = [FileSpec(f.key, f.size, f.records, etags[f.key]) for f in files]
+
+    s3 = storage.s3_client()
+    conn = state.connect()
+    try:
+        storage.ensure_bucket(s3, lake.bucket)
+        objects = storage.list_objects(s3, lake.bucket, lake.prefix)
+        recorded = state.bronze_files(conn)
+        # A file counts as present only if MinIO has it with the recorded size.
+        present = {k: v for k, v in recorded.items() if objects.get(lake.object_key(k)) == v[0]}
+        todo = plan(files, present)
+        stale = stale_keys(set(recorded) | {k.removeprefix(lake.prefix + "/") for k in objects}
+                           - {MANIFEST_FILE}, files)
+        total_gb = sum(f.size for f in todo) / 1e9
+        log(f"release {manifest['date']}: {len(files)} files, {len(todo)} to download "
+            f"({total_gb:.1f} GB), {len(stale)} stale to remove")
+        if dry_run:
+            return True
+
+        s3.delete_object(Bucket=lake.bucket, Key=lake.object_key(MANIFEST_FILE))
+        failed, done_bytes, start = [], 0, time.time()
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_transfer, f, lake, s3): f for f in todo}
+            for i, fut in enumerate(as_completed(futures), 1):
+                f = futures[fut]
+                try:
+                    fut.result()
+                except Exception as e:  # noqa: BLE001 - one failed file must not stop the others
+                    failed.append(f)
+                    log(f"FAILED {f.key}: {e}")
+                    continue
+                state.record_bronze(conn, [f], manifest["date"])
+                done_bytes += f.size
+                rate = done_bytes / 1e6 / max(time.time() - start, 1)
+                log(f"[{i}/{len(todo)}] {done_bytes / 1e9:.1f}/{total_gb:.1f} GB "
+                    f"{rate:.0f} MB/s {f.rel_path}")
+        if failed:
+            log(f"{len(failed)} files failed; the next run retries them")
+            return False
+
+        storage.delete_objects(s3, lake.bucket, [lake.object_key(k) for k in stale])
+        state.forget_bronze(conn, stale)
+        s3.put_object(Bucket=lake.bucket, Key=lake.object_key(MANIFEST_FILE),
+                      Body=json.dumps(manifest).encode())
+        state.mark_release(conn, manifest["date"], "synced_at")
+        log(f"release {manifest['date']} complete in bronze")
+        return True
+    finally:
+        conn.close()

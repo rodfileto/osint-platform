@@ -40,8 +40,18 @@ jobs:
       POSTGRES_USER: osint_admin
       POSTGRES_PASSWORD: ci_password
       KEYCLOAK_AUTH_ENABLED: 'false'
+      MINIO_ENDPOINT_URL: http://localhost:9000
+      MINIO_ROOT_USER: ci_minio
+      MINIO_ROOT_PASSWORD: ci_minio_password
     steps:
       - uses: actions/checkout@v4
+      # A service container cannot be given MinIO's "server /data" command.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=ci_minio -e MINIO_ROOT_PASSWORD=ci_minio_password \
+            minio/minio:latest server /data
+          until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done
       - name: Apply Flyway migrations
         run: |
           docker run --rm --network host \
@@ -49,8 +59,8 @@ jobs:
             -e FLYWAY_URL=jdbc:postgresql://localhost:5432/osint_test \
             -e FLYWAY_USER=osint_admin -e FLYWAY_PASSWORD=ci_password \
             -e FLYWAY_DEFAULT_SCHEMA=public -e FLYWAY_TABLE=flyway_schema_history \
-            -e FLYWAY_SCHEMAS=cnpj,finep,geo,airflow,naturalization,sanctions,contracts,inpi \
-            -e FLYWAY_LOCATIONS=filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo,filesystem:/flyway/sql/inpi \
+            -e FLYWAY_SCHEMAS=cnpj,finep,geo,airflow,naturalization,sanctions,contracts,inpi,openalex \
+            -e FLYWAY_LOCATIONS=filesystem:/flyway/sql/cnpj,filesystem:/flyway/sql/finep,filesystem:/flyway/sql/geo,filesystem:/flyway/sql/inpi,filesystem:/flyway/sql/openalex \
             -e FLYWAY_VALIDATE_MIGRATION_NAMING=true \
             flyway/flyway:11-alpine migrate
       - name: Load the dev seed
@@ -65,9 +75,10 @@ jobs:
           python-version: '3.11'   # the Python of the backend image
           cache: pip
           cache-dependency-path: backend/requirements.txt
-      - run: pip install -r backend/requirements.txt pytest -r pipelines/dbt/requirements.txt
+      - run: pip install -r backend/requirements.txt pytest boto3 -r pipelines/dbt/requirements.txt
       - run: pytest tests/backend -v
-      - run: pytest tests/pipelines/test_gold_publish.py -v   # gold build + publish against this PostgreSQL
+      # Against this PostgreSQL and MinIO: gold build + publish, and the OpenAlex lake end to end.
+      - run: pytest tests/pipelines/test_gold_publish.py tests/pipelines/test_openalex_lake.py -v
 
   frontend:
     name: Frontend (type check and build)
