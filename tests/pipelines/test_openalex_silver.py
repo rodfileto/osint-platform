@@ -118,10 +118,12 @@ def test_work_abstracts_rebuilds_text_in_position_order(tmp_path):
         COPY (SELECT * FROM (VALUES
             ('https://openalex.org/W1', '{aii}'),
             ('https://openalex.org/W2', NULL),
-            ('https://openalex.org/W3', '{{"truncated": [0], "[19')
+            ('https://openalex.org/W3', '{{"truncated": [0], "[19'),
+            ('https://openalex.org/W4', '{{"a": [0], "word": [1, 3], "word": [2]}}')
         ) t(id, abstract_inverted_index)) TO '{src}' (FORMAT parquet)
     """)
-    assert build_file(con, (SQL_DIR / "work_abstracts.sql").read_text(), str(src), dest) == 1
+    assert build_file(con, (SQL_DIR / "work_abstracts.sql").read_text(), str(src), dest) == 2
     assert con.execute(f"SELECT * FROM '{dest}'").fetchall() == [
-        ("W1", 'the fox "quoted" the end.')
+        ("W1", 'the fox "quoted" the end.'),
+        ("W4", "a word word word"),  # a repeated key keeps the positions of both entries
     ]
