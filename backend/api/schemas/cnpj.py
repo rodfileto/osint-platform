@@ -33,6 +33,8 @@ class CompanySearchItem(BaseModel):
 
 class PaginatedCompanySearchResponse(BaseModel):
     count: int
+    # True when more companies match than the count cap; count is then the cap.
+    count_capped: bool = False
     next: str | None = None
     previous: str | None = None
     results: list[CompanySearchItem]

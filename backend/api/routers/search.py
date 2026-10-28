@@ -12,6 +12,7 @@ from api.schemas.search import (
     UnifiedSearchPostgresResult,
     UnifiedSearchResponse,
 )
+from api.services import company_search
 from core.database import DatabaseManager, get_database_manager
 
 SEARCH_LIMIT_DEFAULT = 10
@@ -39,7 +40,7 @@ async def _search_postgres_companies(
     normalized = _strip_accents(query)
 
     clauses: list[str] = []
-    params: dict[str, Any] = {"limit": limit}
+    params: dict[str, Any] = {}
 
     if digits:
         if len(digits) >= 14:
@@ -59,34 +60,12 @@ async def _search_postgres_companies(
         clauses.append("(razao_social ILIKE :text_query OR nome_fantasia ILIKE :text_query)")
         params["text_query"] = f"%{normalized}%"
 
-    where_clause = f"WHERE {' OR '.join(clauses)}" if clauses else ""
-    rows = await database.fetch_all(
-        f"""
-        SELECT
-            cnpj_14,
-            cnpj_basico,
-            razao_social,
-            nome_fantasia,
-            situacao_cadastral,
-            codigo_municipio,
-            municipio_nome,
-            uf,
-            cnae_fiscal_principal,
-            cnae_descricao,
-            porte_empresa,
-            natureza_juridica,
-            natureza_juridica_descricao,
-            capital_social,
-            data_inicio_atividade,
-            correio_eletronico,
-            reference_month
-        FROM cnpj.company_search
-        {where_clause}
-        ORDER BY is_active DESC, razao_social, cnpj_14
-        LIMIT :limit
-        """,
-        params,
-    )
+    # Active companies first; the inactive half is searched only to fill the rest.
+    match = " OR ".join(clauses)
+    rows, _, _ = await company_search.search_half(database, True, match, params, limit)
+    if len(rows) < limit:
+        inactive, _, _ = await company_search.search_half(database, False, match, params, limit - len(rows))
+        rows += inactive
     results = [CompanySearchItem.model_validate(row) for row in rows]
     return UnifiedSearchPostgresResult(total=len(results), results=results)
 

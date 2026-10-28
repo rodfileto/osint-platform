@@ -24,6 +24,7 @@ from api.schemas.cnpj import (
     PersonNetworkResponse,
     PersonSearchItem,
 )
+from api.services import company_search
 from api.services.cnpj_network import CnpjNetworkService
 from core.database import DatabaseManager, get_database_manager
 
@@ -161,10 +162,7 @@ def _build_company_search_filters(
         clauses.append("cnae_fiscal_principal = :cnae")
         parameters["cnae"] = cnae
 
-    if not clauses:
-        return "", parameters
-
-    return f"WHERE {' AND '.join(clauses)}", parameters
+    return " AND ".join(clauses), parameters
 
 
 async def _fetch_company_search_page(
@@ -178,51 +176,10 @@ async def _fetch_company_search_page(
     page: int,
     page_size: int,
 ) -> PaginatedCompanySearchResponse:
-    where_clause, parameters = _build_company_search_filters(q, uf, municipio, cnae)
-    parameters["is_active"] = is_active
-    active_clause = " AND is_active = :is_active" if where_clause else "WHERE is_active = :is_active"
+    match, parameters = _build_company_search_filters(q, uf, municipio, cnae)
     offset = (page - 1) * page_size
-
-    count_row = await database.fetch_one(
-        f"""
-        SELECT COUNT(*) AS total
-        FROM cnpj.company_search
-        {where_clause}{active_clause}
-        """,
-        parameters,
-    )
-    total = int((count_row or {}).get("total", 0))
-
-    rows = await database.fetch_all(
-        f"""
-        SELECT
-            cnpj_14,
-            cnpj_basico,
-            razao_social,
-            nome_fantasia,
-            situacao_cadastral,
-            codigo_municipio,
-            municipio_nome,
-            uf,
-            cnae_fiscal_principal,
-            cnae_descricao,
-            porte_empresa,
-            natureza_juridica,
-            natureza_juridica_descricao,
-            capital_social,
-            data_inicio_atividade,
-            correio_eletronico,
-            reference_month
-        FROM cnpj.company_search
-        {where_clause}{active_clause}
-        ORDER BY razao_social, cnpj_14
-        LIMIT :limit OFFSET :offset
-        """,
-        {
-            **parameters,
-            "limit": page_size,
-            "offset": offset,
-        },
+    rows, total, count_capped = await company_search.search_half(
+        database, is_active, match, parameters, page_size, offset
     )
 
     next_url = None
@@ -234,6 +191,7 @@ async def _fetch_company_search_page(
 
     return PaginatedCompanySearchResponse(
         count=total,
+        count_capped=count_capped,
         next=next_url,
         previous=previous_url,
         results=[_normalize_company_search_row(row) for row in rows],

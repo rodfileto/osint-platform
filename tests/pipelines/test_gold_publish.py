@@ -131,12 +131,13 @@ def test_gold_publish_builds_and_swaps(tmp_path, monkeypatch, pg):
             # The canonical indexes and PK constraints landed on the live tables.
             cur.execute(
                 "SELECT indexname FROM pg_indexes WHERE schemaname = 'cnpj' "
-                "AND indexname IN ('idx_company_search_cnpj_14', 'idx_company_search_razao_social_trgm', "
-                "'idx_socio_history_current', 'idx_socio_cpf_nome')"
+                "AND indexname IN ('idx_company_search_cnpj_14', 'idx_company_search_razao_social_trgm_active', "
+                "'idx_company_search_name_order_inactive', 'idx_socio_history_current', 'idx_socio_cpf_nome')"
             )
             assert {row[0] for row in cur.fetchall()} == {
                 "idx_company_search_cnpj_14",
-                "idx_company_search_razao_social_trgm",
+                "idx_company_search_razao_social_trgm_active",
+                "idx_company_search_name_order_inactive",
                 "idx_socio_history_current",
                 "idx_socio_cpf_nome",
             }

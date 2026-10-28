@@ -27,6 +27,8 @@ interface CnpjResult {
 
 interface ApiResponse {
   count: number;
+  // True when more companies match than the API counts; count is then that cap.
+  count_capped?: boolean;
   next: string | null;
   previous: string | null;
   results: CnpjResult[];
@@ -150,7 +152,11 @@ export default function CnpjSearch() {
       {data ? (
         <ComponentCard
           title="Resultados"
-          desc={`${data.count.toLocaleString("pt-BR")} empresa${data.count !== 1 ? "s" : ""} encontrada${data.count !== 1 ? "s" : ""}`}
+          desc={
+            data.count_capped
+              ? `Mais de ${data.count.toLocaleString("pt-BR")} empresas encontradas; refine a busca`
+              : `${data.count.toLocaleString("pt-BR")} empresa${data.count !== 1 ? "s" : ""} encontrada${data.count !== 1 ? "s" : ""}`
+          }
         >
           {data.results.length === 0 ? (
             <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">

@@ -39,3 +39,7 @@ left join {{ ref('cnae') }} cnae
     on cnae.cnae_fiscal = est.cnae_fiscal_principal
 left join {{ ref('natureza_juridica') }} nj
     on nj.codigo = emp.natureza_juridica
+-- Physical order for the serving table (the publish copies rows in this order): each
+-- is_active half stays together, as in the two views this replaced, and rows sit in name
+-- order, so the API's name-order index walks and name searches read few heap pages.
+order by is_active desc, razao_social, cnpj_14

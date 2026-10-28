@@ -169,8 +169,17 @@ TABLES = [
             ("idx_company_search_cnpj_14", "(cnpj_14)", "UNIQUE"),
             ("idx_company_search_cnpj_basico", "(cnpj_basico varchar_pattern_ops)"),
             ("idx_company_search_cnpj_14_pattern", "(cnpj_14 text_pattern_ops)"),
-            ("idx_company_search_razao_social_trgm", "USING GIN (razao_social gin_trgm_ops)"),
-            ("idx_company_search_nome_fantasia_trgm", "USING GIN (nome_fantasia gin_trgm_ops)"),
+            # Split by is_active, like the two search views this table replaced: a search
+            # for active companies then scans only the active rows. The queries must name
+            # the predicate literally (is_active / NOT is_active) for these to match.
+            ("idx_company_search_razao_social_trgm_active", "USING GIN (razao_social gin_trgm_ops) WHERE is_active"),
+            ("idx_company_search_razao_social_trgm_inactive", "USING GIN (razao_social gin_trgm_ops) WHERE NOT is_active"),
+            ("idx_company_search_nome_fantasia_trgm_active", "USING GIN (nome_fantasia gin_trgm_ops) WHERE is_active"),
+            ("idx_company_search_nome_fantasia_trgm_inactive", "USING GIN (nome_fantasia gin_trgm_ops) WHERE NOT is_active"),
+            # Name order: a page of a common name walks this and stops after one page,
+            # instead of reading and sorting every match.
+            ("idx_company_search_name_order_active", "(razao_social, cnpj_14) WHERE is_active"),
+            ("idx_company_search_name_order_inactive", "(razao_social, cnpj_14) WHERE NOT is_active"),
             ("idx_company_search_uf_municipio", "(uf, codigo_municipio)"),
             ("idx_company_search_situacao", "(situacao_cadastral)"),
         ],
