@@ -9,6 +9,7 @@ Each step below is one reviewable change. Work stops after each step until it is
 1. **Storage:** bronze moves into MinIO (`s3://osint-raw/openalex/...`), next to the CNPJ ZIPs. Silver stays on the NVMe as a bind-mounted folder: MinIO lives on the HDD, and silver exists to make full-table DuckDB scans fast.
 2. **Code:** the `openalex-lake` modules are ported to `pipelines/scripts/openalex/`, with a new `openalex_pipeline` DAG. A small CLI stays for manual runs.
 3. **History:** the code is copied in one commit that names the `openalex-lake` commit it came from. The old repo stays as an archive.
+4. **Catalog:** keep `lake.duckdb` as the query entry point, recreated by the DAG after `verify` and the silver build pass. With bronze in MinIO, queries on the bronze views need the MinIO S3 secret in the caller's DuckDB session; silver views are plain NVMe paths.
 
 ## OpenAlex releases
 
@@ -18,10 +19,6 @@ Consequences for the design:
 - **Schedule:** the DAG only needs to run around those dates (see DAG flow).
 - **A release can be read mid-replacement.** While OpenAlex rewrites the bucket, the manifest, the file listing and the files can disagree. The sync therefore never trusts a partial state: every downloaded file must match the manifest's size and record count and the listing's ETag, and any mismatch fails the run, which the next day's run retries. Stale files are removed only after every file of the new release is in.
 - **Our copy is the only copy of the previous release** once OpenAlex replaces it. Bronze is updated in place too (as in openalex-lake), so during a sync our bronze is also a mix of two releases. Silver and the catalog's `lake_release` change only after `verify` passes, so they always describe one release; bronze queries during the sync window are the exception.
-
-## Open decision
-
-- **DuckDB catalog (`lake.duckdb`):** keep it, recreated by the DAG as the query entry point (recommended), or drop it and query Parquet paths directly until gold defines access. With bronze in MinIO, queries on the bronze views need the MinIO S3 secret in the caller's DuckDB session; silver views are plain NVMe paths. Step 5 depends on this.
 
 ## What openalex-lake is today
 
@@ -47,7 +44,7 @@ BRONZE   MinIO  s3://osint-raw/openalex/parquet/<entity>/updated_date=…/part_N
    │  silver: DuckDB SQL per table, one output per bronze file (reads bronze through httpfs)
    ▼
 SILVER   NVMe   /srv/osint/openalex/silver/<table>/updated_date=…/part_NNN.parquet       mounted in Airflow
-   │  catalog (pending decision)
+   │  catalog
    ▼
 CATALOG  NVMe   /srv/osint/openalex/lake.duckdb   views over bronze (s3://) and silver (paths)
 ```
@@ -79,7 +76,7 @@ openalex_pipeline (daily at 06:00 UTC on the 8th–21st of Jan, Apr, Jul, Oct; p
                       stale objects of older releases removed only after every file is in
    verify             sizes and Parquet footer record counts of every object against the manifest
    silver[table]      one mapped task per silver table (7), 2 at a time; each rebuilds only files whose source ETag changed
-   catalog            (pending decision) recreate lake.duckdb views and lake_release
+   catalog            recreate lake.duckdb views and lake_release
 ```
 
 Params: `force_silver` (rebuild every silver file), `tables` (subset of silver tables), `dry_run` (sync plan only).
@@ -122,9 +119,8 @@ Schedule: cron `0 6 8-21 1,4,7,10 *`. "Second Wednesday" cannot be written in cr
 - **Verify:** one run end to end in dev with a small entity subset (`continents`, `topics` and 3 `works` files through a test param); then one run in prod-like on the full release that does no work (everything current).
 - **Cleanup after approval:** delete `/mnt/data10tb/openalex_lake/bronze` (660 GB freed).
 
-### Step 5: Catalog (pending the open decision)
-- If kept: `catalog` task recreates `/srv/osint/openalex/lake.duckdb`. Bronze views over `s3://`, silver views over the NVMe paths, `lake_release` from `openalex.release`. A short section in the README shows `ATTACH … (READ_ONLY)` and creating the MinIO secret for bronze queries.
-- If dropped: the README lists the silver paths and the bronze prefix instead.
+### Step 5: Catalog
+- `catalog` task recreates `/srv/osint/openalex/lake.duckdb`: bronze views over `s3://`, silver views over the NVMe paths, `lake_release` from `openalex.release`. A short section in the README shows `ATTACH … (READ_ONLY)` and creating the MinIO secret for bronze queries.
 
 ### Step 6: Docs and cleanup
 - README (EN and PT-BR): data source entry, the OpenAlex flow, disk table, the DAG.
